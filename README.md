@@ -2,17 +2,14 @@
 
 **버전 0.9.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
-Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을
-**폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
+Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
 보안 등급 때문에 진단 파일을 외부로 반출할 수 없는 환경을 위해 만들었습니다.
 네트워크 호출이 없고, Python 표준 라이브러리만 사용합니다.
 
 > **검증 범위: 이 도구는 api 모드 진단 번들로 검증되었습니다. local / remote 모드(서버 로그·OS 명령 결과 포함) 번들은 파일 구성이 달라 확인이 필요할 수 있습니다.**
 >
-> **이 도구는 Elastic 공식 지원 도구가 아니며, Elastic Support 의 분석을 대체하지 않습니다.**
-> 판정은 번들에 기록된 사실과 공개된 공식 문서 기준에 근거합니다. 모든 판정에 그 근거가
-> 공식 기준인지, ES 가 보고한 사실인지, 도구가 정한 임계값인지 표기합니다.
+> **이 도구는 Elastic 공식 지원 도구가 아니며, Elastic Support 의 분석을 대체하지 않습니다.** 판정은 번들에 기록된 사실과 공개된 공식 문서 기준에 근거합니다. 모든 판정에 그 근거가 공식 기준인지, ES 가 보고한 사실인지, 도구가 정한 임계값인지 표기합니다.
 
 ---
 
@@ -37,7 +34,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 
 ## 주요 특징
 
-- **폐쇄망 전제** — 외부 통신·CDN·폰트·패키지 설치 없음. 파일 하나(`esdiag.pyz`)로 반입
+- **폐쇄망 전제** — 외부 통신·CDN·폰트·패키지 설치 없음. 저장소를 그대로 반입해 실행
 - **의존성 없음** — Python 3.8 이상 표준 라이브러리만 사용
 - **115개 판정 룰** — 단일 번들 106개 + 두 번들 비교 9개
 - **판정 근거 구분** — 모든 판정에 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산 표기
@@ -56,20 +53,24 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 ## 빠른 시작
 
 ```bash
+# 저장소 클론 후 바로 실행 — pip install 불필요
+git clone https://github.com/Munsik/airgapped-es-diag-analyzer.git
+cd airgapped-es-diag-analyzer
+
 # 실행 환경 점검
-python3 esdiag.pyz --check-env
+python3 analyze.py --check-env
 
 # 콘솔 요약
-python3 esdiag.pyz diagnostic-20260814.zip
+python3 analyze.py diagnostic-20260814.zip
 
 # HTML / Markdown / JSON 한 번에
-python3 esdiag.pyz diagnostic-20260814.zip --out-dir ./report
+python3 analyze.py diagnostic-20260814.zip --out-dir ./report
 
 # 이전 번들과 비교
-python3 esdiag.pyz diag-0814.zip --baseline diag-0807.zip --html report.html
+python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
 ```
 
-소스 폴더로 실행할 때는 `esdiag.pyz` 대신 `analyze.py` 를 씁니다.
+인터넷이 없는 폐쇄망에서는 저장소를 zip 으로 내려받아 반입한 뒤 압축을 풀고 같은 방식으로 실행합니다.
 
 ### 옵션
 
@@ -110,17 +111,18 @@ zlib 이 빠진 최소 빌드 Python 이면 번들을 압축 해제한 디렉터
 
 ### 반입 형태
 
-| 형태 | 파일 | 실행 |
-| --- | --- | --- |
-| 단일 파일(권장) | `esdiag.pyz` | `python3 esdiag.pyz ...` — `python3 tools/build_pyz.py` 로 생성 |
-| 소스 폴더 | 저장소 전체 | `python3 analyze.py ...` |
-| 단독 실행 파일 | `dist/esdiag` | `./esdiag ...` — Python 불필요, 직접 빌드 |
+| 형태 | 방법 |
+| --- | --- |
+| 소스 클론(기본) | `git clone` 후 `python3 analyze.py ...` |
+| 소스 zip 반입 | GitHub 에서 zip 다운로드 후 압축 해제 → `python3 analyze.py ...` |
+| 단일 파일(선택) | `python3 tools/build_pyz.py` 로 `dist/esdiag.pyz` 생성 → `python3 esdiag.pyz ...` |
+| 단독 실행 파일(선택) | `bash tools/build_binary.sh` 로 `dist/esdiag` 생성 → `./esdiag ...` (Python 불필요) |
 
 ### 환경별 선택
 
 | 대상 환경 | 방법 |
 | --- | --- |
-| Python 3.8 이상이 있음(RHEL 9 기본 3.9, Ubuntu 20.04 이상 등) | `esdiag.pyz` 반입 후 실행 |
+| Python 3.8 이상이 있음(RHEL 9 기본 3.9, Ubuntu 20.04 이상 등) | 저장소 반입 후 `python3 analyze.py` 실행 |
 | RHEL 8, python3 미설치 | 기본 포함된 `/usr/libexec/platform-python`(3.6)으로 실행 가능하나 미검증. 가능하면 python39 등 설치 |
 | RHEL 7 | 기본 Python 이 2.7 이라 사용 불가. python3 설치 또는 단독 실행 파일 |
 | 폐쇄망 내부 분석용 Windows PC | Python 설치본 사용. 설치가 막혀 있으면 python.org 의 Windows embeddable package 로 실행 가능(미검증) |
@@ -152,10 +154,9 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 
 > **주의:** 이 도구는 **api 모드** 진단 번들로 검증되었습니다. local / remote 모드(서버 로그·OS 명령 결과 포함) 번들은 파일 구성이 달라 확인이 필요할 수 있습니다. 서버 로그 분석(LOG-001)과 local 모드 전용 파일 처리는 실번들로 검증되지 않았습니다.
 > local / remote 모드 번들을 분석할 때는 리포트 하단의 "입력 미수집" · "도구 오류" 항목을 함께 확인하십시오.
-수집 방법은 [공식 문서](https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnostic)를 참고하십시오.
+> 수집 방법은 [공식 문서](https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnostic)를 참고하십시오.
 
-**정기적으로 두 번 수집해 `--baseline` 으로 비교하는 것을 권장합니다.** rejection·GC·circuit breaker 는 노드 기동 이후 누적값이라,
-번들 하나로는 지금도 발생 중인지 알 수 없습니다.
+**정기적으로 두 번 수집해 `--baseline` 으로 비교하는 것을 권장합니다.** rejection·GC·circuit breaker 는 노드 기동 이후 누적값이라, 번들 하나로는 지금도 발생 중인지 알 수 없습니다.
 
 ---
 
@@ -167,7 +168,7 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4(ECH, 3노드 단일 tier) · 9.5.3(ECH, 14노드 hot/warm/cold/frozen) — api 모드 |
 | 검증된 수집 모드 | **api 모드만 검증.** local / remote 모드는 확인이 필요할 수 있음 |
-| 대형 번들 검증 | 9.5.3 번들(인덱스 2,494개, cluster_state 190MB, mapping 178MB): 분석 7초, 최대 메모리 약 0.9GB |
+| 대형 번들 검증 | 9.5.3 번들(인덱스 2,494개, cluster\_state 190MB, mapping 178MB): 분석 7초, 최대 메모리 약 0.9GB |
 | 지원 최소 버전 | 8.0(미만은 해당 버전에 있는 API 범위에서만 동작) |
 
 기준은 `esdiag/__init__.py` 에 고정되어 있고 모든 리포트 상단에 표기됩니다.
@@ -177,11 +178,11 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 
 | 버전 | 판정 | 내용 |
 | --- | --- | --- |
-| 8.0 | SET-* | `action.destructive_requires_name` 기본값 true |
+| 8.0 | SET-\* | `action.destructive_requires_name` 기본값 true |
 | 8.3 | SHD-001 | heap 1GB당 샤드 20개 기준은 8.3 미만에만 적용(8.3 에서 공식 폐기) |
-| 8.5 | DISK-* | 디스크 워터마크에 max_headroom(low 200GB / high 150GB / flood 100GB) 반영 |
-| 8.14 | VEC-002 | dense_vector index_options 미지정 시 int8_hnsw 기본 |
-| 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq_hnsw 기본 |
+| 8.5 | DISK-\* | 디스크 워터마크에 max\_headroom(low 200GB / high 150GB / flood 100GB) 반영 |
+| 8.14 | VEC-002 | dense\_vector index\_options 미지정 시 int8\_hnsw 기본 |
+| 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq\_hnsw 기본 |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` 기본 적용 |
 
 ---
@@ -230,8 +231,7 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 
 ### tier 인식
 
-데이터 노드는 역할 조합으로 tier(hot / content / warm / cold / frozen)를 나눕니다.
-**스펙·샤드 수·자원 사용률·작업량은 같은 tier 끼리만 비교합니다.** tier 간 차이는 정상 설계라 판정하지 않고 NODE-003 에 tier 별 스펙 표만 둡니다.
+데이터 노드는 역할 조합으로 tier(hot / content / warm / cold / frozen)를 나눕니다. **스펙·샤드 수·자원 사용률·작업량은 같은 tier 끼리만 비교합니다.** tier 간 차이는 정상 설계라 판정하지 않고 NODE-003 에 tier 별 스펙 표만 둡니다.
 다만 tier 의 모든 노드가 CPU 한계 근처라면 편중이 아니라 용량 부족이므로 HOT-005 로 판정합니다.
 frozen 전용 노드는 shared cache 가 디스크 대부분을 미리 점유하므로 low/high 워터마크를 적용하지 않고 `flood_stage.frozen`(95%, max_headroom 20GB)만 봅니다.
 
@@ -335,13 +335,12 @@ python3 tools/gen_rules_doc.py --check    # 임계값 누락·미사용, docstri
 ## 임계값 조정
 
 ```bash
-python3 esdiag.pyz --print-thresholds > my.json   # 기본값 추출
+python3 analyze.py --print-thresholds > my.json   # 기본값 추출
 # my.json 에서 필요한 키만 남기고 수정
-python3 esdiag.pyz bundle.zip --thresholds my.json
+python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 99개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다.
-`[공식]` 값은 바꾸지 않는 것을 권장합니다.
+임계값 99개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
 
 ---
 
@@ -431,7 +430,7 @@ bash tests/run_all.sh diagnostic.zip
 │   └── report/                 # text(콘솔·Markdown) · html(단일 파일)
 ├── tools/
 │   ├── gen_rules_doc.py        # RULES.md 생성기 + 정합성 검사
-│   ├── build_pyz.py            # 단일 파일 배포본(esdiag.pyz)
+│   ├── build_pyz.py            # 단일 파일 배포본(esdiag.pyz) 빌드(선택)
 │   └── build_binary.sh         # 단독 실행 파일 빌드(선택)
 ├── tests/
 │   ├── run_all.sh              # 전체 검증
@@ -455,7 +454,7 @@ bash tests/run_all.sh diagnostic.zip
 # 2) 명세 재생성과 전체 검증
 python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <검증용 번들.zip>
-# 3) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
+# 3) (선택) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
 git tag v0.9.0
 ```
