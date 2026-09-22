@@ -1,0 +1,72 @@
+# -*- coding: utf-8 -*-
+"""판정 근거 구분.
+
+OFFICIAL : 판정 기준 자체가 Elastic 공식 문서에 명시되어 있거나, ES 가 스스로 보고한 사실(상태·오류·설정값)
+FACT     : 번들에 기록된 사실을 그대로 보고(임계값 없음)
+TOOL     : 공식 문서에 수치 기준이 없어 이 도구가 정한 임계값으로 판단 — thresholds.py 에서 조정 가능
+CALC     : 두 번들 간 계산값(증가분·증가율·외삽)
+"""
+
+OFFICIAL, FACT, TOOL, CALC = "공식 기준", "사실 보고", "도구 판단", "비교 계산"
+
+_MAP = {
+    # 클러스터
+    "CLU-001": FACT, "CLU-002": FACT, "CLU-003": FACT, "CLU-004": FACT,
+    "CLU-005": TOOL, "CLU-006": OFFICIAL, "CLU-007": TOOL, "CLU-008": FACT,
+    "CLU-009": TOOL, "CLU-010": FACT, "CLU-011": OFFICIAL, "CLU-012": FACT,
+    "CLU-013": OFFICIAL, "CLU-014": OFFICIAL, "CLU-015": OFFICIAL, "CLU-016": FACT,
+    "CLU-017": TOOL, "CLU-018": TOOL, "CLU-019": OFFICIAL, "CLU-020": FACT, "CLU-021": OFFICIAL,
+    # 노드
+    "JVM-001": TOOL, "JVM-002": OFFICIAL, "JVM-003": OFFICIAL, "JVM-004": OFFICIAL, "JVM-005": TOOL,
+    "OS-001": TOOL, "OS-002": OFFICIAL, "OS-003": TOOL, "OS-004": OFFICIAL, "OS-005": OFFICIAL,
+    "OS-006": TOOL,
+    "DISK-001": OFFICIAL, "DISK-002": OFFICIAL, "DISK-003": OFFICIAL, "DISK-004": TOOL,
+    "DISK-005": TOOL, "DISK-006": OFFICIAL, "DISK-007": OFFICIAL,
+    "TP-001": FACT, "TP-002": FACT, "BRK-001": FACT, "BRK-002": TOOL, "IP-001": FACT,
+    "FD-001": TOOL, "FD-002": FACT, "ING-001": FACT, "NODE-001": TOOL, "NODE-003": FACT,
+    # 설정 기준
+    "CFG-001": OFFICIAL, "CFG-002": OFFICIAL, "CFG-003": OFFICIAL, "CFG-004": OFFICIAL,
+    "CFG-005": OFFICIAL, "CFG-006": OFFICIAL, "CFG-007": OFFICIAL, "CFG-008": OFFICIAL,
+    "CFG-009": OFFICIAL,
+    # 샤드·인덱스
+    "SHD-001": OFFICIAL, "SHD-002": TOOL, "SHD-003": OFFICIAL, "SHD-004": TOOL, "SHD-005": TOOL,
+    "SHD-006": TOOL, "SHD-007": OFFICIAL, "SHD-008": OFFICIAL, "SHD-009": OFFICIAL,
+    "SHD-010": OFFICIAL, "SHD-011": OFFICIAL, "SHD-012": OFFICIAL,
+    "IDX-001": TOOL, "IDX-002": FACT, "IDX-003": TOOL, "IDX-004": TOOL, "IDX-005": TOOL,
+    "IDX-006": FACT, "IDX-007": OFFICIAL, "IDX-008": FACT, "IDX-009": FACT, "IDX-010": FACT, "IDX-011": FACT,
+    "MAP-001": TOOL, "MAP-002": TOOL, "MAP-003": OFFICIAL, "TPL-001": OFFICIAL,
+    # 성능
+    "PERF-001": TOOL, "PERF-002": TOOL, "PERF-003": TOOL, "PERF-004": OFFICIAL,
+    "PERF-005": TOOL, "PERF-006": OFFICIAL, "PERF-007": OFFICIAL, "PERF-008": OFFICIAL,
+    "PERF-009": OFFICIAL, "GEN-001": OFFICIAL, "GEN-002": OFFICIAL, "GEN-003": TOOL,
+    # 벡터
+    "VEC-001": TOOL, "VEC-002": OFFICIAL, "VEC-003": OFFICIAL, "VEC-004": OFFICIAL,
+    # 핫스팟
+    "HOT-001": OFFICIAL, "HOT-002": TOOL, "HOT-003": FACT, "HOT-005": TOOL, "HOT-004": FACT, "REC-001": TOOL,
+    # 운영
+    "LIC-001": FACT, "SNP-001": FACT, "SNP-002": FACT, "SNP-003": TOOL, "SNP-004": FACT,
+    "SNP-005": FACT, "SNP-006": FACT, "SNP-007": FACT, "ILM-001": FACT, "ILM-002": FACT, "ILM-003": TOOL,
+    "ML-001": FACT, "ML-002": FACT, "SEC-001": FACT, "SEC-002": FACT, "OPS-001": FACT,
+    "OPS-002": FACT,
+    # 런타임
+    "RT-001": TOOL, "LOG-000": FACT, "LOG-001": FACT,
+    # 설정 변경(기본값·영향은 공식 문서 기준, 값은 번들 사실)
+    "SET-001": OFFICIAL, "SET-002": OFFICIAL, "SET-003": OFFICIAL, "SET-004": OFFICIAL,
+    "SET-005": OFFICIAL, "SET-006": OFFICIAL,
+    # 과다 샤딩
+    "OVS-001": OFFICIAL, "OVS-002": TOOL, "OVS-003": TOOL,
+    # 이전에 읽지 않던 파일(deep)
+    "PERF-011": TOOL, "DISK-008": TOOL, "MAP-004": TOOL, "MAP-005": OFFICIAL, "MAP-006": TOOL, "VEC-005": OFFICIAL,
+    "ILM-004": OFFICIAL, "ILM-005": OFFICIAL, "ILM-006": FACT, "CLU-022": OFFICIAL, "SHUT-001": FACT,
+    "IDX-012": FACT, "OPS-003": FACT, "FRZ-001": TOOL, "PERF-010": FACT, "ING-002": FACT, "CLU-023": FACT,
+    "CLU-024": FACT, "ML-003": FACT, "OPS-004": FACT, "OPS-005": FACT, "OPS-006": FACT, "OPS-007": FACT,
+    # 메타
+    "VER-001": FACT,
+}
+
+
+def basis_of(rule_id):
+    base = str(rule_id).split(".")[0]
+    if base.startswith("DIF-"):
+        return CALC
+    return _MAP.get(base, TOOL)

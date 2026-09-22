@@ -1,0 +1,9 @@
+# esdiag 은 외부 패키지 의존성이 없습니다.
+# Python 표준 라이브러리만 사용하므로 pip install 이 필요하지 않습니다.
+#
+# 필요한 것은 Python 인터프리터뿐입니다.
+#   - 실행 검증: Python 3.8, 3.12
+#   - 정적 분석상 최소: Python 3.7 (3.6 은 폴백 코드로 동작 가능하나 실행 미검증)
+#   - tools/gen_rules_doc.py (문서 생성 도구) 는 Python 3.8 이상 필요
+#
+# 사전 점검:  python3 analyze.py --check-env
