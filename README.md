@@ -466,4 +466,5 @@ git tag v0.9.0
 
 ## 라이선스
 
-저장소 공개 범위와 라이선스는 소속 조직의 정책에 따라 정해 `LICENSE` 파일로 추가하십시오.
+This project is open-sourced software licensed under the [MIT license](LICENSE).
+
