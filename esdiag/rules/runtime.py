@@ -171,7 +171,7 @@ _LOG_PATTERNS = [
     (r"\[gc\]\[.*\]\[old\]|\[o\.e\.m\.j\.JvmGcMonitorService\].*\[old\]",
      Severity.WARNING, "Old GC 경고 로그",
      "JvmGcMonitorService 가 긴 GC 를 기록했습니다."),
-    (r"failed to flush|translog", Severity.INFO, "translog/flush 관련 메시지", ""),
+    (r"failed to flush", Severity.INFO, "flush 실패 메시지", ""),
     (r"disk watermark \[.*\] exceeded|flood stage disk watermark",
      Severity.CRITICAL, "디스크 워터마크 초과 로그",
      "디스크 부족으로 샤드 이동 또는 쓰기 차단이 발생했습니다."),
@@ -181,6 +181,27 @@ _LOG_PATTERNS = [
     (r"ShardLockObtainFailedException", Severity.WARNING, "샤드 락 획득 실패",
      "샤드가 이전 상태에서 정리되지 않았습니다."),
 ]
+
+
+# 기동 시 JVM 옵션 줄(-XX:+ExitOnOutOfMemoryError, HeapDumpOnOutOfMemoryError 등)은 오류가 아니다
+_STARTUP_NOISE = re.compile(r"JVM arguments|-XX:[+-]\w*OutOfMemoryError|JVM home|JVM version")
+
+
+def _es_log_files(files):
+    """ES 서버 로그만 남긴다. gc.log* 는 JVM 통합 로그라 ES 패턴 대상이 아니고,
+    <cluster>_server.json 은 <cluster>.log 와 같은 내용의 JSON 판이라 이중 집계를 막기 위해 제외한다."""
+    names = set(files)
+    out = []
+    for f in files:
+        base = f.rsplit("/", 1)[-1].lower()
+        if base.startswith("gc.log"):
+            continue
+        if base.endswith("_server.json"):
+            twin = f[: -len("_server.json")] + ".log"
+            if twin in names:
+                continue
+        out.append(f)
+    return out
 
 
 def r_logs(ctx):
@@ -212,6 +233,7 @@ def r_logs(ctx):
     counts = collections.Counter()
     samples = {}
     scanned = 0
+    files = _es_log_files(files)
     for rel in files[:40]:
         text = ctx.b.read_log(rel, ctx.t["log_scan_bytes"])
         if not text:
@@ -221,6 +243,8 @@ def r_logs(ctx):
             rx = re.compile(pat, re.IGNORECASE)
             n = 0
             for ln in text.splitlines():
+                if _STARTUP_NOISE.search(ln):
+                    continue
                 if rx.search(ln):
                     n += 1
                     if label not in samples:

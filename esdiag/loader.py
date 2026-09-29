@@ -229,6 +229,14 @@ class Bundle(object):
             data = self._read_raw(rel)
         except Exception:
             return ""
+        if rel.lower().endswith(".gz"):
+            # 롤오버된 로그(.log.gz). 압축 폭탄 방지를 위해 max_bytes 까지만 풀고 뒤쪽을 쓴다
+            try:
+                import gzip, io
+                with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:
+                    data = gz.read(max_bytes * 4)
+            except Exception:
+                return ""
         if len(data) > max_bytes:
             data = data[-max_bytes:]
         return data.decode("utf-8", "replace")
