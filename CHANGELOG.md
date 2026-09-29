@@ -3,6 +3,20 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.10.0] - 2026-09-29
+
+### 추가
+
+- `--support-summary FILE`: Elastic 공식 Support 팀 문의 시 케이스에 붙일 요약 Markdown. 지정한 때만 생성. 치명·주의 판정의 관측·근거 구분·근거 파일·근거 표를 담고, 조치 권고·서버 로그 발췌·hot threads 스택은 담지 않음
+- `--mask none|basic|strict`(기본 basic): 요약의 식별자를 별칭(`node-001` 등)으로 치환. basic 은 클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소, strict 는 인덱스·정책·템플릿 등 추가
+- `--mask-map FILE`: 별칭 ↔ 원래 이름 매핑(권한 0600). 기본 경로는 요약 파일명 + `.mask-map.json`
+- 마스킹 후 원본 식별자나 미등록 IPv4 가 남으면 요약과 매핑을 쓰지 않고 종료 코드 2
+- `tests/test_handoff.py`: 카나리 식별자 기반 합성 검증(외부 번들 불필요)
+
+### 변경
+
+- README 문구: "Elastic Support" → "Elastic 공식 Support 팀". README 의 포맷 문자열 검사 건수를 실제 값으로 수정
+
 ## [0.9.3] - 2026-09-29
 
 최종 점검(두 local 번들, Python 3.8.20 / 3.12, HTML 데스크톱·모바일 렌더링)에서 확인된 사항 반영.

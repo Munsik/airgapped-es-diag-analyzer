@@ -5,7 +5,7 @@ esdiag - Elastic support-diagnostics offline analyzer.
 Python 3.8+ 표준 라이브러리만 사용하며 외부 네트워크 호출이 전혀 없다.
 """
 
-__version__ = "0.9.3"
+__version__ = "0.10.0"
 
 # ---------------------------------------------------------------------------
 # 판정 기준점(baseline)

@@ -51,6 +51,14 @@ def main(argv=None):
     p.add_argument("--json", metavar="FILE", help="JSON 결과 출력 경로")
     p.add_argument("--out-dir", metavar="DIR",
                    help="지정 시 <DIR>/es-diag-report.{html,md,json} 으로 일괄 저장")
+    p.add_argument("--support-summary", metavar="FILE",
+                   help="Elastic 공식 Support 팀 문의 시 참고할 요약(Markdown) 출력 경로. 지정한 때만 만든다")
+    p.add_argument("--mask", choices=["none", "basic", "strict"], default=None,
+                   help="요약의 마스킹 단계(기본 basic). basic=클러스터·노드·호스트·IP·경로·인증서, "
+                        "strict=basic + 인덱스·별칭·데이터 스트림·정책·템플릿 등 (--support-summary 와 함께)")
+    p.add_argument("--mask-map", metavar="FILE",
+                   help="별칭 ↔ 원래 이름 매핑 JSON 경로(기본: 요약 파일명 + .mask-map.json). "
+                        "폐쇄망 안에서만 보관한다 (--support-summary 와 함께)")
     p.add_argument("--no-ok", action="store_true", help="정상 판정 항목 숨김")
     p.add_argument("--quiet", action="store_true", help="콘솔 출력 생략")
     p.add_argument("--thresholds", metavar="FILE", help="임계값 재정의 JSON 파일")
@@ -82,6 +90,9 @@ def main(argv=None):
     if args.thresholds:
         with io.open(args.thresholds, "r", encoding="utf-8") as fh:
             overrides = json.load(fh)
+
+    if (args.mask or args.mask_map) and not args.support_summary:
+        p.error("--mask, --mask-map 은 --support-summary 와 함께 써야 합니다.")
 
     if args.baseline and not os.path.exists(args.baseline):
         print("baseline 경로를 찾을 수 없습니다: %s" % args.baseline, file=sys.stderr)
@@ -119,6 +130,10 @@ def main(argv=None):
         _write(targets["md"], text_report.markdown(result, show_ok=not args.no_ok))
     if "json" in targets:
         _write(targets["json"], json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    if args.support_summary:
+        rc = _support_summary(result, args)
+        if rc:
+            return rc
     for kind, path in targets.items():
         print("생성: %s (%s)" % (path, kind), file=sys.stderr)
 
@@ -131,6 +146,31 @@ def main(argv=None):
     if args.fail_on == "warning" and (result.counts[Severity.CRITICAL] or
                                       result.counts[Severity.WARNING]):
         return 1
+    return 0
+
+
+def _support_summary(result, args):
+    """Elastic 공식 Support 팀 문의용 요약을 만든다. 마스킹 후 식별자가 남으면 아무것도 쓰지 않고 2 를 돌려준다."""
+    from esdiag.mask import Masker
+    from esdiag.report import handoff
+    level = args.mask or "basic"
+    masker = Masker(result.ctx, level=level)
+    try:
+        content = handoff.render(result, masker, level, __version__)
+    except handoff.MaskLeak as exc:
+        print("오류: 마스킹 후에도 식별자 %d건이 남아 요약을 만들지 않았습니다. "
+              "--mask strict 로 다시 시도하거나 결과를 직접 확인하세요." % len(exc.leaks), file=sys.stderr)
+        return 2
+    _write(args.support_summary, content)
+    print("생성: %s (Elastic 공식 Support 팀 요약, 마스킹 %s)" % (args.support_summary, level), file=sys.stderr)
+    if level != "none":
+        map_path = args.mask_map or (args.support_summary + ".mask-map.json")
+        _write(map_path, json.dumps(masker.mapping(), indent=2, ensure_ascii=False))
+        try:
+            os.chmod(map_path, 0o600)
+        except OSError:
+            pass
+        print("생성: %s (별칭 매핑 — 고객 환경 밖으로 내보내지 마세요)" % map_path, file=sys.stderr)
     return 0
 
 

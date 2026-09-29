@@ -1,6 +1,6 @@
 # esdiag — Elasticsearch 진단 번들 오프라인 분석기
 
-**버전 0.9.3** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.10.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -9,7 +9,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 
 > **검증 범위: api 모드(ECH 9.4.4·9.5.3)와 local 모드(self-managed 8.19.21 단일 노드, 서버 로그·`syscalls/` 포함) 실번들로 검증되었습니다. remote 모드와 다중 노드 local 모드 번들은 아직 실번들로 검증하지 않았습니다.**
 >
-> **이 도구는 Elastic 공식 지원 도구가 아니며, Elastic Support 의 분석을 대체하지 않습니다.** 판정은 번들에 기록된 사실과 공개된 공식 문서 기준에 근거합니다. 모든 판정에 그 근거가 공식 기준인지, ES 가 보고한 사실인지, 도구가 정한 임계값인지 표기합니다.
+> **이 도구는 Elastic 공식 지원 도구가 아니며, Elastic 공식 Support 팀의 분석을 대체하지 않습니다.** 판정은 번들에 기록된 사실과 공개된 공식 문서 기준에 근거합니다. 모든 판정에 그 근거가 공식 기준인지, ES 가 보고한 사실인지, 도구가 정한 임계값인지 표기합니다.
 
 ---
 
@@ -23,6 +23,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 - [판정 체계](#판정-체계)
 - [분석 원칙](#분석-원칙)
 - [리포트 구성](#리포트-구성)
+- [Elastic 공식 Support 팀 요약](#elastic-공식-support-팀-요약)
 - [문서](#문서)
 - [임계값 조정](#임계값-조정)
 - [룰 추가](#룰-추가)
@@ -80,6 +81,9 @@ python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
 | `--html FILE` / `--md FILE` / `--json FILE` | 형식별 출력 경로 |
 | `--out-dir DIR` | `es-diag-report.{html,md,json}` 일괄 생성 |
 | `--baseline FILE` | 이전 시점 번들과 비교해 증가분·증가율 판정 |
+| `--support-summary FILE` | Elastic 공식 Support 팀 문의용 요약(Markdown)을 함께 만듭니다. 지정한 때만 생성 |
+| `--mask none\|basic\|strict` | 요약의 마스킹 단계(기본 `basic`). `--support-summary` 와 함께 사용 |
+| `--mask-map FILE` | 별칭 ↔ 원래 이름 매핑 JSON 경로(기본: 요약 파일명 + `.mask-map.json`). `--support-summary` 와 함께 사용 |
 | `--no-ok` | 정상 판정 숨김 |
 | `--only MODULE` | 특정 룰 모듈만 실행(`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `ops` `deep` `runtime` `syscalls`), 반복 지정 가능 |
 | `--thresholds FILE` | 임계값 재정의 JSON(알 수 없는 키는 경고 후 무시) |
@@ -89,7 +93,7 @@ python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
 | `--check-env` | 실행 환경 점검 |
 | `--version` | 도구 버전 |
 
-종료 코드: `0` 정상, `1` `--fail-on` 조건 충족, `2` 입력 오류(경로 없음, 진단 번들로 인식 불가).
+종료 코드: `0` 정상, `1` `--fail-on` 조건 충족, `2` 입력 오류(경로 없음, 진단 번들로 인식 불가) 또는 요약 마스킹 실패(아래 참고).
 
 ---
 
@@ -316,6 +320,32 @@ HTML 리포트(단일 파일)의 순서입니다. Markdown·콘솔도 같은 내
 
 ---
 
+## Elastic 공식 Support 팀 요약
+
+`--support-summary FILE` 을 지정하면 분석 리포트와 별도로, Elastic 공식 Support 팀에 문의할 때 케이스에 붙일 수 있는 요약 Markdown 을 만듭니다. 지정하지 않으면 만들지 않습니다.
+
+```bash
+python3 analyze.py diagnostic.zip --support-summary support-summary.md            # 기본 basic 마스킹
+python3 analyze.py diagnostic.zip --support-summary support-summary.md --mask strict
+```
+
+**담는 것**: 클러스터 개요, 영역별 점검 결과, 치명·주의 판정의 관측 사실·근거 구분·번들 내 근거 파일·근거 표(최대 10행), 참고 판정, 확인하지 못한 항목, 노드 요약.
+**담지 않는 것**: 도구의 조치 권고 문구, 서버 로그 발췌 원문, hot threads 스레드 이름과 스택. 로그 판정은 건수·분류만 남습니다.
+
+마스킹은 값을 `node-001`, `ip-001`, `path-001` 같은 별칭으로 바꾸며, 같은 값은 항상 같은 별칭입니다. 원래 값은 매핑 파일(`*.mask-map.json`, 권한 0600)에만 있으므로 Support 팀 답변의 별칭을 되돌려 볼 수 있습니다. **매핑 파일은 고객 환경 밖으로 내보내지 마십시오.**
+
+| 단계 | 대상 |
+| --- | --- |
+| `none` | 마스킹하지 않음 |
+| `basic`(기본) | 클러스터 이름·UUID, 노드 이름·ID·호스트·IP·전송 주소, 노드 설정의 경로·주소·URL·버킷 값, 인증서 경로·subject, 라이선스 발급 대상, 저장소 버킷·경로·엔드포인트 |
+| `strict` | basic + 인덱스·별칭·데이터 스트림·백킹 인덱스, ILM·SLM 정책, 템플릿, 파이프라인, 저장소·스냅샷, ML·transform·rollup ID |
+
+출력 문자열마다 마스킹을 적용한 뒤, 원본 식별자(대소문자 무시)와 등록되지 않은 IPv4 가 남았는지 별도로 검사합니다. 하나라도 남으면 **요약과 매핑 파일을 쓰지 않고** 종료 코드 2 로 끝납니다. 이 검사는 번들에서 수집한 식별자 기준이므로, 요약을 보내기 전에 눈으로 한 번 확인하십시오.
+
+한계: 6자 미만 값은 일반 단어와 겹칠 수 있어 남았는지 검사하지 않습니다. `.` 로 시작하는 시스템 인덱스, 기본 설치 경로, 루프백 주소, 버전·시각은 마스킹하지 않습니다. 이 요약은 Support 케이스를 대신하지 않으며, 원본 진단 번들을 요청받는 경우는 별도입니다.
+
+---
+
 ## 문서
 
 | 문서 | 내용 |
@@ -381,12 +411,13 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 442개, 문제 0 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 489개, 문제 0 |
 | `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현 | 55개 통과 |
 | `tests/drive_branches.py` | 시나리오 51개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 51개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
 | `tools/gen_rules_doc.py --check` | 임계값·docstring 정합성 | 문제 0 |
 | `tests/test_local_mode.py` | local/remote 모드 전용 처리(logs/ 오탐·gz·이중 집계, syscalls/ 분기, 수집 실패 안내)를 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |
+| `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
 | `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |
 
 `tests/make_broken_bundle.py` 는 정상 번들에 장애 상황을 주입한 번들을 만듭니다(리포트 예시·수동 확인용).
@@ -425,11 +456,12 @@ bash tests/run_all.sh diagnostic.zip
 │   ├── basis.py                # 판정 근거 구분
 │   ├── engine.py               # 룰 실행·격리, 미수집 처리, 종합 판정, 버전 점검
 │   ├── envcheck.py             # 실행 환경 점검(--check-env)
+│   ├── mask.py                 # Support 팀 요약용 마스킹(별칭 치환, 누출 검사)
 │   ├── diff.py                 # 두 번들 비교
 │   ├── model.py                # Finding / Severity
 │   ├── util.py                 # 단위 파싱, 안전 접근자(num·dicts·strs·items)
 │   ├── rules/                  # cluster · settings · nodes · shards · sharding · guidance · hotspot · ops · deep · runtime
-│   └── report/                 # text(콘솔·Markdown) · html(단일 파일)
+│   └── report/                 # text(콘솔·Markdown) · html(단일 파일) · handoff(Support 팀 요약)
 ├── tools/
 │   ├── gen_rules_doc.py        # RULES.md 생성기 + 정합성 검사
 │   ├── build_pyz.py            # 단일 파일 배포본(esdiag.pyz) 빌드(선택)
@@ -441,6 +473,7 @@ bash tests/run_all.sh diagnostic.zip
 │   ├── verify_logic.py         # 계산 로직 단정문
 │   ├── drive_branches.py       # 판정 분기 구동
 │   ├── fuzz_rules.py           # 입력 변형 퍼징
+│   ├── test_handoff.py         # Support 팀 요약·마스킹 검증(합성 데이터)
 │   └── make_broken_bundle.py   # 장애 주입 번들 생성
 ├── RULES.md                    # 룰 명세(자동 생성)
 ├── COVERAGE.md                 # 공식 문서 대조표
@@ -458,7 +491,7 @@ python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <검증용 번들.zip>
 # 3) (선택) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
-git tag v0.9.3
+git tag v0.10.0
 ```
 
 검증용 진단 번들과 그 분석 리포트에는 고객 환경 정보(클러스터 이름, 인덱스 이름, 호스트)가 들어 있으므로 저장소에 올리지 않습니다.

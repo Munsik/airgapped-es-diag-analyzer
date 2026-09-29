@@ -7,7 +7,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdiag 0.9.3 |
+| 도구 버전 | esdiag 0.10.0 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
