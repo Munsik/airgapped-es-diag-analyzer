@@ -34,6 +34,7 @@ MODULE_TITLES = [
     ("ops", "운영 · 보안"),
     ("deep", "매핑 · ILM 정책 · 클러스터 조정 · 세부 통계"),
     ("runtime", "런타임 (hot threads · 로그)"),
+    ("syscalls", "OS 설정 (local/remote 모드 syscalls/)"),
     ("diff", "변화 추세 (--baseline 비교 모드)"),
 ]
 SEV_KO = {"CRITICAL": "치명", "WARNING": "주의", "INFO": "참고", "OK": "정상"}

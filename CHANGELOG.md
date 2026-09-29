@@ -3,6 +3,18 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.9.2] - 2026-09-29
+
+### 추가
+
+- 단일 번들 판정 룰 107개, 두 번들 비교 룰 9개(판정 ID 164개 + 비교 DIF-001~012)
+- `syscalls/` 분석(local/remote 모드): SYS-001 vm.max_map_count(최소 262144), SYS-002 swap 이 있을 때 vm.swappiness, SYS-003 ES 프로세스 nofile 65535 / nproc 4096, SYS-004 dmesg 의 커널 OOM killer 기록
+
+### 수정
+
+- LOG-001: 기동 로그의 JVM 옵션 줄(`-XX:+ExitOnOutOfMemoryError` 등)을 OutOfMemoryError 로 잡아 치명으로 판정하던 것 → 기동 옵션 줄 제외 (실번들에서 확인된 오탐)
+- 로그 스캔: `.log.gz` 를 압축 해제 없이 읽던 것 → 해제 후 스캔, `gc.log*`(JVM 로그)와 `*_server.json`(같은 내용의 JSON 판)은 스캔 대상에서 제외, `translog` 단어 매칭 → `failed to flush` 로 축소
+
 ## [0.9.1] - 2026-09-29
 
 ### 변경

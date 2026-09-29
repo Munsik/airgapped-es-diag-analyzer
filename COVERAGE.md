@@ -89,7 +89,7 @@ ECH/ECE/ECK 배포로 감지되면 위 CFG 항목은 오케스트레이터 관�
 | 문서 항목 | 상태 | 룰 |
 | --- | --- | --- |
 | 파일시스템 캐시에 메모리 확보 | 구현 | JVM-003 |
-| readahead 값(128KiB) | 불가 | api 모드 번들에 없음. local / remote 모드의 `syscalls/`(lsblk RA)에 있으나 아직 미구현 |
+| readahead 값(128KiB) | 불가 | api 모드 번들에 없음. local / remote 모드의 `syscalls/readahead.txt`(lsblk RA)에 있으나 아직 미구현 |
 | 빠른 하드웨어 / 로컬 스토리지 | 구현 | PERF-009 |
 | 문서 모델링(nested·join 회피) | 부분 | PERF-011(nested·has_child·has_parent 사용 비중), MAP-006(nested 필드 수). 인덱스 특정은 불가 |
 | 검색 대상 필드 최소화(copy_to) | 불가 | 쿼리 본문이 번들에 없음 |
@@ -241,7 +241,7 @@ local / remote 모드 번들의 추가 파일(서버 로그, OS 명령 결과 �
 1. **쿼리 본문이 없습니다.** 쿼리 유형별 누적 사용 횟수로 비용이 큰 패턴의 비중만 판정합니다(PERF-011). 어떤 쿼리가 느린지는 slowlog(local 모드) 또는 Search Profiler 로 확인해야 합니다.
 2. **인덱스 설정의 기본값이 없습니다.** `settings.json` 에는 명시 설정만 있어, 인덱스 설정의 원래 기본값은 공식 문서 기준 지식 베이스를 씁니다.
    `GET <index>/_mapping` 결과를 별도로 받으면 정확도가 올라갑니다.
-3. **OS 커널 설정**(readahead, vm.max_map_count, nofile 한도 원본값)은 local 모드 수집본에서 `syscalls/` 에 수집되지만 이 도구는 아직 읽지 않습니다.
+3. **OS 커널 설정** 중 vm.max_map_count·vm.swappiness·nofile·nproc·OOM killer 기록은 `syscalls/` 에서 읽습니다(SYS-001~004). readahead·THP·iostat·jstack·gc.log 는 아직 읽지 않습니다.
 4. **모든 통계는 노드 기동 이후 누적값**입니다. 단일 번들만으로는 발생 시점을 알 수 없으므로,
    `--baseline` 으로 이전 번들과 비교해 증가분을 판정하십시오(DIF-004~009). 번들이 하나뿐이라면
    로그 또는 모니터링과 대조해야 합니다.

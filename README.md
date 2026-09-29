@@ -1,6 +1,6 @@
 # esdiag — Elasticsearch 진단 번들 오프라인 분석기
 
-**버전 0.9.1** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.9.2** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -36,7 +36,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 
 - **폐쇄망 전제** — 외부 통신·CDN·폰트·패키지 설치 없음. 저장소를 그대로 반입해 실행
 - **의존성 없음** — Python 3.8 이상 표준 라이브러리만 사용
-- **115개 판정 룰** — 단일 번들 106개 + 두 번들 비교 9개
+- **116개 판정 룰** — 단일 번들 107개 + 두 번들 비교 9개
 - **판정 근거 구분** — 모든 판정에 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산 표기
 - **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 94종 지식 베이스)
 - **과다 샤딩 분석** — 인덱스별로 줄일 수 있는 샤드 수, 데이터 스트림 롤오버 과다, 샤드 크기 분포
@@ -80,7 +80,7 @@ python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
 | `--out-dir DIR` | `es-diag-report.{html,md,json}` 일괄 생성 |
 | `--baseline FILE` | 이전 시점 번들과 비교해 증가분·증가율 판정 |
 | `--no-ok` | 정상 판정 숨김 |
-| `--only MODULE` | 특정 룰 모듈만 실행(`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `ops` `deep` `runtime`), 반복 지정 가능 |
+| `--only MODULE` | 특정 룰 모듈만 실행(`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `ops` `deep` `runtime` `syscalls`), 반복 지정 가능 |
 | `--thresholds FILE` | 임계값 재정의 JSON(알 수 없는 키는 경고 후 무시) |
 | `--print-thresholds` | 기본 임계값 출력 |
 | `--fail-on critical\|warning` | 해당 심각도가 있으면 종료 코드 1 |
@@ -148,11 +148,11 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 | 수집 모드 | 포함 내용 | 분석 범위 |
 | --- | --- | --- |
 | `api` | REST API 응답 | 상태·구성·통계 기반 판정 |
-| `local` / `remote` | API + 서버 로그(elasticsearch.log, gc.log) | 위 전부 + 로그 패턴 분석 |
+| `local` / `remote` | API + 서버 로그(elasticsearch.log, gc.log) + `syscalls/` | 위 전부 + 로그 패턴 분석 + OS 설정(SYS-001~004) |
 
 로그가 있어야 "언제" 발생했는지 확인할 수 있으므로 가능하면 `local` 또는 `remote` 로 수집하십시오.
 
-> **주의:** 이 도구는 **api 모드** 진단 번들로 검증되었습니다. local / remote 모드(서버 로그·OS 명령 결과 포함) 번들은 파일 구성이 달라 확인이 필요할 수 있습니다. 서버 로그 분석(LOG-001)과 local 모드 전용 파일 처리는 실번들로 검증되지 않았습니다.
+> **참고:** api 모드 번들과 ES 8.19.21 단일 노드 local 모드 번들(서버 로그·`syscalls/` 포함)로 검증되었습니다. local 모드의 `syscalls/` 는 진단을 실행한 호스트 한 대의 값만 담습니다.
 > local / remote 모드 번들을 분석할 때는 리포트 하단의 "입력 미수집" · "도구 오류" 항목을 함께 확인하십시오.
 > 수집 방법은 [공식 문서](https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnostic)를 참고하십시오.
 
@@ -202,8 +202,8 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 
 | 구분 | 의미 | 판정 ID 수 |
 | --- | --- | --- |
-| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 61 |
-| 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 55 |
+| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 64 |
+| 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 56 |
 | 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 44 |
 | 비교 계산 | 두 번들 간 증가분·증가율·선형 외삽 | DIF-001~012 |
 
@@ -319,7 +319,7 @@ HTML 리포트(단일 파일)의 순서입니다. Markdown·콘솔도 같은 내
 
 | 문서 | 내용 |
 | --- | --- |
-| [RULES.md](RULES.md) | 115개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
+| [RULES.md](RULES.md) | 116개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
 | [COVERAGE.md](COVERAGE.md) | Elastic 공식 문서 항목별 반영 여부와 판정할 수 없는 항목의 이유 |
 | [CHANGELOG.md](CHANGELOG.md) | 변경 이력 — 이전 동작 → 현재 동작과 근거 |
 
@@ -400,7 +400,7 @@ bash tests/run_all.sh diagnostic.zip
 - **쿼리 본문이 없습니다.** 쿼리 유형별 누적 사용 횟수(`cluster_stats.indices.search`)로 비용이 큰 패턴의 비중은 판정하지만(PERF-011), 어떤 인덱스의 어떤 쿼리인지는 slowlog 나 Search Profiler 로 확인해야 합니다.
 - **보안 구성(사용자·역할·권한)은 판정하지 않습니다.** 보안 감사 영역이고 민감 정보라, 보안 기능 활성화와 인증서 만료만 봅니다.
 - **인덱스 설정의 기본값은 번들에 없습니다.** 인덱스 설정 지식 베이스(30종)는 공식 문서 기준이며 번들로 교차 검증되지 않습니다.
-- **OS 커널 설정**(readahead, vm.swappiness, vm.max_map_count 원본값)은 api 모드 번들에 없어 판정하지 않습니다. local / remote 모드는 `syscalls/` 에 수집하지만 이 도구는 아직 읽지 않습니다.
+- **OS 커널 설정**(readahead, vm.swappiness, vm.max_map_count 원본값)은 api 모드 번들에 없어 판정하지 않습니다. local / remote 모드의 `syscalls/` 중 sysctl(vm.max_map_count, vm.swappiness), proc-limit(nofile, nproc), dmesg(OOM killer)만 읽습니다(SYS-001~004). readahead, THP, iostat, jstack, netstat 등은 아직 읽지 않습니다.
 - **hot threads 는 수집 순간 500ms 스냅샷**입니다. 부하가 없을 때 수집하면 신호가 나오지 않습니다.
 - 디스크 포화 예상(DIF-008)은 두 시점 사이의 선형 외삽입니다.
 
@@ -456,7 +456,7 @@ python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <검증용 번들.zip>
 # 3) (선택) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
-git tag v0.9.1
+git tag v0.9.2
 ```
 
 검증용 진단 번들과 그 분석 리포트에는 고객 환경 정보(클러스터 이름, 인덱스 이름, 호스트)가 들어 있으므로 저장소에 올리지 않습니다.

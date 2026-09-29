@@ -7,7 +7,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdiag 0.9.1 |
+| 도구 버전 | esdiag 0.9.2 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -53,6 +53,7 @@
 - [운영 · 보안](#운영-보안) — 9개 룰
 - [매핑 · ILM 정책 · 클러스터 조정 · 세부 통계](#매핑-ilm-정책-클러스터-조정-세부-통계) — 16개 룰
 - [런타임 (hot threads · 로그)](#런타임-hot-threads-로그) — 2개 룰
+- [OS 설정 (local/remote 모드 syscalls/)](#os-설정-localremote-모드-syscalls) — 1개 룰
 - [변화 추세 (--baseline 비교 모드)](#변화-추세---baseline-비교-모드) — 9개 룰
 - [설정 지식 베이스](#설정-지식-베이스)
 - [임계값 전체 목록](#임계값-전체-목록)
@@ -1839,6 +1840,23 @@ nodes_hot_threads.txt 를 파싱해 스레드별 실제 CPU%(cpu=, 없으면 전
 **판정 로직**
 
 logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는데 로그가 없으면 diagnostics.log 의 대상 노드 매칭 실패 기록을 근거로 수집 실패 원인을 알린다. 있으면 파일당 마지막 log_scan_bytes 만 최대 40개 파일 스캔해 고정 패턴(OOM, 긴 old GC, 마스터 미탐색, CircuitBreaking, rejected execution, 워터마크 초과, 노드 연결 끊김, 매핑 파싱 오류 등) 검출. 검출 패턴 중 가장 높은 심각도로 판정(LOG-001), 없으면 정상.
+
+## OS 설정 (local/remote 모드 syscalls/)
+
+### SYS-001, SYS-002, SYS-003, SYS-004 — vm.max_map_count 가 최소 요건 미달
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `syscalls.r_os_config` |
+| 판정 항목 | SYS-001 vm.max_map_count 가 최소 요건 미달 / SYS-002 swap 이 있는데 vm.swappiness 가 높음 / SYS-003 Elasticsearch 프로세스 한도가 최소 요건 미달 / SYS-004 커널 OOM killer 기록 |
+| 근거 구분 | 공식 기준 / 사실 보고 |
+| 가능 심각도 | 치명, 주의, 참고, 정상 |
+| 필요 입력 | (syscalls/sysctl.txt 또는 syscalls/proc-limit.txt 또는 syscalls/dmesg.txt) |
+| 근거 파일 | syscalls/dmesg.txt / syscalls/proc-limit.txt / syscalls/sysctl.txt |
+
+**판정 로직**
+
+syscalls/sysctl.txt 의 vm.max_map_count 가 262144 미만 → 치명(SYS-001), 이상 → 정상. sysctl 의 vm.swappiness 가 1 초과이고 swap_total > 0 이며 mlockall 이 true 가 아님 → 참고(SYS-002). syscalls/proc-limit.txt 의 Max open files 가 65535 미만 또는 Max processes 가 4096 미만(soft 기준) → 치명(SYS-003), 충족 → 정상. syscalls/dmesg.txt 에 OOM killer 기록이 있고 대상 프로세스가 java/elasticsearch → 치명, 그 외 프로세스 → 주의(SYS-004), 기록 없음 → 정상.
 
 ## 변화 추세 (--baseline 비교 모드)
 

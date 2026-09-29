@@ -6,9 +6,9 @@ REQUIRES: '설정이 없다' 또는 '대상이 없다' 를 판정하는 룰은 �
 각 항목은 any-of 목록이며, 하나라도 있으면 실행한다.
 """
 
-from . import cluster, deep, guidance, hotspot, nodes, ops, runtime, settings, sharding, shards
+from . import cluster, deep, guidance, hotspot, nodes, ops, runtime, settings, sharding, shards, syscalls
 
-MODULES = [cluster, settings, nodes, shards, sharding, guidance, hotspot, ops, deep, runtime]
+MODULES = [cluster, settings, nodes, shards, sharding, guidance, hotspot, ops, deep, runtime, syscalls]
 
 _NODES = ["nodes.json"]
 _STATS = ["nodes_stats.json"]
@@ -68,6 +68,8 @@ REQUIRES = {
     "r_geoip": [["geoip_stats.json"]], "r_ccr": [["ccr_stats.json"]],
     # runtime
     "r_hot_threads": [["nodes_hot_threads.txt"]],
+    # syscalls (local/remote 모드)
+    "r_os_config": [["syscalls/sysctl.txt", "syscalls/proc-limit.txt", "syscalls/dmesg.txt"]],
     # settings
     "r_cluster_setting_changes": [_CS], "r_yml_shadowed": [_CS, _NODES],
     "r_node_setting_changes": [_NODES], "r_node_setting_consistency": [_NODES],
