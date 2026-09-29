@@ -12,6 +12,7 @@
 
 ### 검증
 
+- 검증 범위 확대: api 모드에 더해 local 모드(self-managed 8.19.21 단일 노드) 실번들 검증. remote·다중 노드 local 은 미검증
 - `tests/test_local_mode.py` 추가: 외부 번들 없이 합성 데이터로 local 모드 분기 13개 단정 (LOG-001 오탐이 되살아나면 실패하는 것 확인)
 
 ### 수정

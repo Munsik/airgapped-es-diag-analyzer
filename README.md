@@ -7,7 +7,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 보안 등급 때문에 진단 파일을 외부로 반출할 수 없는 환경을 위해 만들었습니다.
 네트워크 호출이 없고, Python 표준 라이브러리만 사용합니다.
 
-> **검증 범위: 이 도구는 api 모드 진단 번들로 검증되었습니다. local / remote 모드(서버 로그·OS 명령 결과 포함) 번들은 파일 구성이 달라 확인이 필요할 수 있습니다.**
+> **검증 범위: api 모드(ECH 9.4.4·9.5.3)와 local 모드(self-managed 8.19.21 단일 노드, 서버 로그·`syscalls/` 포함) 실번들로 검증되었습니다. remote 모드와 다중 노드 local 모드 번들은 아직 실번들로 검증하지 않았습니다.**
 >
 > **이 도구는 Elastic 공식 지원 도구가 아니며, Elastic Support 의 분석을 대체하지 않습니다.** 판정은 번들에 기록된 사실과 공개된 공식 문서 기준에 근거합니다. 모든 판정에 그 근거가 공식 기준인지, ES 가 보고한 사실인지, 도구가 정한 임계값인지 표기합니다.
 
@@ -152,7 +152,7 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 
 로그가 있어야 "언제" 발생했는지 확인할 수 있으므로 가능하면 `local` 또는 `remote` 로 수집하십시오.
 
-> **참고:** api 모드 번들과 ES 8.19.21 단일 노드 local 모드 번들(서버 로그·`syscalls/` 포함)로 검증되었습니다. local 모드의 `syscalls/` 는 진단을 실행한 호스트 한 대의 값만 담습니다.
+> **참고:** local 모드의 `syscalls/` 는 진단을 실행한 호스트 한 대의 값만 담습니다.
 > local / remote 모드 번들을 분석할 때는 리포트 하단의 "입력 미수집" · "도구 오류" 항목을 함께 확인하십시오.
 > 수집 방법은 [공식 문서](https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnostic)를 참고하십시오.
 
@@ -167,7 +167,7 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 | 판정 기준 Elasticsearch 버전 | **9.4** |
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4(ECH, 3노드 단일 tier) · 9.5.3(ECH, 14노드 hot/warm/cold/frozen) — api 모드 |
-| 검증된 수집 모드 | **api 모드만 검증.** local / remote 모드는 확인이 필요할 수 있음 |
+| 검증된 수집 모드 | **api**(위 두 번들) · **local**(diagnostics 9.4.1 로 수집한 self-managed ES 8.19.21 단일 노드, Rocky Linux 9). **remote 와 다중 노드 local 은 미검증** |
 | 대형 번들 검증 | 9.5.3 번들(인덱스 2,494개, cluster\_state 190MB, mapping 178MB): 분석 7초, 최대 메모리 약 0.9GB |
 | 지원 최소 버전 | 8.0(미만은 해당 버전에 있는 API 범위에서만 동작) |
 
@@ -394,7 +394,7 @@ bash tests/run_all.sh diagnostic.zip
 
 ## 한계
 
-- **api 모드에서만 검증되었습니다.** local / remote 모드 번들은 확인이 필요할 수 있습니다.
+- **remote 모드와 다중 노드 local 모드는 실번들로 검증하지 않았습니다.** local 모드는 단일 노드 테스트 환경 1건으로 확인했으며, 운영 규모 번들에서는 파일 구성(예: 노드별 로그 파일명)이 다를 수 있습니다.
 
 아래는 도구가 아니라 진단 번들 수집 범위에서 오는 한계입니다.
 
