@@ -2,6 +2,7 @@
 """콘솔 / 마크다운 출력."""
 
 from ..model import Severity
+from ..util import truncate
 
 MARK = {
     Severity.CRITICAL: "[치명]",
@@ -20,7 +21,7 @@ def console(result, show_ok=True, width=100):
     lines.append(bar)
     lines.append("클러스터      : %s (%s)" % (f["cluster_name"], f["version"]))
     lines.append("수집 시각     : %s  /  수집 모드: %s  /  서버 로그 포함: %s"
-                 % (f["collected_at"], f["diag_type"], "예" if f["has_logs"] else "아니오"))
+                 % (f.get("collected_display") or f["collected_at"], f["diag_type"], "예" if f["has_logs"] else "아니오"))
     lines.append("구성          : 노드 %s대 (데이터 %s / 마스터후보 %s), 인덱스 %s, 샤드 %s, 저장 %s"
                  % (f["nodes_total"], f["data_nodes"], f["master_nodes"],
                     f["indices"], f["shards"], f["store"]))
@@ -47,11 +48,13 @@ def console(result, show_ok=True, width=100):
             {"columns": ds["columns"], "rows": ds["rows"]}, max_rows=20))
         lines.append("")
 
-    act = result.actionable()
+    act = result.priority()
     if act:
         lines.append("■ 조치 우선순위")
-        for i, fd in enumerate(act, 1):
-            lines.append("  %2d. %s %s — %s" % (i, MARK[fd.severity], fd.title, fd.observed))
+        for i, (fd, rel) in enumerate(act, 1):
+            lines.append("  %2d. %s %s — %s" % (i, MARK[fd.severity], fd.title, truncate(fd.observed, 160)))
+            if rel:
+                lines.append("      관련 판정: %s" % ", ".join("%s(%s)" % (r.title, r.id) for r in rel))
         lines.append("")
 
     cur = None
@@ -112,7 +115,7 @@ def markdown(result, show_ok=True):
     md.append("| --- | --- |")
     md.append("| 클러스터 | %s |" % f["cluster_name"])
     md.append("| 버전 | %s |" % f["version"])
-    md.append("| 수집 시각 | %s |" % f["collected_at"])
+    md.append("| 수집 시각 | %s |" % (f.get("collected_display") or f["collected_at"]))
     md.append("| 수집 모드 | %s (서버 로그 %s) |" % (f["diag_type"],
                                               "포함" if f["has_logs"] else "미포함"))
     md.append("| 구성 | 노드 %s대 (데이터 %s / 마스터후보 %s) |"
@@ -142,15 +145,16 @@ def markdown(result, show_ok=True):
         for r in ds["rows"]:
             md.append("| " + " | ".join(str(x) for x in r) + " |")
         md.append("")
-    act = result.actionable()
+    act = result.priority()
     if act:
         md.append("## 조치 우선순위")
         md.append("")
-        md.append("| # | 심각도 | 항목 | 관측 |")
-        md.append("| --- | --- | --- | --- |")
-        for i, fd in enumerate(act, 1):
-            md.append("| %d | %s | %s | %s |" % (i, Severity.LABEL_KO[fd.severity],
-                                                 fd.title, fd.observed.replace("|", "/")))
+        md.append("| # | 심각도 | 항목 | 관측 | 관련 판정 |")
+        md.append("| --- | --- | --- | --- | --- |")
+        for i, (fd, rel) in enumerate(act, 1):
+            md.append("| %d | %s | %s | %s | %s |" % (i, Severity.LABEL_KO[fd.severity], fd.title,
+                                                      truncate(fd.observed, 200).replace("|", "/"),
+                                                      ", ".join(r.id for r in rel) or "-"))
         md.append("")
     cur = None
     for fd in result.by_severity():

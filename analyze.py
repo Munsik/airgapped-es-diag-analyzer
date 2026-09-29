@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from esdiag import __version__
 from esdiag.engine import analyze
+from esdiag.rules import MODULES
 from esdiag.model import Severity
 from esdiag.report import html as html_report
 from esdiag.report import text as text_report
@@ -55,8 +56,9 @@ def main(argv=None):
     p.add_argument("--thresholds", metavar="FILE", help="임계값 재정의 JSON 파일")
     p.add_argument("--print-thresholds", action="store_true",
                    help="기본 임계값을 JSON 으로 출력하고 종료")
-    p.add_argument("--only", metavar="MOD", action="append",
-                   help="특정 룰 모듈만 실행 (cluster|nodes|shards|guidance|hotspot|ops|runtime), 반복 지정 가능")
+    mods = [m.__name__.split(".")[-1] for m in MODULES]
+    p.add_argument("--only", metavar="MOD", action="append", choices=mods,
+                   help="특정 룰 모듈만 실행 (%s), 반복 지정 가능" % "|".join(mods))
     p.add_argument("--fail-on", choices=["critical", "warning", "never"], default="never",
                    help="해당 심각도 발견 시 종료코드 1 반환 (CI/배치 연계용)")
     p.add_argument("--debug", action="store_true", help="룰 실행 오류 상세 출력")

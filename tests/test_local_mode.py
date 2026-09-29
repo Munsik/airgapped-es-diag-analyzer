@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""local/remote 모드 전용 파일(logs/, syscalls/, diagnostics.log) 처리 검증. 외부 번들 불필요(합성 데이터).
+"""local/remote 모드 전용 파일(logs/, syscalls/, diagnostics.log) 처리와 리포트 집계(우선순위 묶음, --no-ok 건수) 검증. 외부 번들 불필요(합성 데이터).
 
     python3 tests/test_local_mode.py
 """
@@ -68,7 +68,7 @@ def main():
     try:
         # 1) 정상 값 → SYS 전부 정상, 기동 옵션 줄은 OOM 으로 잡히지 않음
         r1 = os.path.join(tmp, "ok")
-        build(r1, sysctl="vm.max_map_count = 262144\nvm.swappiness = 1\n", limits=LIM_OK,
+        build(r1, sysctl="vm.max_map_count = 1048576\nvm.swappiness = 1\n", limits=LIM_OK,
               dmesg="[ 0.0] Booting Linux\n", logs={"logs/c.log": JVM_LINE, "logs/c_server.json": JVM_LINE})
         s = ids(analyze(r1))
         check("정상: SYS-001 OK", s.get("SYS-001") == "OK", s.get("SYS-001"))
@@ -76,6 +76,16 @@ def main():
         check("정상: SYS-004 OK", s.get("SYS-004") == "OK", s.get("SYS-004"))
         check("정상: swappiness 1 은 SYS-002 없음", "SYS-002" not in s)
         check("JVM 옵션 줄은 OOM 오탐이 아님", s.get("LOG-001") == "OK", s.get("LOG-001"))
+
+        # 1b) bootstrap 최소값(262144)은 넘지만 공식 권고값(1048576) 미만 → 참고
+        r1b = os.path.join(tmp, "mid")
+        build(r1b, sysctl="vm.max_map_count = 262144\n")
+        check("262144: SYS-001 INFO", ids(analyze(r1b)).get("SYS-001") == "INFO")
+
+        # 1c) --no-ok 여도 판정 건수에는 정상이 포함된다
+        full, hid = analyze(r1), analyze(r1, skip_ok=True)
+        check("--no-ok: 표시에서 정상 제외", all(f.severity != "OK" for f in hid.findings))
+        check("--no-ok: 건수는 동일", full.counts == hid.counts, (full.counts, hid.counts))
 
         # 2) 미달 값 → 치명
         r2 = os.path.join(tmp, "bad")
@@ -103,6 +113,16 @@ def main():
         r4 = os.path.join(tmp, "nomatch")
         build(r4, dlog="ERROR Could not find the target node\nINFO Bypassing system calls\n")
         check("매칭 실패 안내 LOG-000", "LOG-000" in ids(analyze(r4)))
+
+        # 4b) 조치 우선순위: 같은 원인(샤드 미할당) 판정은 1개 항목으로 묶임
+        from esdiag.engine import Result
+        from esdiag.model import Finding
+        fs = [Finding("CLU-001", "클러스터", "WARNING", "yellow"), Finding("CLU-002", "클러스터", "WARNING", "미할당"),
+              Finding("IDX-002", "샤드·인덱스", "WARNING", "replica 초과"), Finding("SEC-002", "보안·인증", "CRITICAL", "보안")]
+        pr = Result(analyze(r4).ctx, fs, []).priority()
+        check("우선순위 묶음: 4건 → 2항목", len(pr) == 2, [(f.id, [r.id for r in rel]) for f, rel in pr])
+        check("우선순위 묶음: 치명이 먼저, 대표는 CLU-001", pr[0][0].id == "SEC-002" and pr[1][0].id == "CLU-001"
+              and [r.id for r in pr[1][1]] == ["CLU-002", "IDX-002"])
 
         # 5) 깨진 입력에도 룰 오류 없음
         r5 = os.path.join(tmp, "junk")

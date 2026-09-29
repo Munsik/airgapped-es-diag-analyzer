@@ -1,6 +1,6 @@
 # esdiag — Elasticsearch 진단 번들 오프라인 분석기
 
-**버전 0.9.2** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.9.3** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -37,6 +37,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 - **폐쇄망 전제** — 외부 통신·CDN·폰트·패키지 설치 없음. 저장소를 그대로 반입해 실행
 - **의존성 없음** — Python 3.8 이상 표준 라이브러리만 사용
 - **116개 판정 룰** — 단일 번들 107개 + 두 번들 비교 9개
+- **원인 단위 조치 우선순위** — 같은 원인에서 나온 판정(예: yellow·미할당 샤드·allocation explain·replica 초과)은 대표 1건으로 묶고 나머지는 관련 판정으로 표시
 - **판정 근거 구분** — 모든 판정에 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산 표기
 - **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 94종 지식 베이스)
 - **과다 샤딩 분석** — 인덱스별로 줄일 수 있는 샤드 수, 데이터 스트림 롤오버 과다, 샤드 크기 분포
@@ -457,7 +458,7 @@ python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <검증용 번들.zip>
 # 3) (선택) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
-git tag v0.9.2
+git tag v0.9.3
 ```
 
 검증용 진단 번들과 그 분석 리포트에는 고객 환경 정보(클러스터 이름, 인덱스 이름, 호스트)가 들어 있으므로 저장소에 올리지 않습니다.

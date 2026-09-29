@@ -7,7 +7,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdiag 0.9.2 |
+| 도구 버전 | esdiag 0.9.3 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -1843,20 +1843,21 @@ logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는�
 
 ## OS 설정 (local/remote 모드 syscalls/)
 
-### SYS-001, SYS-002, SYS-003, SYS-004 — vm.max_map_count 가 최소 요건 미달
+### SYS-001, SYS-002, SYS-003, SYS-004 — vm.max_map_count 가 bootstrap check 최소값 미달
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `syscalls.r_os_config` |
-| 판정 항목 | SYS-001 vm.max_map_count 가 최소 요건 미달 / SYS-002 swap 이 있는데 vm.swappiness 가 높음 / SYS-003 Elasticsearch 프로세스 한도가 최소 요건 미달 / SYS-004 커널 OOM killer 기록 |
+| 판정 항목 | SYS-001 vm.max_map_count 가 bootstrap check 최소값 미달 / SYS-002 swap 이 있는데 vm.swappiness 가 높음 / SYS-003 Elasticsearch 프로세스 한도가 최소 요건 미달 / SYS-004 커널 OOM killer 기록 |
 | 근거 구분 | 공식 기준 / 사실 보고 |
 | 가능 심각도 | 치명, 주의, 참고, 정상 |
 | 필요 입력 | (syscalls/sysctl.txt 또는 syscalls/proc-limit.txt 또는 syscalls/dmesg.txt) |
 | 근거 파일 | syscalls/dmesg.txt / syscalls/proc-limit.txt / syscalls/sysctl.txt |
+| 참고 문서 | [vm.max_map_count 설정](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/vm-max-map-count)<br>[Bootstrap checks](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/bootstrap-checks)<br>[Swap 비활성화](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/setup-configuration-memory)<br>[File descriptors 설정](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/file-descriptors)<br>[스레드 수 한도 설정](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/max-number-of-threads) |
 
 **판정 로직**
 
-syscalls/sysctl.txt 의 vm.max_map_count 가 262144 미만 → 치명(SYS-001), 이상 → 정상. sysctl 의 vm.swappiness 가 1 초과이고 swap_total > 0 이며 mlockall 이 true 가 아님 → 참고(SYS-002). syscalls/proc-limit.txt 의 Max open files 가 65535 미만 또는 Max processes 가 4096 미만(soft 기준) → 치명(SYS-003), 충족 → 정상. syscalls/dmesg.txt 에 OOM killer 기록이 있고 대상 프로세스가 java/elasticsearch → 치명, 그 외 프로세스 → 주의(SYS-004), 기록 없음 → 정상.
+syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) 미만 → 치명, 1048576(공식 권고값) 미만 → 참고, 이상 → 정상(SYS-001). sysctl 의 vm.swappiness 가 1 초과이고 swap_total > 0 이며 mlockall 이 true 가 아님 → 참고(SYS-002). syscalls/proc-limit.txt 의 Max open files 가 65535 미만 또는 Max processes 가 4096 미만(soft 기준) → 치명(SYS-003), 충족 → 정상. syscalls/dmesg.txt 에 OOM killer 기록이 있고 대상 프로세스가 java/elasticsearch → 치명, 그 외 프로세스 → 주의(SYS-004), 기록 없음 → 정상.
 
 ## 변화 추세 (--baseline 비교 모드)
 

@@ -7,6 +7,7 @@
 import html as _h
 
 from ..model import Severity
+from ..util import truncate
 
 CSS = """
 :root{
@@ -47,6 +48,7 @@ h2{scroll-margin-top:64px;font-size:16px;margin:36px 0 12px;padding-bottom:6px;b
 h2 small{font-weight:400;color:var(--muted);font-size:13px;margin-left:8px}
 ol.prio{margin:0;padding-left:22px}
 ol.prio li{margin-bottom:6px}
+ol.prio .rel{font-size:12.5px;color:var(--muted);margin:3px 0 0}
 ol.prio a{color:inherit;text-decoration:none;border-bottom:1px solid var(--line)}
 ol.prio a:hover{border-bottom-color:var(--ink)}
 .tag{font-size:12px;font-weight:700;padding:1px 6px;border-radius:2px;margin-right:6px}
@@ -176,7 +178,7 @@ def render(result):
     o.append("<h1>Elasticsearch 진단 번들 분석 결과</h1>")
     o.append("<p class='cluster'>%s</p>" % e(f["cluster_name"]))
     o.append("<p class='sub'>버전 %s · 배포 형태 %s · 수집 %s · 수집 모드 %s · 서버 로그 %s</p>"
-             % (e(f["version"]), e(f.get("deployment")), e(f["collected_at"]),
+             % (e(f["version"]), e(f.get("deployment")), e(f.get("collected_display") or f["collected_at"]),
                 e(f["diag_type"]), "포함" if f["has_logs"] else "미포함"))
     o.append("<p class='sub'>분석 도구 esdiag v%s · 판정 기준 %s</p>"
              % (e(f.get("tool_version")), e(f.get("baseline"))))
@@ -206,13 +208,20 @@ def render(result):
     o.append("</div></header>")
 
     # ---------- 조치 우선순위 ----------
-    act = result.actionable()
+    act = result.priority()
     if act:
-        o.append("<h2>조치 우선순위<small>치명·주의 %d건</small></h2><ol class='prio'>" % len(act))
-        for fd in act:
-            o.append("<li><span class='tag %s'>%s</span><a href='#%s' data-jump='%s'>%s</a> — %s</li>"
+        n_all = len(result.actionable())
+        sub = ("치명·주의 %d건" % n_all) if n_all == len(act) else \
+              ("치명·주의 %d건, 같은 원인을 묶어 %d개 항목" % (n_all, len(act)))
+        o.append("<h2>조치 우선순위<small>%s</small></h2><ol class='prio'>" % sub)
+        for fd, rel in act:
+            relh = ""
+            if rel:
+                relh = "<div class='rel'>관련 판정: %s</div>" % " · ".join(
+                    "<a href='#%s' data-jump='%s'>%s</a>" % (e(r.id), e(r.id), e(r.title)) for r in rel)
+            o.append("<li><span class='tag %s'>%s</span><a href='#%s' data-jump='%s'>%s</a> — %s%s</li>"
                      % (_CLS[fd.severity], Severity.LABEL_KO[fd.severity], e(fd.id), e(fd.id),
-                        e(fd.title), e(fd.observed)))
+                        e(fd.title), e(truncate(fd.observed, 220)), relh))
         o.append("</ol>")
 
     # ---------- 영역별 점검 결과 ----------

@@ -16,16 +16,18 @@ from .util import dig, fmt_bytes, num, items
 
 
 class Result(object):
-    def __init__(self, ctx, findings, errors, diff_summary=None):
+    def __init__(self, ctx, findings, errors, diff_summary=None, hidden_ok=None):
         self.ctx = ctx
         self.findings = findings
+        # --no-ok 로 숨긴 정상 판정. 표시만 하지 않고 건수·영역 요약에는 포함한다.
+        self.hidden_ok = hidden_ok or []
         self.errors = errors
         self.diff_summary = diff_summary
         for f in self.findings:
             f.basis = basis_of(f.id)
         self.counts = {s: 0 for s in (Severity.CRITICAL, Severity.WARNING,
                                       Severity.INFO, Severity.OK)}
-        for f in findings:
+        for f in list(findings) + self.hidden_ok:
             self.counts[f.severity] = self.counts.get(f.severity, 0) + 1
         self.grade = self._grade()
 
@@ -47,7 +49,7 @@ class Result(object):
         ("성능", ["성능 기준", "런타임"]),
         ("데이터 보호·운영", ["운영"]),
         ("보안", ["보안·인증"]),
-        ("구성", ["설정 기준", "설정 변경"]),
+        ("구성", ["설정 기준", "설정 변경", "OS 설정"]),
         ("변화 추세", ["변화 추세"]),
     ]
     CATEGORY_ORDER = [c for _a, cats in AREAS for c in cats]
@@ -66,7 +68,7 @@ class Result(object):
         """헬스 체크 영역별 판정 건수와 상태. 판정이 하나도 없는 영역은 '판정 없음' 으로 표시한다."""
         rows = []
         for area, cats in self.AREAS:
-            fs = [f for f in self.findings if f.category in cats]
+            fs = [f for f in list(self.findings) + self.hidden_ok if f.category in cats]
             if area == "변화 추세" and not fs:
                 continue
             c = collections.Counter(f.severity for f in fs)
@@ -86,10 +88,38 @@ class Result(object):
     def actionable_sorted(self):
         return sorted([f for f in self.findings
                        if f.severity in (Severity.CRITICAL, Severity.WARNING)],
-                      key=lambda f: (Severity.ORDER.get(f.severity, 9), f.category, f.id))
+                      key=lambda f: (Severity.ORDER.get(f.severity, 9), self._cat_rank(f.category), f.id))
+
+    def _cat_rank(self, cat):
+        try:
+            return self.CATEGORY_ORDER.index(cat)
+        except ValueError:
+            return len(self.CATEGORY_ORDER)
 
     def actionable(self):
         return self.actionable_sorted()
+
+    # 원인이 같은 판정 묶음. 목록의 첫 판정(존재하는 것 중)이 대표가 되고 나머지는 '관련 판정' 으로 붙는다.
+    # 본문 판정은 그대로 두고, 조치 우선순위 목록에서만 중복을 줄인다.
+    ROOT_GROUPS = [
+        ["CLU-001", "CLU-002", "CLU-003", "CLU-004.shards_availability", "IDX-002"],   # 샤드 미할당
+        ["DISK-001", "DISK-002", "DISK-003", "CLU-004.disk"],                          # 디스크 워터마크
+    ]
+
+    def priority(self):
+        """조치 우선순위. [(대표 판정, [관련 판정...]), ...] — 같은 원인 묶음은 1개 항목으로 합친다."""
+        act = self.actionable_sorted()
+        by_id = dict((f.id, f) for f in act)
+        absorbed, related = set(), {}
+        for grp in self.ROOT_GROUPS:
+            present = [i for i in grp if i in by_id]
+            if len(present) < 2:
+                continue
+            # 가장 심각한 판정이 대표. 같으면 묶음 정의 순서(증상 → 세부 원인)
+            lead = min(present, key=lambda i: (Severity.ORDER.get(by_id[i].severity, 9), grp.index(i)))
+            related[lead] = [by_id[i] for i in present if i != lead]
+            absorbed.update(i for i in present if i != lead)
+        return [(f, related.get(f.id, [])) for f in act if f.id not in absorbed]
 
     def facts(self):
         ctx = self.ctx
@@ -142,6 +172,7 @@ class Result(object):
             "cluster_uuid": ctx.version_doc.get("cluster_uuid"),
             "version": ctx.version,
             "collected_at": ctx.collection_time.isoformat() if ctx.collection_time else "-",
+            "collected_display": _fmt_collected(ctx.collection_time),
             "diag_type": ctx.diag_type,
             "has_logs": ctx.has_logs,
             "status": ctx.health.get("status"),
@@ -166,11 +197,28 @@ class Result(object):
             },
             "facts": self.facts(),
             "areas": self.area_summary(),
+            "priority": [{"id": f.id, "severity": f.severity, "title": f.title,
+                          "related": [r.id for r in rel]} for f, rel in self.priority()],
             "diff": self.diff_summary,
             "findings": [f.to_dict() for f in self.by_severity()],
             "rule_errors": self.errors,
             "skipped_rules": getattr(self.ctx, "skipped_rules", []),
         }
+
+
+def _fmt_collected(t):
+    """리포트 표시용 수집 시각: UTC 와 한국 시간(UTC+9, 서머타임 없음)을 함께 표기."""
+    if not t:
+        return "-"
+    try:
+        import datetime as _dt
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=_dt.timezone.utc)
+        u = t.astimezone(_dt.timezone.utc)
+        k = u + _dt.timedelta(hours=9)
+        return "%s UTC (한국 시간 %s)" % (u.strftime("%Y-%m-%d %H:%M:%S"), k.strftime("%Y-%m-%d %H:%M"))
+    except Exception:
+        return str(t)
 
 
 CORE_FILES = ("cluster_health.json", "nodes_stats.json", "nodes.json")
@@ -235,7 +283,7 @@ def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None):
         raise ValueError("support-diagnostics 번들로 인식할 수 없습니다. 핵심 파일(%s)이 없습니다: %s"
                          % (", ".join(CORE_FILES), path))
     ctx = Context(bundle, t)
-    findings, errors = _run_rules(ctx, only, skip_ok)
+    findings, errors = _run_rules(ctx, only, False)
 
     diff_summary = None
     if baseline:
@@ -251,8 +299,9 @@ def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None):
             errors.append({"rule": "diff.compare",
                            "error": traceback.format_exc(limit=3)})
             diff_findings = []
-        for f in diff_findings:
-            if skip_ok and f.severity == Severity.OK:
-                continue
-            findings.append(f)
-    return Result(ctx, findings, errors, diff_summary)
+        findings.extend(diff_findings)
+    hidden = []
+    if skip_ok:
+        hidden = [f for f in findings if f.severity == Severity.OK]
+        findings = [f for f in findings if f.severity != Severity.OK]
+    return Result(ctx, findings, errors, diff_summary, hidden_ok=hidden)

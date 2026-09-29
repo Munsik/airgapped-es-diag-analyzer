@@ -379,8 +379,8 @@ def r_cluster_state_publication(ctx):
         "CLU-024", CLU, Severity.WARNING if fails else Severity.INFO,
         "클러스터 상태 발행 실패" if fails else "클러스터 상태 발행 현황",
         observed=("클러스터 상태 변경 실패 누적 %s건." % fmt_num(fails)) if fails else
-                 "평균 commit %s, 전체 상태 크기 %s." % (("%.1fms" % avg_commit) if avg_commit is not None else "-",
-                                                  fmt_bytes(size) if size else "-"),
+                 ", ".join(x for x in (("평균 commit %.1fms" % avg_commit) if avg_commit is not None else "",
+                                       ("전체 상태 크기 %s" % fmt_bytes(size)) if size else "") if x) + ".",
         impact="상태 변경 실패는 매핑 갱신·인덱스 생성·샤드 할당이 반영되지 않았다는 뜻입니다. 상태가 크고 commit 이 느리면 "
                "모든 메타데이터 변경이 느려집니다.",
         recommend="실패가 있으면 마스터 로그와 pending task(CLU-005)를 확인합니다. 상태가 크면 인덱스·필드 수를 줄입니다.",

@@ -4,7 +4,7 @@
 import collections
 
 from ..model import Finding, Severity, table
-from ..util import dig, fmt_ms, fmt_num, dicts, num, items
+from ..util import dig, fmt_ms, fmt_num, dicts, num, items, truncate
 
 CAT = "클러스터"
 DOC_ALLOC = ("샤드 할당 문제 해결",
@@ -86,11 +86,15 @@ def r_unassigned_reason(ctx):
         for na in dicts(ctx.allocation_explain.get("node_allocation_decisions")):
             for d in dicts(na.get("deciders")):
                 deciders.append([na.get("node_name"), d.get("decider"),
-                                 d.get("decision"), (d.get("explanation") or "")[:160]])
+                                 d.get("decision"), truncate(d.get("explanation") or "", 240)])
+        target = "%s[%s] %s" % (ctx.allocation_explain.get("index"), ctx.allocation_explain.get("shard"),
+                                "primary" if ctx.allocation_explain.get("primary") else "replica")
+        no_dec = sorted(set(r[1] for r in deciders if str(r[2]).upper() == "NO" and r[1]))
         out.append(Finding(
             "CLU-003", CAT, Severity.WARNING if can_alloc != "yes" else Severity.INFO,
             "allocation explain 결과",
-            observed="can_allocate=%s / %s" % (can_alloc, expl[:200]),
+            observed=("%s: can_allocate=%s. 거부한 decider: %s" % (target, can_alloc, ", ".join(no_dec)))
+                     if no_dec else ("%s: can_allocate=%s. %s" % (target, can_alloc, truncate(expl, 200))),
             impact="decider 가 no 를 반환한 사유가 미할당의 직접 원인입니다.",
             recommend="아래 decider 메시지를 그대로 근거로 사용해 조치합니다.",
             evidence=table(["node", "decider", "decision", "explanation"],
