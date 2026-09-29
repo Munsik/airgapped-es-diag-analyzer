@@ -475,7 +475,7 @@ def r_disk_io_utilization(ctx):
     """데이터 노드의 평균 디스크 사용률 = fs.io_stats.total.io_time_in_millis / JVM uptime (Linux 에서만 수집).
 
     io_time 은 ES 기동 이후 장치가 I/O 를 처리한 누적 시간이다. >= disk_io_busy_pct_warn → 주의(DISK-008), 그 외 참고.
-    여러 장치를 쓰면 합계라 100%% 를 넘을 수 있어 장치 수로 나눈 값을 쓴다. 누적 평균이므로 순간 포화는 가려질 수 있다.
+    여러 장치를 쓰면 합계라 100% 를 넘을 수 있어 장치 수로 나눈 값을 쓴다. 누적 평균이므로 순간 포화는 가려질 수 있다.
     """
     rows, busy = [], []
     for n in ctx.data_nodes:

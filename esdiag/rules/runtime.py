@@ -184,9 +184,22 @@ _LOG_PATTERNS = [
 
 
 def r_logs(ctx):
-    """logs/ 디렉터리가 없으면 참고(LOG-000). 있으면 파일당 마지막 log_scan_bytes 만 최대 40개 파일 스캔해 고정 패턴(OOM, 긴 old GC, 마스터 미탐색, CircuitBreaking, rejected execution, 워터마크 초과, 노드 연결 끊김, 매핑 파싱 오류 등) 검출. 검출 패턴 중 가장 높은 심각도로 판정(LOG-001), 없으면 정상."""
+    """logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는데 로그가 없으면 diagnostics.log 의 대상 노드 매칭 실패 기록을 근거로 수집 실패 원인을 알린다. 있으면 파일당 마지막 log_scan_bytes 만 최대 40개 파일 스캔해 고정 패턴(OOM, 긴 old GC, 마스터 미탐색, CircuitBreaking, rejected execution, 워터마크 초과, 노드 연결 끊김, 매핑 파싱 오류 등) 검출. 검출 패턴 중 가장 높은 심각도로 판정(LOG-001), 없으면 정상."""
     files = ctx.b.log_files()
     if not files:
+        dlog = ctx.b.text("diagnostics.log") or ""
+        failed = ("Could not find the target node" in dlog or "Bypassing system calls" in dlog
+                  or "Could not match node publish address" in dlog)
+        if failed and (ctx.diag_type or "") in ("local", "remote"):
+            return [Finding(
+                "LOG-000", CAT, Severity.INFO, "%s 모드 수집이 대상 노드를 찾지 못해 로그·OS 정보가 빠짐" % ctx.diag_type,
+                observed="diagnostics.log 에 'Could not find the target node' 가 기록되어, REST 결과만 수집되었습니다"
+                         "(syscalls/ 와 logs/ 없음).",
+                impact="장애 시점의 예외·GC 정지 시간·노드 이탈 기록과 OS 설정(sysctl, limits)을 확인할 수 없습니다.",
+                recommend="local 모드는 --host 로 지정한 주소가 노드의 bound address 와 일치해야 합니다. "
+                          "loopback(localhost/127.0.0.1)로만 바인딩된 노드는 매칭되지 않으므로, "
+                          "노드의 실제 IP 를 --host 로 지정해 다시 수집하거나 sudo 권한과 서버 호스트에서의 실행 여부를 확인합니다.",
+                source="diagnostics.log")]
         return [Finding(
             "LOG-000", CAT, Severity.INFO, "서버 로그 미포함 진단 번들",
             observed="diagType=%s 로 수집되어 elasticsearch.log / gc.log 가 포함되지 않았습니다."

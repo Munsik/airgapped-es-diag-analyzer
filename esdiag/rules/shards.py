@@ -205,10 +205,10 @@ def r_replica_unassignable(ctx):
     if not rows:
         return []
     return [Finding(
-        "IDX-002", CAT, Severity.CRITICAL, "replica 수가 데이터 노드 수를 초과",
+        "IDX-002", CAT, Severity.WARNING, "replica 수가 데이터 노드 수를 초과",
         observed="데이터 노드 %d대인데 replica 가 더 큰 인덱스 %d개." % (data_nodes, len(rows)),
         impact="같은 샤드의 복제본은 같은 노드에 둘 수 없으므로, 초과분은 영구 미할당으로 남아 "
-               "클러스터가 계속 yellow 입니다.",
+               "클러스터가 계속 yellow 입니다. primary 는 정상이라 데이터는 서비스되지만 복제본이 없는 상태입니다.",
         recommend="replica 를 (데이터 노드 수 - 1) 이하로 조정하거나 노드를 증설합니다.",
         evidence=table(["index", "replicas", "데이터 노드"], rows[: ctx.t["top_n"]]),
         source="settings.json")]
@@ -284,8 +284,9 @@ def r_merge_throttle(ctx):
         observed="merge 시간 대비 throttle 비중이 큰 인덱스 %d개." % len(rows),
         impact="색인 속도가 merge(디스크 I/O)를 앞질러 ES 가 색인을 억제하고 있다는 뜻입니다. "
                "스토리지 대역폭이 병목일 가능성이 큽니다.",
-        recommend="디스크를 SSD/NVMe 로 교체하거나, indices.store.throttle 관련 기본값을 유지한 채 "
-                  "색인 속도·샤드 분산을 조정합니다. 회전 디스크라면 노드당 샤드 수도 줄입니다.",
+        recommend="디스크 I/O 여유를 확인합니다(SSD/NVMe 전환, DISK-008 함께 확인). "
+                  "색인 속도·샤드 분산을 조정하고, 회전 디스크라면 노드당 샤드 수도 줄입니다. "
+                  "merge 스케줄러의 자동 throttle 은 I/O 를 따라가지 못할 때 색인을 억제하는 정상 동작입니다.",
         evidence=table(["index", "merge 시간", "throttle 시간", "비중"], rows[: ctx.t["top_n"]]),
         source="indices_stats.json")]
 

@@ -155,6 +155,7 @@ def r_os(ctx):
     """load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주의(OS-001, 두 구간의 노드를 모두 표시). swap_total > 0 이고 mlockall 이 true 가 아님 → 주의(OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → 치명, >= warn → 주의(OS-003). open_fd / max_fd >= fd_used_pct_warn → 주의(OS-004). mlockall=false 이고 swap 없음 → 참고(OS-005). uptime < uptime_short_hours → 주의(OS-006)."""
     out = []
     rows, load_warn, load_crit, swap_on, throttle = [], [], [], [], []
+    swap_used = []
     for n in ctx.nodes:
         cpus = n.processors or 0
         l1, l5, l15 = n.load1, n.load5, n.load15
@@ -171,6 +172,9 @@ def r_os(ctx):
         # memory_lock 이 적용되어 있으면 heap 은 swap 대상이 아니므로 경고하지 않는다.
         if n.swap_total and n.mlockall is not True:
             swap_on.append(n.name)
+            su = num(n.stats, "os", "swap", "used_in_bytes")
+            if su:
+                swap_used.append("%s(사용 %s / %s)" % (n.name, fmt_bytes(su), fmt_bytes(n.swap_total)))
         elapsed = dig(n.stats, "os", "cgroup", "cpu", "stat", "number_of_elapsed_periods")
         thr = dig(n.stats, "os", "cgroup", "cpu", "stat", "number_of_times_throttled")
         if elapsed and thr:
@@ -196,10 +200,11 @@ def r_os(ctx):
     if swap_on:
         out.append(Finding(
             "OS-002", CAT, Severity.WARNING, "Swap 활성화",
-            observed="swap 이 설정된 노드: %s" % ", ".join(swap_on),
+            observed="swap 이 설정된 노드: %s" % ", ".join(swap_on)
+                     + (" / swap 사용 중: %s" % ", ".join(swap_used) if swap_used else ""),
             impact="JVM heap 일부가 디스크로 내려가면 GC 시간이 수십 배로 늘어 노드가 사실상 멈춥니다.",
             recommend="swap 비활성화, vm.swappiness=1, bootstrap.memory_lock=true 중 하나를 적용합니다. "
-                      "(vm.swappiness 값은 api 모드 번들에 수집되지 않으므로 서버에서 확인이 필요합니다.)",
+                      "(vm.swappiness 값은 local/remote 모드의 syscalls/sysctl 에 있으나 이 도구는 아직 읽지 않습니다. 서버에서 확인합니다.)",
             evidence=ev, affected=swap_on, source="nodes_stats.json"))
     if throttle:
         out.append(Finding(
@@ -350,14 +355,17 @@ IMPORTANT_POOLS = ("write", "search", "search_worker", "get", "bulk", "index",
 
 
 def r_thread_pools(ctx):
-    """모든 스레드풀의 누적 rejected. 합계 > 0 → 주의, 합계 >= rejected_crit → 치명, 0 → 정상(TP-001). 주요 풀(write/search/get 등)의 queue > 0 → 참고(TP-002)."""
+    """모든 스레드풀의 누적 rejected. 합계 > 0 → 주의, 합계 >= rejected_crit 이고 수집 시점에 rejection 이 난 풀의 queue > 0 → 치명(누적값만으로는 치명으로 올리지 않는다), 0 → 정상(TP-001). 주요 풀(write/search/get 등)의 queue > 0 → 참고(TP-002)."""
     rejected_rows, queue_rows = [], []
     total_rej = 0
+    live_queue = False
     for n in ctx.nodes:
         for pool, st in items(dig(n.stats, "thread_pool")):
             rej = num(st, "rejected")
             if rej > 0:
                 total_rej += rej
+                if num(st, "queue") > 0:
+                    live_queue = True
                 rejected_rows.append([n.name, pool, fmt_num(rej), fmt_num(st.get("completed")),
                                       st.get("active"), st.get("queue"), st.get("largest")])
             q, threads = num(st, "queue"), num(st, "threads")
@@ -366,7 +374,8 @@ def r_thread_pools(ctx):
     out = []
     if rejected_rows:
         rejected_rows.sort(key=lambda r: -int(str(r[2]).replace(",", "")))
-        sev = Severity.CRITICAL if total_rej >= ctx.t["rejected_crit"] else Severity.WARNING
+        sev = (Severity.CRITICAL if (total_rej >= ctx.t["rejected_crit"] and live_queue)
+               else Severity.WARNING)
         pools = sorted(set(r[1] for r in rejected_rows))
         out.append(Finding(
             "TP-001", CAT, sev, "스레드풀 rejection 발생",
@@ -396,8 +405,9 @@ def r_thread_pools(ctx):
 
 
 def r_breakers(ctx):
-    """breaker.tripped >= breaker_tripped_warn → 치명(BRK-001). 발동 이력은 없고 estimated / limit >= 70% → 주의(BRK-002)."""
+    """breaker.tripped >= breaker_tripped_warn → 주의, 수집 시점 사용률도 70% 이상이면 치명(BRK-001, 누적 발동 이력만으로는 치명으로 올리지 않는다). 발동 이력은 없고 estimated / limit >= 70% → 주의(BRK-002)."""
     rows, tripped = [], []
+    tripped_live = False
     for n in ctx.nodes:
         for name, br in items(dig(n.stats, "breakers")):
             t = num(br, "tripped")
@@ -405,6 +415,8 @@ def r_breakers(ctx):
             lim = num(br, "limit_size_in_bytes")
             use = pct(est, lim)
             if t >= ctx.t["breaker_tripped_warn"]:
+                if use and use >= 70:
+                    tripped_live = True
                 tripped.append([n.name, name, fmt_num(t), fmt_bytes(est), fmt_bytes(lim),
                                 "%.1f%%" % use if use else "-"])
             elif use and use >= 70:
@@ -412,7 +424,8 @@ def r_breakers(ctx):
     out = []
     if tripped:
         out.append(Finding(
-            "BRK-001", CAT, Severity.CRITICAL, "Circuit breaker 발동 이력",
+            "BRK-001", CAT, Severity.CRITICAL if tripped_live else Severity.WARNING,
+            "Circuit breaker 발동 이력",
             observed="발동 이력이 있는 브레이커 %d건." % len(tripped),
             impact="요청이 거부되며(429/CircuitBreakingException) 해당 쿼리·bulk 는 실패합니다. "
                    "parent 브레이커가 발동했다면 heap 압박이 실재한다는 강한 신호입니다.",

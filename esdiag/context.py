@@ -314,11 +314,9 @@ class Context(object):
             attrs = n.attrs or {}
             if attrs.get("instance_configuration") or attrs.get("logical_availability_zone"):
                 return "ECH/ECE"
-            if attrs.get("k8s_node_name") or n.setting("node.store.allow_mmap") is not None:
+            # node.store.allow_mmap 같은 일반 설정은 self-managed 에서도 쓰므로 판별에 쓰지 않는다
+            if attrs.get("k8s_node_name"):
                 return "ECK"
-        for n in self.nodes:
-            if n.setting("cloud.node.name") or n.setting("xpack.ml.enabled") == "false":
-                pass
         return "self-managed"
 
     @property

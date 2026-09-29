@@ -60,6 +60,14 @@ def _const_str(node):
     return None
 
 
+def _first_str(node):
+    """제목이 조건식·포맷 등 상수가 아니면 그 안의 첫 문자열 상수를 쓴다."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value.strip():
+            return sub.value.strip().rstrip("*")
+    return None
+
+
 def _analyze_function(fn, module_obj):
     info = {"name": fn.name, "doc": ast.get_docstring(fn) or "", "ids": [], "titles": {},
             "sev": set(), "th": set(), "src": set(), "refs": []}
@@ -70,7 +78,7 @@ def _analyze_function(fn, module_obj):
                 if fid not in info["ids"]:
                     info["ids"].append(fid)
                 if len(n.args) >= 4:
-                    t = _const_str(n.args[3])
+                    t = _const_str(n.args[3]) or _first_str(n.args[3])
                     if t:
                         info["titles"].setdefault(fid, t.rstrip("*"))
             for kw in n.keywords:
@@ -203,7 +211,7 @@ def render(data, unused):
         for it in items:
             ids = it["ids"] or ["-"]
             head = ", ".join(i.rstrip("*") + ("(하위 항목)" if i.endswith("*") else "") for i in ids)
-            first_title = it["titles"].get(ids[0], "")
+            first_title = it["titles"].get(ids[0], "") or (it["doc"].split(".")[0].strip()[:40] if it["doc"] else "")
             w("### %s — %s" % (head, first_title))
             w("")
             w("| 항목 | 내용 |")

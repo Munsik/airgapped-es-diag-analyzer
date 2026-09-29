@@ -67,7 +67,7 @@ def main():
     check("README 기준 버전", "| 판정 기준 Elasticsearch 버전 | **%d.%d** |" % esdiag.ES_BASELINE in readme)
     check("README 문서 대조 시점", "| 공식 문서 대조 시점 | %s |" % esdiag.DOCS_CHECKED in readme)
     for ver, target, _desc in esdiag.VERSION_GATES:
-        check("README 버전 분기 %d.%d %s" % (ver + (target,)), "| %d.%d | %s |" % (ver + (target,)) in readme)
+        check("README 버전 분기 %d.%d %s" % (ver + (target,)), "| %d.%d | %s |" % (ver + (target,)) in readme.replace("\\*", "*"))
 
     # 모듈·옵션 목록
     mods = [m.__name__.split(".")[-1] for m in MODULES]

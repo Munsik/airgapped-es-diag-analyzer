@@ -1,6 +1,6 @@
 # esdiag — Elasticsearch 진단 번들 오프라인 분석기
 
-**버전 0.9.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.9.1** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -400,7 +400,7 @@ bash tests/run_all.sh diagnostic.zip
 - **쿼리 본문이 없습니다.** 쿼리 유형별 누적 사용 횟수(`cluster_stats.indices.search`)로 비용이 큰 패턴의 비중은 판정하지만(PERF-011), 어떤 인덱스의 어떤 쿼리인지는 slowlog 나 Search Profiler 로 확인해야 합니다.
 - **보안 구성(사용자·역할·권한)은 판정하지 않습니다.** 보안 감사 영역이고 민감 정보라, 보안 기능 활성화와 인증서 만료만 봅니다.
 - **인덱스 설정의 기본값은 번들에 없습니다.** 인덱스 설정 지식 베이스(30종)는 공식 문서 기준이며 번들로 교차 검증되지 않습니다.
-- **OS 커널 설정**(readahead, vm.swappiness, vm.max_map_count 원본값)은 판정하지 않습니다.
+- **OS 커널 설정**(readahead, vm.swappiness, vm.max_map_count 원본값)은 api 모드 번들에 없어 판정하지 않습니다. local / remote 모드는 `syscalls/` 에 수집하지만 이 도구는 아직 읽지 않습니다.
 - **hot threads 는 수집 순간 500ms 스냅샷**입니다. 부하가 없을 때 수집하면 신호가 나오지 않습니다.
 - 디스크 포화 예상(DIF-008)은 두 시점 사이의 선형 외삽입니다.
 
@@ -456,7 +456,7 @@ python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <검증용 번들.zip>
 # 3) (선택) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
-git tag v0.9.0
+git tag v0.9.1
 ```
 
 검증용 진단 번들과 그 분석 리포트에는 고객 환경 정보(클러스터 이름, 인덱스 이름, 호스트)가 들어 있으므로 저장소에 올리지 않습니다.

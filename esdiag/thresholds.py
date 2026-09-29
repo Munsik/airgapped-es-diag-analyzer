@@ -122,9 +122,9 @@ DEFAULTS = {
 
     # --- 매핑·ILM 정책 ---
     "mapping_fields_near_limit_pct": 90,            # [도구] total_fields.limit 대비 필드 수
-    "ilm_rollover_max_shard_gb": 50,
-    "disk_io_busy_pct_warn": 60,
-    "search_expensive_share_warn": 10,              # [도구] 비용이 큰 쿼리 유형의 검색 대비 비중(%)                    # [도구] 기동 이후 평균 디스크 사용률                # [공식] 롤오버 샤드 크기 권장 상한
+    "ilm_rollover_max_shard_gb": 50,                # [공식] 롤오버 샤드 크기 권장 상한
+    "disk_io_busy_pct_warn": 60,                    # [도구] 기동 이후 평균 디스크 사용률
+    "search_expensive_share_warn": 10,              # [도구] 비용이 큰 쿼리 유형의 검색 대비 비중(%)
 
     # --- 번들 비교(diff) ---
     "diff_min_hours_for_projection": 1.0,            # [도구] 이보다 짧은 간격은 외삽 안 함

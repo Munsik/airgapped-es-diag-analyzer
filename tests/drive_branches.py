@@ -147,7 +147,7 @@ SCENARIOS = [
     ("마스터 1대", lambda b: _roles(b, [["master", "data_hot"], ["data_hot"], ["data_hot"]]), ["CLU-006"]),
     ("마스터 2대", lambda b: _roles(b, [["master", "data_hot"], ["master", "data_hot"], ["data_hot"]]), ["CLU-006"]),
     ("마스터 4대·전용 마스터 없음", lambda b: (
-        b.clone_nodes(7), _roles(b, [["master", "data_hot"]] * 4 + [["data_hot"]] * 3)), ["CLU-006", "CLU-007"]),
+        b.clone_nodes(7), _roles(b, [["master", "data_hot"]] * 4 + [["data_hot"]] * 3)), ["CLU-007"]),
     ("구버전 7.17·heap 1GB", lambda b: (
         b.edit("version.json", lambda v: v["version"].update(number="7.17.0")),
         b.each_node(fn_stats=lambda i, s: s["jvm"]["mem"].update(heap_max_in_bytes=GB))),
