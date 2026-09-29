@@ -171,7 +171,7 @@ _LOG_PATTERNS = [
     (r"\[gc\]\[.*\]\[old\]|\[o\.e\.m\.j\.JvmGcMonitorService\].*\[old\]",
      Severity.WARNING, "Old GC 경고 로그",
      "JvmGcMonitorService 가 긴 GC 를 기록했습니다."),
-    (r"failed to flush|translog", Severity.INFO, "translog/flush 관련 메시지", ""),
+    (r"failed to flush", Severity.INFO, "flush 실패 메시지", ""),
     (r"disk watermark \[.*\] exceeded|flood stage disk watermark",
      Severity.CRITICAL, "디스크 워터마크 초과 로그",
      "디스크 부족으로 샤드 이동 또는 쓰기 차단이 발생했습니다."),
@@ -183,10 +183,44 @@ _LOG_PATTERNS = [
 ]
 
 
+# 기동 시 JVM 옵션 줄(-XX:+ExitOnOutOfMemoryError, HeapDumpOnOutOfMemoryError 등)은 오류가 아니다
+_STARTUP_NOISE = re.compile(r"JVM arguments|-XX:[+-]\w*OutOfMemoryError|JVM home|JVM version")
+
+
+def _es_log_files(files):
+    """ES 서버 로그만 남긴다. gc.log* 는 JVM 통합 로그라 ES 패턴 대상이 아니고,
+    <cluster>_server.json 은 <cluster>.log 와 같은 내용의 JSON 판이라 이중 집계를 막기 위해 제외한다."""
+    names = set(files)
+    out = []
+    for f in files:
+        base = f.rsplit("/", 1)[-1].lower()
+        if base.startswith("gc.log"):
+            continue
+        if base.endswith("_server.json"):
+            twin = f[: -len("_server.json")] + ".log"
+            if twin in names:
+                continue
+        out.append(f)
+    return out
+
+
 def r_logs(ctx):
-    """logs/ 디렉터리가 없으면 참고(LOG-000). 있으면 파일당 마지막 log_scan_bytes 만 최대 40개 파일 스캔해 고정 패턴(OOM, 긴 old GC, 마스터 미탐색, CircuitBreaking, rejected execution, 워터마크 초과, 노드 연결 끊김, 매핑 파싱 오류 등) 검출. 검출 패턴 중 가장 높은 심각도로 판정(LOG-001), 없으면 정상."""
+    """logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는데 로그가 없으면 diagnostics.log 의 대상 노드 매칭 실패 기록을 근거로 수집 실패 원인을 알린다. 있으면 파일당 마지막 log_scan_bytes 만 최대 40개 파일 스캔해 고정 패턴(OOM, 긴 old GC, 마스터 미탐색, CircuitBreaking, rejected execution, 워터마크 초과, 노드 연결 끊김, 매핑 파싱 오류 등) 검출. 검출 패턴 중 가장 높은 심각도로 판정(LOG-001), 없으면 정상."""
     files = ctx.b.log_files()
     if not files:
+        dlog = ctx.b.text("diagnostics.log") or ""
+        failed = ("Could not find the target node" in dlog or "Bypassing system calls" in dlog
+                  or "Could not match node publish address" in dlog)
+        if failed and (ctx.diag_type or "") in ("local", "remote"):
+            return [Finding(
+                "LOG-000", CAT, Severity.INFO, "%s 모드 수집이 대상 노드를 찾지 못해 로그·OS 정보가 빠짐" % ctx.diag_type,
+                observed="diagnostics.log 에 'Could not find the target node' 가 기록되어, REST 결과만 수집되었습니다"
+                         "(syscalls/ 와 logs/ 없음).",
+                impact="장애 시점의 예외·GC 정지 시간·노드 이탈 기록과 OS 설정(sysctl, limits)을 확인할 수 없습니다.",
+                recommend="local 모드는 --host 로 지정한 주소가 노드의 bound address 와 일치해야 합니다. "
+                          "loopback(localhost/127.0.0.1)로만 바인딩된 노드는 매칭되지 않으므로, "
+                          "노드의 실제 IP 를 --host 로 지정해 다시 수집하거나 sudo 권한과 서버 호스트에서의 실행 여부를 확인합니다.",
+                source="diagnostics.log")]
         return [Finding(
             "LOG-000", CAT, Severity.INFO, "서버 로그 미포함 진단 번들",
             observed="diagType=%s 로 수집되어 elasticsearch.log / gc.log 가 포함되지 않았습니다."
@@ -199,6 +233,7 @@ def r_logs(ctx):
     counts = collections.Counter()
     samples = {}
     scanned = 0
+    files = _es_log_files(files)
     for rel in files[:40]:
         text = ctx.b.read_log(rel, ctx.t["log_scan_bytes"])
         if not text:
@@ -208,6 +243,8 @@ def r_logs(ctx):
             rx = re.compile(pat, re.IGNORECASE)
             n = 0
             for ln in text.splitlines():
+                if _STARTUP_NOISE.search(ln):
+                    continue
                 if rx.search(ln):
                     n += 1
                     if label not in samples:

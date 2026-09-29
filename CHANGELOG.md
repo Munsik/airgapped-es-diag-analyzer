@@ -3,6 +3,39 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.9.2] - 2026-09-29
+
+### 추가
+
+- 단일 번들 판정 룰 107개, 두 번들 비교 룰 9개(판정 ID 164개 + 비교 DIF-001~012)
+- `syscalls/` 분석(local/remote 모드): SYS-001 vm.max_map_count(최소 262144), SYS-002 swap 이 있을 때 vm.swappiness, SYS-003 ES 프로세스 nofile 65535 / nproc 4096, SYS-004 dmesg 의 커널 OOM killer 기록
+
+### 검증
+
+- `tests/test_local_mode.py` 추가: 외부 번들 없이 합성 데이터로 local 모드 분기 13개 단정 (LOG-001 오탐이 되살아나면 실패하는 것 확인)
+
+### 수정
+
+- LOG-001: 기동 로그의 JVM 옵션 줄(`-XX:+ExitOnOutOfMemoryError` 등)을 OutOfMemoryError 로 잡아 치명으로 판정하던 것 → 기동 옵션 줄 제외 (실번들에서 확인된 오탐)
+- 로그 스캔: `.log.gz` 를 압축 해제 없이 읽던 것 → 해제 후 스캔, `gc.log*`(JVM 로그)와 `*_server.json`(같은 내용의 JSON 판)은 스캔 대상에서 제외, `translog` 단어 매칭 → `failed to flush` 로 축소
+
+## [0.9.1] - 2026-09-29
+
+### 변경
+
+- 배포 형태 감지: `node.store.allow_mmap` 설정만 있으면 ECK 로 판정하던 것 → 제외 (self-managed 에서도 흔한 설정이라 CFG-*·SET-004 가 참고로 잘못 내려감)
+- CLU-006: 마스터 후보 4대 이상 짝수를 주의로 보던 것 → 판정 안 함 (공식: 짝수면 ES 가 투표 구성에서 1대를 제외하며 내결함성은 줄지 않음). 2대는 치명 → 주의
+- TP-001: 누적 rejection 1,000건 이상이면 치명 → 수집 시점에 해당 풀 queue 가 남아 있을 때만 치명, 그 외 주의
+- BRK-001: 발동 이력만으로 치명 → 수집 시점 사용률 70% 이상일 때만 치명, 그 외 주의
+- SNP-002: 실패/부분 스냅샷이 있으면 치명 → 그 뒤에 성공 스냅샷이 있으면 주의
+- IDX-002: 치명 → 주의 (primary 는 정상이고 복제본만 미할당)
+- SEC-002: 모든 노드가 loopback 에만 바인딩되어 있으면 주의로 하향
+- IDX-005: 존재하지 않는 `indices.store.throttle` 설정을 안내하던 권고 문구 수정
+- OS-002: swap 사용량을 함께 보고
+- LOG-000: local / remote 로 수집했으나 대상 노드 매칭 실패로 syscalls·logs 가 빠진 경우 `diagnostics.log` 를 근거로 원인과 재수집 방법 안내
+- RULES.md 생성기: 제목이 조건식인 룰의 빈 제목, DISK-008 의 `%%` 표기, 임계값 주석 혼입 수정
+- `tests/check_docs.py`: README 표의 markdown escape(`SET-\*`) 때문에 실패하던 검사 수정
+
 ## [0.9.0] - 2026-09-22
 
 첫 공개 버전(0.9.0)입니다. 1.0 전까지는 판정 기준·출력 형식이 바뀔 수 있습니다. **이 도구는 api 모드 진단 번들로 검증되었습니다. local / remote 모드(서버 로그·OS 명령 결과 포함) 번들은 파일 구성이 달라 확인이 필요할 수 있습니다.** 판정 기준은 Elasticsearch 9.4 공식 문서(2026-09 대조)입니다.

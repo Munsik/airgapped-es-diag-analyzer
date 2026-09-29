@@ -64,7 +64,7 @@ def r_license(ctx):
 
 
 def r_snapshots(ctx):
-    """저장소도 스냅샷도 없음 → 치명(SNP-001). FAILED/PARTIAL 스냅샷 존재 → 치명(SNP-002). 마지막 '성공(SUCCESS)' 스냅샷 경과(snapshot.json 에 시각이 없으면 SLM 정책의 last_success 시각) >= snapshot_age_hours_crit → 치명, >= warn → 주의, 그 외 정상(SNP-003, 진행 중·실패·부분 스냅샷은 RPO 산정에서 제외). 시각 정보가 있는데 성공 스냅샷이 없으면 치명. IN_PROGRESS 존재 → 참고(SNP-004). SLM 누적 실패 >= snapshot_failed_warn → 주의(SNP-005). SLM operation_mode != RUNNING → 주의(SNP-006). SLM 정책의 마지막 실패가 마지막 성공보다 최근이면 치명(SNP-007)."""
+    """저장소도 스냅샷도 없음 → 치명(SNP-001). FAILED/PARTIAL 스냅샷 존재 → 주의, 그보다 늦은 성공 스냅샷이 없으면 치명(SNP-002). 마지막 '성공(SUCCESS)' 스냅샷 경과(snapshot.json 에 시각이 없으면 SLM 정책의 last_success 시각) >= snapshot_age_hours_crit → 치명, >= warn → 주의, 그 외 정상(SNP-003, 진행 중·실패·부분 스냅샷은 RPO 산정에서 제외). 시각 정보가 있는데 성공 스냅샷이 없으면 치명. IN_PROGRESS 존재 → 참고(SNP-004). SLM 누적 실패 >= snapshot_failed_warn → 주의(SNP-005). SLM operation_mode != RUNNING → 주의(SNP-006). SLM 정책의 마지막 실패가 마지막 성공보다 최근이면 치명(SNP-007)."""
     out = []
     snaps = (ctx.snapshots or {}).get("snapshots") or []
     repos = ctx.repositories or []
@@ -96,8 +96,10 @@ def r_snapshots(ctx):
                 latest = (t, {"snapshot": "%s (SLM %s)" % (ls.get("snapshot_name"), pname)})
                 rpo_source = "slm_policies.json"
     if failed:
+        f_last = max([num(s, "end_time_in_millis") or num(s, "start_time_in_millis") for s in failed] or [0])
+        recovered = bool(latest and f_last and latest[0] > f_last)
         out.append(Finding(
-            "SNP-002", CAT, Severity.CRITICAL, "실패/부분 스냅샷 존재",
+            "SNP-002", CAT, Severity.WARNING if recovered else Severity.CRITICAL, "실패/부분 스냅샷 존재",
             observed="FAILED 또는 PARTIAL 상태 스냅샷 %d건." % len(failed),
             impact="해당 시점의 백업은 복구에 사용할 수 없습니다.",
             recommend="failures 필드의 샤드 오류 원인(디스크, 저장소 접근, 샤드 미할당)을 확인합니다.",
@@ -327,8 +329,12 @@ def r_security_enabled(ctx):
     if not sec:
         return []
     if sec.get("enabled") is False:
-        return [Finding("SEC-002", SEC, Severity.CRITICAL, "보안 기능 비활성화",
-                        observed="xpack.security.enabled = false",
+        hosts = [str(n.setting("network.host") or n.setting("http.host") or "") for n in ctx.nodes]
+        loopback = bool(hosts) and all(h in ("127.0.0.1", "localhost", "::1", "_local_") for h in hosts)
+        return [Finding("SEC-002", SEC, Severity.WARNING if loopback else Severity.CRITICAL,
+                        "보안 기능 비활성화" + (" (loopback 바인딩)" if loopback else ""),
+                        observed="xpack.security.enabled = false"
+                                 + (" / 모든 노드가 loopback(%s)에만 바인딩되어 외부 접근은 불가" % hosts[0] if loopback else ""),
                         impact="인증·권한·전송 암호화가 없는 상태로, 네트워크에 접근 가능한 누구나 "
                                "데이터를 읽고 삭제할 수 있습니다.",
                         recommend="보안 기능을 활성화하고 TLS 와 역할 기반 접근제어를 구성합니다.",

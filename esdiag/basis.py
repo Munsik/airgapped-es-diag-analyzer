@@ -50,6 +50,7 @@ _MAP = {
     "OPS-002": FACT,
     # 런타임
     "RT-001": TOOL, "LOG-000": FACT, "LOG-001": FACT,
+    "SYS-001": OFFICIAL, "SYS-002": OFFICIAL, "SYS-003": OFFICIAL, "SYS-004": FACT,
     # 설정 변경(기본값·영향은 공식 문서 기준, 값은 번들 사실)
     "SET-001": OFFICIAL, "SET-002": OFFICIAL, "SET-003": OFFICIAL, "SET-004": OFFICIAL,
     "SET-005": OFFICIAL, "SET-006": OFFICIAL,

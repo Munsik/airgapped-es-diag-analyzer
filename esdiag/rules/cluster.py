@@ -163,7 +163,7 @@ def r_pending_tasks(ctx):
 
 
 def r_master_quorum(ctx):
-    """마스터 후보(roles 에 master 포함, voting_only 포함) 수. 0대 → 치명, 다중 노드인데 1대 → 치명, 2대 → 치명(1대 이탈 시 정족수 상실), 4대 이상 짝수 → 주의(CLU-006). 전용 마스터가 없고 데이터 노드 >= 6대 → 주의(CLU-007)."""
+    """마스터 후보(roles 에 master 포함, voting_only 포함) 수. 0대 → 치명, 다중 노드인데 1대 → 치명, 2대 → 주의(1대 이탈 시 정족수 상실. 공식: 마스터 후보 2대 이하는 모두 살아 있어야 함). 짝수(4대 이상)는 ES 가 투표 구성에서 1대를 자동 제외하므로 판정하지 않는다(CLU-006). 전용 마스터가 없고 데이터 노드 >= 6대 → 주의(CLU-007)."""
     [n for n in ctx.master_nodes if not n.is_voting_only]
     total = len(ctx.master_nodes)
     out = []
@@ -180,17 +180,11 @@ def r_master_quorum(ctx):
                            recommend="마스터 후보를 3대로 구성합니다.",
                            affected=names, source="nodes.json"))
     elif total == 2:
-        out.append(Finding("CLU-006", CAT, Severity.CRITICAL, "마스터 후보 2대 구성",
+        out.append(Finding("CLU-006", CAT, Severity.WARNING, "마스터 후보 2대 구성",
                            observed="마스터 후보가 2대입니다(%s)." % ", ".join(names),
-                           impact="정족수가 2이므로 1대만 이탈해도 마스터 선출이 불가능합니다. "
-                                  "가용성 측면에서 1대 구성보다 나을 게 없습니다.",
+                           impact="공식 문서: 마스터 후보가 2대 이하면 모두 살아 있어야 합니다. "
+                                  "한 대만 이탈해도 상태 변경이 불가능해질 수 있습니다.",
                            recommend="마스터 후보를 3대(홀수)로 맞춥니다.",
-                           affected=names, source="nodes.json"))
-    elif total >= 4 and total % 2 == 0:
-        out.append(Finding("CLU-006", CAT, Severity.WARNING, "마스터 후보 짝수 대 구성",
-                           observed="마스터 후보 %d대(짝수)." % total,
-                           impact="짝수 구성은 추가 내결함성 없이 정족수만 올라갑니다.",
-                           recommend="홀수(3 또는 5)로 조정합니다.",
                            affected=names, source="nodes.json"))
     # 전용 마스터 권고
     dedicated = [n for n in ctx.master_nodes if n.is_dedicated_master]

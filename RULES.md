@@ -7,7 +7,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdiag 0.9.0 |
+| 도구 버전 | esdiag 0.9.2 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -53,6 +53,7 @@
 - [운영 · 보안](#운영-보안) — 9개 룰
 - [매핑 · ILM 정책 · 클러스터 조정 · 세부 통계](#매핑-ilm-정책-클러스터-조정-세부-통계) — 16개 룰
 - [런타임 (hot threads · 로그)](#런타임-hot-threads-로그) — 2개 룰
+- [OS 설정 (local/remote 모드 syscalls/)](#os-설정-localremote-모드-syscalls) — 1개 룰
 - [변화 추세 (--baseline 비교 모드)](#변화-추세---baseline-비교-모드) — 9개 룰
 - [설정 지식 베이스](#설정-지식-베이스)
 - [임계값 전체 목록](#임계값-전체-목록)
@@ -96,7 +97,7 @@ cluster_health.status 를 그대로 판정. red → 치명, yellow → 주의, g
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `cluster.r_internal_health` |
-| 판정 항목 | CLU-004 Health API 지표 전체 green / CLU-004.  |
+| 판정 항목 | CLU-004 Health API 지표 전체 green / CLU-004. Health API 지표 이상: %s (%s) |
 | 근거 구분 | 사실 보고 |
 | 가능 심각도 | 치명, 주의, 정상 |
 | 필요 입력 | (internal_health.json) |
@@ -134,7 +135,7 @@ Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명,
 
 **판정 로직**
 
-마스터 후보(roles 에 master 포함, voting_only 포함) 수. 0대 → 치명, 다중 노드인데 1대 → 치명, 2대 → 치명(1대 이탈 시 정족수 상실), 4대 이상 짝수 → 주의(CLU-006). 전용 마스터가 없고 데이터 노드 >= 6대 → 주의(CLU-007).
+마스터 후보(roles 에 master 포함, voting_only 포함) 수. 0대 → 치명, 다중 노드인데 1대 → 치명, 2대 → 주의(1대 이탈 시 정족수 상실. 공식: 마스터 후보 2대 이하는 모두 살아 있어야 함). 짝수(4대 이상)는 ES 가 투표 구성에서 1대를 자동 제외하므로 판정하지 않는다(CLU-006). 전용 마스터가 없고 데이터 노드 >= 6대 → 주의(CLU-007).
 
 ### CLU-008, CLU-009, CLU-010 — 노드 버전 불일치
 
@@ -157,7 +158,7 @@ Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명,
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `cluster.r_risky_settings` |
-| 판정 항목 | CLU-013 transient 클러스터 설정 사용 중 / CLU-014 Adaptive Replica Selection 비활성화 / CLU-011.  / CLU-012 노드 제외(exclude) 설정 잔존 |
+| 판정 항목 | CLU-013 transient 클러스터 설정 사용 중 / CLU-014 Adaptive Replica Selection 비활성화 / CLU-011. 위험한 클러스터 설정: %s / CLU-012 노드 제외(exclude) 설정 잔존 |
 | 근거 구분 | 공식 기준 / 사실 보고 |
 | 가능 심각도 | 주의, 참고 |
 | 필요 입력 | (cluster_settings.json) |
@@ -436,7 +437,7 @@ load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주�
 
 **판정 로직**
 
-모든 스레드풀의 누적 rejected. 합계 > 0 → 주의, 합계 >= rejected_crit → 치명, 0 → 정상(TP-001). 주요 풀(write/search/get 등)의 queue > 0 → 참고(TP-002).
+모든 스레드풀의 누적 rejected. 합계 > 0 → 주의, 합계 >= rejected_crit 이고 수집 시점에 rejection 이 난 풀의 queue > 0 → 치명(누적값만으로는 치명으로 올리지 않는다), 0 → 정상(TP-001). 주요 풀(write/search/get 등)의 queue > 0 → 참고(TP-002).
 
 ### BRK-001, BRK-002 — Circuit breaker 발동 이력
 
@@ -452,7 +453,7 @@ load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주�
 
 **판정 로직**
 
-breaker.tripped >= breaker_tripped_warn → 치명(BRK-001). 발동 이력은 없고 estimated / limit >= 70% → 주의(BRK-002).
+breaker.tripped >= breaker_tripped_warn → 주의, 수집 시점 사용률도 70% 이상이면 치명(BRK-001, 누적 발동 이력만으로는 치명으로 올리지 않는다). 발동 이력은 없고 estimated / limit >= 70% → 주의(BRK-002).
 
 ### IP-001 — Indexing pressure rejection
 
@@ -638,7 +639,7 @@ store < small_shard_mb 인 primary 중 사용자 인덱스 샤드 수 >= small_s
 | --- | --- |
 | 함수 | `shards.r_replica_unassignable` |
 | 근거 구분 | 사실 보고 |
-| 가능 심각도 | 치명 |
+| 가능 심각도 | 주의 |
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (settings.json) 그리고 (nodes.json) |
 | 근거 파일 | settings.json |
@@ -1268,7 +1269,7 @@ index.mapping.source.mode=disabled → 주의. 그 외 모드(synthetic 등) 지
 
 ## 핫스팟 · 밸런싱
 
-### HOT-005.(하위 항목) — 
+### HOT-005.(하위 항목) — %s tier 전체 CPU 포화
 
 | 항목 | 내용 |
 | --- | --- |
@@ -1306,7 +1307,7 @@ tier 단위 CPU 포화. 한 tier 의 모든 노드가 load15/CPU >= load_per_cpu
 tier 가 다르면 역할과 부하가 달라 비교하지 않는다. frozen tier 디스크는 shared cache 선점유라 제외.
 지표별로 tier 내 최대−최소 >= gap 이고 최대값 >= floor 일 때 주의. 수집 순간값이다.
 
-### HOT-002.(하위 항목) — 
+### HOT-002.(하위 항목) — 같은 tier 안에서 %s 작업량 편중
 
 | 항목 | 내용 |
 | --- | --- |
@@ -1444,7 +1445,7 @@ license.status != active → 치명. 만료까지 <= license_expiry_days_crit �
 
 **판정 로직**
 
-저장소도 스냅샷도 없음 → 치명(SNP-001). FAILED/PARTIAL 스냅샷 존재 → 치명(SNP-002). 마지막 '성공(SUCCESS)' 스냅샷 경과(snapshot.json 에 시각이 없으면 SLM 정책의 last_success 시각) >= snapshot_age_hours_crit → 치명, >= warn → 주의, 그 외 정상(SNP-003, 진행 중·실패·부분 스냅샷은 RPO 산정에서 제외). 시각 정보가 있는데 성공 스냅샷이 없으면 치명. IN_PROGRESS 존재 → 참고(SNP-004). SLM 누적 실패 >= snapshot_failed_warn → 주의(SNP-005). SLM operation_mode != RUNNING → 주의(SNP-006). SLM 정책의 마지막 실패가 마지막 성공보다 최근이면 치명(SNP-007).
+저장소도 스냅샷도 없음 → 치명(SNP-001). FAILED/PARTIAL 스냅샷 존재 → 주의, 그보다 늦은 성공 스냅샷이 없으면 치명(SNP-002). 마지막 '성공(SUCCESS)' 스냅샷 경과(snapshot.json 에 시각이 없으면 SLM 정책의 last_success 시각) >= snapshot_age_hours_crit → 치명, >= warn → 주의, 그 외 정상(SNP-003, 진행 중·실패·부분 스냅샷은 RPO 산정에서 제외). 시각 정보가 있는데 성공 스냅샷이 없으면 치명. IN_PROGRESS 존재 → 참고(SNP-004). SLM 누적 실패 >= snapshot_failed_warn → 주의(SNP-005). SLM operation_mode != RUNNING → 주의(SNP-006). SLM 정책의 마지막 실패가 마지막 성공보다 최근이면 치명(SNP-007).
 
 ### ILM-001, ILM-002, ILM-003 — ILM 중지 상태
 
@@ -1499,7 +1500,7 @@ ssl_certs.json 의 인증서 만료까지 <= cert_expiry_days_crit 일 → 치�
 | --- | --- |
 | 함수 | `ops.r_security_enabled` |
 | 근거 구분 | 사실 보고 |
-| 가능 심각도 | 치명, 정상 |
+| 가능 심각도 | 치명, 주의, 정상 |
 | 필요 입력 | (xpack.json) |
 | 근거 파일 | commercial/xpack.json |
 
@@ -1537,14 +1538,14 @@ CCR follower 샤드에 read_exceptions 또는 failed_read/write_requests 가 있
 
 ## 매핑 · ILM 정책 · 클러스터 조정 · 세부 통계
 
-### PERF-011 — 
+### PERF-011 — 비용이 큰 검색 패턴 비중 높음
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `deep.r_search_usage` |
 | 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의, 참고 |
-| 임계값 | `search_expensive_share_warn` = 10 — [도구] 비용이 큰 쿼리 유형의 검색 대비 비중(%)                    # [도구] 기동 이후 평균 디스크 사용률                # [공식] 롤오버 샤드 크기 권장 상한 |
+| 임계값 | `search_expensive_share_warn` = 10 — [도구] 비용이 큰 쿼리 유형의 검색 대비 비중(%) |
 | 필요 입력 | (cluster_stats.json) |
 | 근거 파일 | cluster_stats.json (indices.search) |
 
@@ -1556,14 +1557,14 @@ cluster_stats.indices.search 의 쿼리 유형·검색 구성 요소별 사용 �
 runtime_mappings·script_fields)의 사용 비중이 search_expensive_share_warn(%) 이상이면 주의(PERF-011), 사용은 있으나
 비중이 낮으면 참고. 쿼리 본문이 아니라 유형별 횟수이므로 '어떤 인덱스의 어떤 쿼리' 인지는 알 수 없다.
 
-### DISK-008 — 
+### DISK-008 — 디스크 I/O 사용률 높음
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `deep.r_disk_io_utilization` |
 | 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의, 참고 |
-| 임계값 | `disk_io_busy_pct_warn` = 60 |
+| 임계값 | `disk_io_busy_pct_warn` = 60 — [도구] 기동 이후 평균 디스크 사용률 |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json (fs.io_stats) |
 
@@ -1572,7 +1573,7 @@ runtime_mappings·script_fields)의 사용 비중이 search_expensive_share_warn
 데이터 노드의 평균 디스크 사용률 = fs.io_stats.total.io_time_in_millis / JVM uptime (Linux 에서만 수집).
 
 io_time 은 ES 기동 이후 장치가 I/O 를 처리한 누적 시간이다. >= disk_io_busy_pct_warn → 주의(DISK-008), 그 외 참고.
-여러 장치를 쓰면 합계라 100%% 를 넘을 수 있어 장치 수로 나눈 값을 쓴다. 누적 평균이므로 순간 포화는 가려질 수 있다.
+여러 장치를 쓰면 합계라 100% 를 넘을 수 있어 장치 수로 나눈 값을 쓴다. 누적 평균이므로 순간 포화는 가려질 수 있다.
 
 ### MAP-004, MAP-005, MAP-006 — 필드 수가 매핑 한도에 근접한 인덱스
 
@@ -1620,7 +1621,7 @@ text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_f
 | 판정 항목 | ILM-004 크기 기준 없이 롤오버하는 ILM 정책 / ILM-005 롤오버 샤드 크기 기준이 권장 상한 초과 / ILM-006 삭제 단계가 없는 ILM 정책 |
 | 근거 구분 | 공식 기준 / 사실 보고 |
 | 가능 심각도 | 주의, 참고 |
-| 임계값 | `ilm_rollover_max_shard_gb` = 50<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 임계값 | `ilm_rollover_max_shard_gb` = 50 — [공식] 롤오버 샤드 크기 권장 상한<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (ilm_policies.json) |
 | 근거 파일 | ilm_policies.json |
 | 참고 문서 | [Rollover (ILM)](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
@@ -1696,7 +1697,7 @@ shard_stores 에 store_exception 이 있는 샤드 사본 → 치명(IDX-012, �
 
 remote_cluster_info 에서 connected=false 인 원격 클러스터 → 주의(OPS-003).
 
-### FRZ-001 — 
+### FRZ-001 — frozen shared cache 교체 과다
 
 | 항목 | 내용 |
 | --- | --- |
@@ -1743,7 +1744,7 @@ nodes_stats.script.compilation_limit_triggered > 0 인 노드 → 주의(PERF-01
 
 hot threads(RT-001)에서 ingest 가 CPU 를 쓰는 것으로 보일 때 어떤 파이프라인·processor 가 원인인지 확인하는 근거다.
 
-### CLU-024 — 
+### CLU-024 — 클러스터 상태 발행 실패
 
 | 항목 | 내용 |
 | --- | --- |
@@ -1834,15 +1835,32 @@ nodes_hot_threads.txt 를 파싱해 스레드별 실제 CPU%(cpu=, 없으면 전
 | 근거 구분 | 사실 보고 |
 | 가능 심각도 | 참고, 정상 |
 | 임계값 | `log_scan_bytes` = 8MiB — [도구] 로그 파일당 스캔 크기(끝부분)<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
-| 근거 파일 | logs/ / manifest.json |
+| 근거 파일 | diagnostics.log / logs/ / manifest.json |
 
 **판정 로직**
 
-logs/ 디렉터리가 없으면 참고(LOG-000). 있으면 파일당 마지막 log_scan_bytes 만 최대 40개 파일 스캔해 고정 패턴(OOM, 긴 old GC, 마스터 미탐색, CircuitBreaking, rejected execution, 워터마크 초과, 노드 연결 끊김, 매핑 파싱 오류 등) 검출. 검출 패턴 중 가장 높은 심각도로 판정(LOG-001), 없으면 정상.
+logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는데 로그가 없으면 diagnostics.log 의 대상 노드 매칭 실패 기록을 근거로 수집 실패 원인을 알린다. 있으면 파일당 마지막 log_scan_bytes 만 최대 40개 파일 스캔해 고정 패턴(OOM, 긴 old GC, 마스터 미탐색, CircuitBreaking, rejected execution, 워터마크 초과, 노드 연결 끊김, 매핑 파싱 오류 등) 검출. 검출 패턴 중 가장 높은 심각도로 판정(LOG-001), 없으면 정상.
+
+## OS 설정 (local/remote 모드 syscalls/)
+
+### SYS-001, SYS-002, SYS-003, SYS-004 — vm.max_map_count 가 최소 요건 미달
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `syscalls.r_os_config` |
+| 판정 항목 | SYS-001 vm.max_map_count 가 최소 요건 미달 / SYS-002 swap 이 있는데 vm.swappiness 가 높음 / SYS-003 Elasticsearch 프로세스 한도가 최소 요건 미달 / SYS-004 커널 OOM killer 기록 |
+| 근거 구분 | 공식 기준 / 사실 보고 |
+| 가능 심각도 | 치명, 주의, 참고, 정상 |
+| 필요 입력 | (syscalls/sysctl.txt 또는 syscalls/proc-limit.txt 또는 syscalls/dmesg.txt) |
+| 근거 파일 | syscalls/dmesg.txt / syscalls/proc-limit.txt / syscalls/sysctl.txt |
+
+**판정 로직**
+
+syscalls/sysctl.txt 의 vm.max_map_count 가 262144 미만 → 치명(SYS-001), 이상 → 정상. sysctl 의 vm.swappiness 가 1 초과이고 swap_total > 0 이며 mlockall 이 true 가 아님 → 참고(SYS-002). syscalls/proc-limit.txt 의 Max open files 가 65535 미만 또는 Max processes 가 4096 미만(soft 기준) → 치명(SYS-003), 충족 → 정상. syscalls/dmesg.txt 에 OOM killer 기록이 있고 대상 프로세스가 java/elasticsearch → 치명, 그 외 프로세스 → 주의(SYS-004), 기록 없음 → 정상.
 
 ## 변화 추세 (--baseline 비교 모드)
 
-### DIF-001 — 
+### DIF-001 — 클러스터 상태 %s
 
 | 항목 | 내용 |
 | --- | --- |
@@ -2171,9 +2189,9 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `ds_min_backing_indices` | 5 | [도구] 데이터 스트림 판정 최소 백킹 수 |
 | `ds_small_backing_shard_gb` | 1 | [도구] 백킹 샤드 중앙값 기준 |
 | `mapping_fields_near_limit_pct` | 90 | [도구] total_fields.limit 대비 필드 수 |
-| `ilm_rollover_max_shard_gb` | 50 |  |
-| `disk_io_busy_pct_warn` | 60 |  |
-| `search_expensive_share_warn` | 10 | [도구] 비용이 큰 쿼리 유형의 검색 대비 비중(%)                    # [도구] 기동 이후 평균 디스크 사용률                # [공식] 롤오버 샤드 크기 권장 상한 |
+| `ilm_rollover_max_shard_gb` | 50 | [공식] 롤오버 샤드 크기 권장 상한 |
+| `disk_io_busy_pct_warn` | 60 | [도구] 기동 이후 평균 디스크 사용률 |
+| `search_expensive_share_warn` | 10 | [도구] 비용이 큰 쿼리 유형의 검색 대비 비중(%) |
 | `diff_min_hours_for_projection` | 1.0 | [도구] 이보다 짧은 간격은 외삽 안 함 |
 | `disk_projection_days_warn` | 30 | [도구] |
 | `index_growth_min_bytes` | 1GiB | [도구] |
