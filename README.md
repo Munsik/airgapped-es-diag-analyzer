@@ -417,7 +417,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 818 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 819 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases | 55 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 51 scenarios and checks the severity too | 51 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |

@@ -72,12 +72,14 @@ ol.prio a:hover{border-bottom-color:var(--ink)}
 dl{margin:0;overflow:hidden}
 dt{color:var(--muted);font-size:13px;float:left;width:44px;clear:left;padding-top:1px}
 dd{margin:0 0 4px 58px}
+html[lang=en] dt{width:110px} html[lang=en] dd{margin-left:124px}
 details{margin-top:12px}
 summary{cursor:pointer;color:var(--muted);font-size:13px}
 table{border-collapse:collapse;width:100%;margin-top:10px;font-size:13px}
 th,td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:middle;
   word-break:break-word}
 th{background:#eef0f1;font-weight:600}
+html[lang=en] th,html[lang=en] td{word-break:normal;overflow-wrap:break-word}
 tbody tr:nth-child(even){background:#fafbfb}
 .scroll{overflow-x:auto}
 .matrix td.n{font-weight:600}
@@ -96,7 +98,7 @@ footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);
   details>summary{display:none} details{display:block}
   .wrap{max-width:none;padding:0}
 }
-@media (max-width:640px){dt{float:none;width:auto;font-weight:600} dd{margin-left:0}}
+@media (max-width:640px){dt,html[lang=en] dt{float:none;width:auto;font-weight:600} dd,html[lang=en] dd{margin-left:0}}
 """
 
 JS = """

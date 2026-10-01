@@ -57,7 +57,7 @@ def console(result, show_ok=True, width=100):
         for i, (fd, rel) in enumerate(act, 1):
             lines.append(T("report.text.console.prio") % (i, _mark(fd.severity), fd.title, truncate(fd.observed, 160)))
             if rel:
-                lines.append(T("report.text.console.17") % ", ".join("%s(%s)" % (r.title, r.id) for r in rel))
+                lines.append(T("report.text.console.17") % ", ".join(T("report.text.console.rel") % (r.title, r.id) for r in rel))
         lines.append("")
 
     cur = None

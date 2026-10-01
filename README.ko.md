@@ -416,7 +416,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 818개, 문제 0 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 819개, 문제 0 |
 | `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현 | 55개 통과 |
 | `tests/drive_branches.py` | 시나리오 51개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 51개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
