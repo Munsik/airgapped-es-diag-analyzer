@@ -1,4 +1,4 @@
-"""룰이 공통으로 사용하는 정규화 계층."""
+"""Normalization layer shared by all rules."""
 
 import collections
 import datetime
@@ -25,7 +25,7 @@ def _parse_iso(ts):
 
 
 class NodeView(object):
-    """노드 1대의 info + stats 를 묶은 뷰."""
+    """View of one node: info + stats combined."""
 
     def __init__(self, node_id, info, stats):
         self.id = node_id
@@ -38,7 +38,7 @@ class NodeView(object):
         self.host = self.info.get("host") or self.stats.get("host")
         self.attrs = _d(self.info.get("attributes"))
 
-    # 역할
+    # roles
     @property
     def is_master_eligible(self):
         return "master" in self.roles
@@ -87,7 +87,7 @@ class NodeView(object):
         if kind in cols:
             c = cols[kind]
         else:
-            # 일부 버전은 'G1 Young Generation' 등 원 이름을 쓴다
+            # some versions use the raw name such as 'G1 Young Generation'
             c = None
             for k, v in cols.items():
                 kl = k.lower()
@@ -169,7 +169,7 @@ class NodeView(object):
         return dig(self.info, "jvm", "input_arguments", default=[]) or []
 
     def setting(self, dotted, default=None):
-        """nodes.json 의 settings 는 평탄/중첩이 섞여 있어 둘 다 지원."""
+        """settings in nodes.json mix flat and nested keys; support both."""
         s = self.info.get("settings") or {}
         if dotted in s:
             return s[dotted]
@@ -188,7 +188,7 @@ class Context(object):
         self.t = thresholds
         self._build()
 
-    # ---------------- 로딩 ----------------
+    #     # ---------------- loading ----------------
     def _build(self):
         b = self.b
         self._stat_cache = {}
@@ -237,7 +237,7 @@ class Context(object):
         from .mapsum import summarize
         self.mapping_summary = summarize(b.iter_object("mapping.json"))
         self.ilm_policies = _d(b.json("commercial/ilm_policies.json"))
-        # cluster_state 는 대형(수백 MB 가능)이라 판정에 쓰는 조각(voting config exclusions)만 잘라 파싱한다
+        # cluster_state is large (can be hundreds of MB), so only the piece the findings use (voting config exclusions) is cut out and parsed
         _vx = b.extract_array("cluster_state.json", "cluster_coordination", "voting_config_exclusions")
         self.cluster_state = {"metadata": {"cluster_coordination": {
             "voting_config_exclusions": _vx if isinstance(_vx, list) else []}}}
@@ -253,13 +253,13 @@ class Context(object):
         self.component_templates = _d(b.json("component_templates.json"))
         self.legacy_templates = _d(b.json("templates.json"))
 
-        # 샤드 목록: indices.json(확장 cat/shards) 우선, 없으면 shards.json
+        # shard list: indices.json (extended cat/shards) first, else shards.json
         shards = b.json("indices.json")
         if not isinstance(shards, list) or not shards:
             shards = b.json("shards.json")
         if not isinstance(shards, list):
             shards = parse_cat_table(b.text("cat/cat_shards.txt"))
-        # 샤드 행: index 는 문자열, 나머지 문자 필드도 문자열로 정규화(형식이 다른 행은 버린다)
+        # shard rows: index is a string, and the other text fields are normalized to strings too (malformed rows are dropped)
         clean = []
         for x in (shards or []):
             if not isinstance(x, dict) or not isinstance(x.get("index"), str):
@@ -270,7 +270,7 @@ class Context(object):
                     x[k] = str(x[k])
             clean.append(x)
         self.shards = clean
-        # 인덱스별 샤드 수를 한 번만 집계한다(인덱스 x 샤드 반복 방지 — 대형 클러스터 대응)
+        # count shards per index once (avoids an index x shard loop, needed for large clusters)
         self._shards_by_index = collections.Counter()
         self._primaries_by_index = collections.Counter()
         for sh in self.shards:
@@ -285,7 +285,7 @@ class Context(object):
             b.text("cat/cat_allocation.txt"))
         self.cat_thread_pool = parse_cat_table(b.text("cat/cat_thread_pool.txt"))
 
-        # 노드 뷰
+        # node views
         info = _d(_d(b.json("nodes.json")).get("nodes"))
         stats = _d(_d(sj("nodes_stats.json")).get("nodes"))
         ids = set(info.keys()) | set(stats.keys())
@@ -304,7 +304,7 @@ class Context(object):
         self.deployment = self._detect_deployment()
 
     def _detect_deployment(self):
-        """ECH/ECE/ECK/self-managed 구분. 오케스트레이터가 관리하는 설정은 고객이 직접 바꿀 수 없다."""
+        """Tells ECH/ECE/ECK/self-managed apart. Settings managed by the orchestrator cannot be changed by the customer."""
         runner = str(self.manifest.get("runner") or "").lower()
         if runner in ("ess", "ech"):
             return "ECH"
@@ -314,7 +314,7 @@ class Context(object):
             attrs = n.attrs or {}
             if attrs.get("instance_configuration") or attrs.get("logical_availability_zone"):
                 return "ECH/ECE"
-            # node.store.allow_mmap 같은 일반 설정은 self-managed 에서도 쓰므로 판별에 쓰지 않는다
+            # generic settings such as node.store.allow_mmap are also used on self-managed, so they are not used to detect the platform
             if attrs.get("k8s_node_name"):
                 return "ECK"
         return "self-managed"
@@ -323,7 +323,7 @@ class Context(object):
     def orchestrated(self):
         return self.deployment != "self-managed"
 
-    # ---------------- 편의 접근 ----------------
+    #     # ---------------- convenience accessors ----------------
     def shard_count(self, index):
         return self._shards_by_index.get(index, 0)
 
@@ -350,7 +350,7 @@ class Context(object):
             return (0, 0, 0)
 
     def setting(self, key, default=None):
-        """persistent -> transient -> defaults 순서로 클러스터 설정 조회."""
+        """Looks up a cluster setting in the order persistent -> transient -> defaults."""
         for scope in ("persistent", "transient"):
             d = self.cluster_settings.get(scope) or {}
             v = _flat_get(d, key)
@@ -383,11 +383,11 @@ class Context(object):
         return v if v is not None else default
 
     def is_system_index(self, name):
-        """시스템(제품 내부) 인덱스 여부.
+        """Whether the index is a system (product-internal) index.
 
-        '.' 으로 시작하는 인덱스라도 데이터 스트림 백킹 인덱스(.ds-<data stream>-...)는 사용자 데이터다.
-        백킹 인덱스는 데이터 스트림 이름이 '.' 으로 시작할 때만(.ds-.kibana-event-log 등) 시스템으로 본다.
-        searchable snapshot 마운트 이름(restored-/partial-)은 원래 이름 기준으로 판단한다.
+        An index starting with '.' is still user data if it is a data stream backing index (.ds-<data stream>-...).
+        A backing index counts as system only when the data stream name starts with '.' (e.g. .ds-.kibana-event-log).
+        Searchable snapshot mount names (restored-/partial-) are judged by the original name.
         """
         if not name:
             return False
@@ -401,10 +401,10 @@ class Context(object):
         return n.startswith(".")
 
     def is_searchable_snapshot(self, name):
-        """searchable snapshot 마운트 인덱스 여부(설정 기준, 없으면 이름 접두사로 추정).
+        """Whether the index is a searchable snapshot mount (by setting, else guessed from the name prefix).
 
-        스냅샷이 원본이라 shrink·force-merge·설정 변경 같은 조치를 할 수 없다(조치형 판정에서 제외).
-        크기가 원본이 아닌 것은 partial 마운트뿐이다(is_partial_mount).
+        The snapshot is the source of truth, so actions like shrink, force-merge and settings changes are not possible (excluded from actionable findings).
+        Only partial mounts have a size that differs from the original (see is_partial_mount).
         """
         if self.index_setting(name, "index.store.snapshot.snapshot_name") or \
                 self.index_setting(name, "index.store.snapshot.repository_name") or \
@@ -413,16 +413,16 @@ class Context(object):
         return bool(name) and name.startswith(("restored-", "partial-"))
 
     def is_partial_mount(self, name):
-        """partially mounted(frozen) 인덱스 여부. store 크기가 로컬 캐시 크기라 원본 샤드 크기가 아니다.
+        """Whether the index is partially mounted (frozen). The store size is the local cache size, not the original shard size.
 
-        fully mounted(restored-, cold) 인덱스는 샤드 전체가 로컬에 복사되므로 store 크기가 실제 크기다 — 크기 판정에 포함한다.
+        Fully mounted (restored-, cold) indices copy whole shards locally, so the store size is the real size and is included in size findings.
         """
         if str(self.index_setting(name, "index.store.snapshot.partial") or "").lower() == "true":
             return True
         return bool(name) and name.startswith("partial-")
 
     def write_targets(self):
-        """현재 쓰기 대상 인덱스: 데이터 스트림 write index + alias 의 is_write_index=true (없으면 단일 인덱스 alias)."""
+        """Current write targets: data stream write index + alias with is_write_index=true (or a single-index alias)."""
         if getattr(self, "_write_targets", None) is not None:
             return self._write_targets
         out = set()
@@ -444,7 +444,7 @@ class Context(object):
         return out
 
     def rolled_over(self, name):
-        """롤오버 완료(쓰기 종료) 인덱스 여부: 데이터 스트림의 과거 백킹 인덱스, indexing_complete, 쓰기 대상이 아닌 alias 멤버."""
+        """Whether the index is rolled over (no longer written): past backing index of a data stream, indexing_complete, or a member of an alias that is not the write target."""
         if name in self.write_targets():
             return False
         if str(self.index_setting(name, "index.lifecycle.indexing_complete") or "").lower() == "true":
@@ -456,7 +456,7 @@ class Context(object):
         return bool(body.get("aliases"))
 
     def tier_of(self, node):
-        """데이터 노드의 tier 라벨. 역할 조합이 곧 비교 단위다(같은 tier 끼리만 스펙·부하를 비교)."""
+        """Tier label of a data node. The role combination is the comparison unit (specs and load are compared only within the same tier)."""
         r = set(node.roles)
         if "data" in r:
             return "data(generic)"
@@ -472,7 +472,7 @@ class Context(object):
         return "+".join(t.replace("data_", "") for t in tiers)
 
     def data_tiers(self):
-        """tier 라벨 → 데이터 노드 목록."""
+        """tier label -> list of data nodes."""
         out = collections.OrderedDict()
         for n in self.data_nodes:
             t = self.tier_of(n)
@@ -484,7 +484,7 @@ class Context(object):
         return self.tier_of(node) == "frozen"
 
     def watermark(self, kind):
-        """kind: low|high|flood_stage|flood_stage.frozen -> 원문 문자열"""
+        """kind: low|high|flood_stage|flood_stage.frozen -> raw string"""
         key = "cluster.routing.allocation.disk.watermark." + kind
         v = self.setting(key)
         if v is None:
@@ -494,14 +494,14 @@ class Context(object):
         return v
 
     def watermark_used_pct(self, kind, node_total_bytes):
-        """워터마크를 해당 노드 기준 '사용률 %' 로 환산한다.
+        """Converts a watermark to 'used %' for the given node.
 
-        ES 8.5+ 의 계산식을 그대로 따른다.
-          - 비율(%) 워터마크: 필요 여유공간 = total x (1 - 비율)
-          - max_headroom 이 설정되어 있으면 필요 여유공간 = min(위 값, max_headroom)
-            (기본값: low 200GB / high 150GB / flood_stage 100GB, 워터마크를 직접 지정하지 않은 경우에만 적용)
-          - 바이트 워터마크: 필요 여유공간 = 지정값 (max_headroom 미적용)
-        대용량 디스크에서는 max_headroom 때문에 실제 임계 사용률이 90% 보다 훨씬 높아진다.
+        Follows the ES 8.5+ formula as is:
+          - Percentage watermark: required free space = total x (1 - ratio)
+          - If max_headroom is set: required free space = min(value above, max_headroom)
+            (defaults: low 200GB / high 150GB / flood_stage 100GB, applied only when the watermark is not set explicitly)
+          - Byte watermark: required free space = the given value (max_headroom does not apply)
+        On large disks max_headroom makes the effective threshold much higher than 90% used.
         """
         raw = self.watermark(kind)
         if raw is None or not node_total_bytes:
@@ -528,7 +528,7 @@ class Context(object):
 
 
 _NUMERIC = re.compile(r"^-?\d+(\.\d+)?$")
-# 통계성 파일은 숫자 필드가 문자열로 와도 숫자로 다룬다(설정 파일은 원문 유지)
+# Stats-type files: numeric fields are treated as numbers even if they arrive as strings (config files keep the original)
 _STAT_FILES = ("nodes_stats.json", "indices_stats.json", "cluster_health.json", "cluster_stats.json",
                "recovery.json", "tasks.json", "cluster_pending_tasks.json")
 
@@ -542,7 +542,7 @@ def _num_str(x):
 
 
 def _coerce(x):
-    """숫자 문자열을 숫자로 바꾼다. 대형 통계 파일의 복사본을 만들지 않도록 제자리에서 변환한다."""
+    """Converts numeric strings to numbers in place, so no copy of a large stats file is made."""
     stack = [x]
     while stack:
         cur = stack.pop()
@@ -562,7 +562,7 @@ def _coerce(x):
 
 
 def _d(x):
-    """dict 가 아니면 빈 dict. 번들 파일 형식이 버전·수집 조건에 따라 달라도 분석이 멈추지 않게 한다."""
+    """Empty dict if not a dict. Keeps the analysis going when the bundle file format differs by version or collection mode."""
     return x if isinstance(x, dict) else {}
 
 
@@ -571,7 +571,7 @@ def _l(x):
 
 
 def _flat_get(d, dotted):
-    """평탄 키('a.b.c')와 중첩 dict 둘 다 지원."""
+    """Supports both flat keys ('a.b.c') and nested dicts."""
     if not isinstance(d, dict):
         return None
     if dotted in d:

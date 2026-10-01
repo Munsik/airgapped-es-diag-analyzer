@@ -1,23 +1,24 @@
-"""진단 번들 로더.
+"""Diagnostics bundle loader.
 
-support-diagnostics 산출물은 다음 형태 중 하나다.
-  - diagnostic-xxxx.zip                     (압축 그대로)
-  - .../api-diagnostics-YYYYMMDD-HHMMSS/    (압축 해제 디렉터리)
-  - local / remote 모드는 위 파일 + logs/ 디렉터리(elasticsearch.log, gc.log 등) 포함
+A support-diagnostics output has one of these forms:
+  - diagnostic-xxxx.zip                     (still compressed)
+  - .../api-diagnostics-YYYYMMDD-HHMMSS/    (extracted directory)
+  - local / remote mode: the above plus a logs/ directory (elasticsearch.log, gc.log, etc.)
 
-zip은 임시 파일로 풀지 않고 메모리에서 직접 읽는다(폐쇄망/읽기전용 환경 고려).
+A zip is read directly in memory, not extracted to temp files (air-gapped and read-only environments).
 """
 
 import json
 import os
 import zipfile
+from .i18n import T
 
 
 class Bundle(object):
     def __init__(self, path):
         self.path = path
         self._zip = None
-        self._names = []        # 번들 내 상대 경로 목록
+        self._names = []        # relative paths inside the bundle
         self._cache = {}
         self._root = ""
         if os.path.isdir(path):
@@ -25,12 +26,12 @@ class Bundle(object):
         elif zipfile.is_zipfile(path):
             self._load_zip(path)
         else:
-            raise ValueError("지원하지 않는 입력입니다(zip 또는 디렉터리): %s" % path)
+            raise ValueError(T("loader.Bundle.__init__.01") % path)
         self._index = {}
         for n in self._names:
             self._index.setdefault(os.path.basename(n).lower(), []).append(n)
 
-    # ---------------- 적재 ----------------
+    #     # ---------------- loading ----------------
     def _load_dir(self, path):
         self._mode = "dir"
         self._base = path
@@ -48,7 +49,7 @@ class Bundle(object):
                 continue
             self._names.append(info.filename.replace("\\", "/"))
 
-    # ---------------- 원시 접근 ----------------
+    #     # ---------------- raw access ----------------
     def names(self):
         return list(self._names)
 
@@ -60,7 +61,7 @@ class Bundle(object):
             return fh.read()
 
     def resolve(self, name):
-        """'nodes_stats.json' 또는 'commercial/ilm_explain.json' 형태로 실제 경로 탐색."""
+        """Finds the real path for 'nodes_stats.json' or 'commercial/ilm_explain.json'."""
         name = name.replace("\\", "/")
         base = os.path.basename(name).lower()
         cands = self._index.get(base, [])
@@ -71,7 +72,7 @@ class Bundle(object):
             for c in cands:
                 if c.lower().endswith(suffix):
                     return c
-        # 최상위(루트 바로 아래)에 가까운 것을 우선
+        # prefer paths closest to the top level (directly under the root)
         cands = sorted(cands, key=lambda c: (c.count("/"), len(c)))
         return cands[0]
 
@@ -92,9 +93,9 @@ class Bundle(object):
         return data
 
     def json(self, name, default=None, cache=True):
-        """JSON 파싱. 원문 문자열은 캐시하지 않는다(대형 번들 메모리 절약).
+        """Parses JSON. The raw text is not cached (saves memory on large bundles).
 
-        cache=False 면 결과도 캐시하지 않는다 — 요약만 뽑고 버릴 대형 파일(cluster_state, mapping)용.
+        With cache=False the result is not cached either: for large files (cluster_state, mapping) that are summarized and dropped.
         """
         key = "json:" + name
         if key in self._cache:
@@ -141,10 +142,10 @@ class Bundle(object):
         return raw.decode("utf-8", "replace")
 
     def iter_object(self, name):
-        """최상위가 JSON 객체인 대형 파일을 (키, 값) 단위로 하나씩 파싱해 돌려준다.
+        """Parses a large file whose top level is a JSON object one (key, value) at a time and yields them.
 
-        전체를 한 번에 파싱하지 않으므로 최대 메모리는 원문 + 항목 하나 수준이다(mapping.json 등).
-        형식이 예상과 다르면 전체 파싱으로 폴백한다.
+        The whole file is not parsed at once, so peak memory is about the raw text plus one item (mapping.json etc.).
+        Falls back to a full parse if the format is not as expected.
         """
         text = self._text_nocache(name)
         if not text:
@@ -179,9 +180,9 @@ class Bundle(object):
             return
 
     def extract_array(self, name, anchor, key):
-        """대형 파일에서 anchor 이후 처음 나오는 "key": [...] 배열만 잘라 파싱한다(cluster_state 의 작은 조각용).
+        """Cuts out and parses only the first "key": [...] array after anchor in a large file (for small pieces of cluster_state).
 
-        찾지 못하면 None. 전체 파싱을 피하기 위한 것으로, 키 위치는 anchor 로 한정한다.
+        Returns None if not found. Meant to avoid a full parse; the key position is limited by anchor.
         """
         text = self._text_nocache(name)
         if not text:
@@ -202,7 +203,7 @@ class Bundle(object):
             return None
 
     def find_all(self, predicate):
-        """predicate(relpath)->bool 을 만족하는 경로 목록."""
+        """List of paths satisfying predicate(relpath)->bool."""
         return [n for n in self._names if predicate(n)]
 
     def close(self):
@@ -212,9 +213,9 @@ class Bundle(object):
             except Exception:
                 pass
 
-    # ---------------- 로그 ----------------
+    #     # ---------------- logs ----------------
     def log_files(self):
-        """local/remote 모드에서 수집된 서버 로그 파일 경로."""
+        """Paths of server log files collected in local/remote mode."""
         out = []
         for n in self._names:
             low = n.lower()
@@ -224,13 +225,13 @@ class Bundle(object):
         return out
 
     def read_log(self, rel, max_bytes=8 * 1024 * 1024):
-        """큰 로그는 뒤쪽(최근) 일부만 읽는다."""
+        """For a big log, reads only the tail (most recent part)."""
         try:
             data = self._read_raw(rel)
         except Exception:
             return ""
         if rel.lower().endswith(".gz"):
-            # 롤오버된 로그(.log.gz). 압축 폭탄 방지를 위해 max_bytes 까지만 풀고 뒤쪽을 쓴다
+            # rolled-over log (.log.gz). To avoid a decompression bomb, decompress only up to max_bytes and use the tail
             try:
                 import gzip, io
                 with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:

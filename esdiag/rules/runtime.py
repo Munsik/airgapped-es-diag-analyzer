@@ -1,61 +1,62 @@
 # -*- coding: utf-8 -*-
-"""런타임 증거 분석: hot threads, 서버 로그(local/remote 모드)."""
+"""Runtime evidence analysis: hot threads and server logs (local/remote mode)."""
 
 import collections
 import re
 
+from ..i18n import T, N_, tr
 from ..model import Finding, Severity, table
 from ..util import fmt_num, truncate
 
-CAT = "런타임"
+CAT = "runtime"
 
 _NODE_RE = re.compile(r"^:::\s*\{([^}]*)\}")
 _THREAD_RE = re.compile(
     r"^\s*([\d.]+)%\s*(?:\[([^\]]*)\]\s*)?\(([^)]*)\)\s*cpu usage by thread\s*'([^']+)'")
 
-# 스택 프레임 -> 원인 분류
-# 맥락 시그니처: 스택 어디에 있든 작업의 성격을 결정하는 호출(먼저 스택 전체에서 찾는다).
-# 예) 맨 위 프레임이 JSON 복사여도 그 호출자가 ignored source 저장이면 작업의 성격은 '문서 파싱' 이다.
+# Stack frame -> cause classification
+# Context signatures: calls that decide the kind of work wherever they appear in the stack
+# (searched first, over the whole stack).
+# Example: even if the top frame is a JSON copy, a caller that stores ignored source makes the work 'document parsing'.
 _CONTEXT = [
-    ("OneMergeProgress.pauseNanos", "merge 대기(throttle)", "merge 가 I/O throttle 로 대기 중입니다(CPU 사용이 아니라 대기 시간). 색인량 대비 디스크 대역을 확인합니다."),
-    ("org.elasticsearch.grok", "ingest grok 파싱", "ingest pipeline 의 grok 처리가 CPU 를 점유합니다. 패턴 단순화(dissect 전환, 앵커 사용)와 파이프라인 분리를 검토합니다."),
-    ("org.elasticsearch.dissect", "ingest dissect 파싱", "ingest pipeline 의 dissect 처리 비용입니다."),
-    ("org.elasticsearch.painless", "painless 스크립트", "painless 스크립트가 CPU 를 점유합니다. runtime field·스크립트 정렬·ingest script 를 점검합니다."),
-    ("addIgnoredFieldFromContext", "문서 파싱: 무시된 필드 값 저장(synthetic _source)",
-     "synthetic _source 인덱스가 매핑되지 않은 필드(필드 한도 초과로 무시된 동적 필드, ignore_above 등)의 값을 따로 저장하는 비용입니다. "
-     "MAP-004(필드 한도 근접)·DISK-007(_source 모드)과 함께 보고, 불필요한 동적 필드 유입을 줄이는 것을 검토합니다."),
-    ("GlobalOrdinals", "전역 서수 생성", "keyword 집계의 global ordinals 생성 비용입니다. eager_global_ordinals 설정을 검토합니다."),
-    ("RegExp", "정규식/wildcard 쿼리", "regexp/wildcard 계열 쿼리는 매우 비쌉니다. 쿼리 구조 변경이 필요합니다."),
+    ("OneMergeProgress.pauseNanos", N_("rules.runtime._.01"), N_("rules.runtime._.02")),
+    ("org.elasticsearch.grok", N_("rules.runtime._.03"), N_("rules.runtime._.04")),
+    ("org.elasticsearch.dissect", N_("rules.runtime._.05"), N_("rules.runtime._.06")),
+    ("org.elasticsearch.painless", N_("rules.runtime._.07"), N_("rules.runtime._.08")),
+    ("addIgnoredFieldFromContext", N_("rules.runtime._.09"),
+     N_("rules.runtime._.10")),
+    ("GlobalOrdinals", N_("rules.runtime._.11"), N_("rules.runtime._.12")),
+    ("RegExp", N_("rules.runtime._.13"), N_("rules.runtime._.14")),
 ]
 
-# 일반 시그니처: 맥락 시그니처가 없을 때 스택 위쪽(실행 중) 프레임부터 대조한다.
+# General signatures: used when no context signature matches; compared starting from the top (running) frames.
 _SIGNATURES = [
-    ("org.elasticsearch.ingest", "ingest pipeline", "ingest pipeline 처리 비용입니다. 무거운 processor(grok, script, enrich)를 확인합니다."),
-    ("org.elasticsearch.search.aggregations", "집계 연산", "aggregation 비용이 큽니다. cardinality/terms size 를 확인합니다."),
-    ("org.apache.lucene.search", "검색 실행", "Lucene 검색 실행이 CPU 를 점유합니다. 쿼리 비용과 샤드 수를 함께 봅니다."),
-    ("Lucene Merge Thread", "세그먼트 merge", "색인량 대비 merge 가 밀리고 있습니다. 디스크 대역폭 또는 샤드당 색인량을 확인합니다."),
-    ("org.apache.lucene.index", "Lucene 색인/merge", "세그먼트 기록·merge 비용입니다."),
-    ("org.elasticsearch.index.mapper", "문서 파싱·매핑", "문서 파싱 또는 동적 매핑 갱신 비용입니다."),
-    ("org.elasticsearch.index.engine", "색인 엔진", "색인 처리 자체가 CPU 를 점유하고 있습니다."),
-    ("org.elasticsearch.xpack.ml", "ML 처리", "ML 작업이 CPU 를 점유합니다."),
-    ("java.util.zip", "압축/해제", "네트워크 압축 또는 스냅샷 압축 비용입니다."),
-    ("xcontent", "JSON 직렬화", "요청·응답 JSON 처리 비용입니다(대형 bulk·문서에서 커짐)."),
-    ("org.elasticsearch.transport", "전송 계층", "네트워크 전송/직렬화 비용입니다."),
+    ("org.elasticsearch.ingest", "ingest pipeline", N_("rules.runtime._.15")),
+    ("org.elasticsearch.search.aggregations", N_("rules.runtime._.16"), N_("rules.runtime._.17")),
+    ("org.apache.lucene.search", N_("rules.runtime._.18"), N_("rules.runtime._.19")),
+    ("Lucene Merge Thread", N_("rules.runtime._.20"), N_("rules.runtime._.21")),
+    ("org.apache.lucene.index", N_("rules.runtime._.22"), N_("rules.runtime._.23")),
+    ("org.elasticsearch.index.mapper", N_("rules.runtime._.24"), N_("rules.runtime._.25")),
+    ("org.elasticsearch.index.engine", N_("rules.runtime._.26"), N_("rules.runtime._.27")),
+    ("org.elasticsearch.xpack.ml", N_("rules.runtime._.28"), N_("rules.runtime._.29")),
+    ("java.util.zip", N_("rules.runtime._.30"), N_("rules.runtime._.31")),
+    ("xcontent", N_("rules.runtime._.32"), N_("rules.runtime._.33")),
+    ("org.elasticsearch.transport", N_("rules.runtime._.34"), N_("rules.runtime._.35")),
 ]
 
 
 def _classify(stack, tname):
-    """1) 맥락 시그니처를 스택 전체에서 찾는다(작업 성격 결정), 2) 없으면 위쪽 프레임부터 일반 시그니처 대조."""
+    """1) Look for a context signature anywhere in the stack (this decides the kind of work), 2) if none, match the general signatures starting from the top frames, 3) if still none, match the signatures against the thread name."""
     for sig, label, hint in _CONTEXT:
         if any(sig in frame for frame in stack):
-            return label, hint
+            return tr(label), tr(hint)
     for frame in stack:
         for sig, label, hint in _SIGNATURES:
             if sig in frame:
-                return label, hint
+                return tr(label), tr(hint)
     for sig, label, hint in _CONTEXT + _SIGNATURES:
         if sig in tname:
-            return label, hint
+            return tr(label), tr(hint)
     return None, None
 
 
@@ -63,7 +64,7 @@ _CPU_RE = re.compile(r"cpu=([\d.]+)%")
 
 
 def parse_hot_threads(text):
-    """(node, pct, thread_name, cpu_desc, stack_head) 목록 반환."""
+    """Returns a list of (node, pct, thread_name, cpu_desc, stack), where stack holds up to 40 stack lines."""
     entries = []
     node = None
     lines = text.splitlines()
@@ -81,7 +82,7 @@ def parse_hot_threads(text):
             detail = m.group(2) or ""
             cm = _CPU_RE.search(detail)
             if cm:
-                pct = float(cm.group(1))      # 'other'(대기) 시간을 빼고 실제 CPU 점유율만 쓴다
+                pct = float(cm.group(1))      # Drop the 'other' (waiting) time and use only the actual CPU share
             dur = m.group(3) or ""
             tname = m.group(4)
             stack = []
@@ -102,7 +103,7 @@ def parse_hot_threads(text):
 
 
 def _frame(stack):
-    """대표 스택 프레임 1줄 선택(snapshot 안내 문구는 건너뛴다)."""
+    """Picks one representative stack frame line, preferring org.elasticsearch and org.apache.lucene frames (skips the snapshot notice text)."""
     for s in stack:
         if "snapshot" in s.lower():
             continue
@@ -115,11 +116,11 @@ def _frame(stack):
 
 
 def r_hot_threads(ctx):
-    """nodes_hot_threads.txt 를 파싱해 스레드별 실제 CPU%(cpu=, 없으면 전체 %)를 추출한다.
+    """Parses nodes_hot_threads.txt and extracts the actual CPU usage per thread (cpu=, or the overall percentage if missing).
 
-    최대 CPU% >= hot_thread_pct_warn → 주의, 그 외 참고. 수집 순간 500ms 스냅샷 하나이므로 단독으로 치명 판정하지 않는다.
-    원인 분류는 각 스레드 스택의 위쪽(실행 중) 프레임부터 시그니처(grok·ingest·painless·regexp·집계·검색·merge 등)를
-    대조해 처음 맞는 것으로 정한다.
+    Max thread CPU >= hot_thread_pct_warn → Warning, otherwise Info. This is a single 500ms snapshot at collection time, so it is never rated Critical on its own.
+    The cause is classified by matching signatures against each thread's stack: context signatures (grok, painless, regexp, global ordinals, etc.) are searched over the whole stack first, then general signatures (ingest, aggregation, search, merge, etc.) starting from the top (running) frames; the first match wins.
+    Threads below 0.5% CPU are ignored for cause counting when any busier thread exists.
     """
     text = ctx.hot_threads_text
     if not text.strip():
@@ -140,56 +141,56 @@ def r_hot_threads(ctx):
             hints[label] = hint
     hottest = top[0][1] if top else 0
     sev = Severity.WARNING if hottest >= ctx.t["hot_thread_pct_warn"] else Severity.INFO
-    cause_txt = ", ".join("%s(%d)" % kv for kv in causes.most_common(5)) or "뚜렷한 패턴 없음"
+    cause_txt = ", ".join("%s(%d)" % kv for kv in causes.most_common(5)) or T("rules.runtime.r_hot_threads.01")
     rec = " ".join(hints[k] for k, _ in causes.most_common(3)) or \
-        "수집 순간 CPU 를 점유한 스레드가 없습니다. 부하 시점에 다시 수집하면 정확도가 올라갑니다."
+        T("rules.runtime.r_hot_threads.02")
     return [Finding(
-        "RT-001", CAT, sev, "Hot threads 분석",
-        observed="최상위 스레드 CPU 점유율 %.1f%%. 원인 분류(스레드 수): %s" % (hottest, cause_txt),
-        impact="hot threads 는 수집 순간 500ms 의 스냅샷입니다. 한 번의 관측만으로 상시 문제라고 단정할 수 없으므로, "
-               "문제 재현 시점에 여러 번 수집해 같은 스택이 반복되는지 확인해야 합니다.",
+        "RT-001", CAT, sev, T("rules.runtime.r_hot_threads.03"),
+        observed=T("rules.runtime.r_hot_threads.04") % (hottest, cause_txt),
+        impact=T("rules.runtime.r_hot_threads.05"),
         recommend=rec,
-        evidence=table(["node", "cpu%", "thread", "원인 분류", "대표 스택"], rows),
+        evidence=table(["node", "cpu%", "thread", T("rules.runtime.r_hot_threads.06"), T("rules.runtime.r_hot_threads.07")], rows),
         source="nodes_hot_threads.txt")]
 
 
 _LOG_PATTERNS = [
     (r"OutOfMemoryError", Severity.CRITICAL, "OutOfMemoryError",
-     "JVM heap 고갈로 노드가 중단되었습니다. heap 압박 원인 제거가 최우선입니다."),
-    (r"failed to obtain node lock", Severity.CRITICAL, "노드 락 획득 실패",
-     "동일 data 경로에 중복 프로세스가 기동되었거나 비정상 종료 잔여물이 있습니다."),
+     N_("rules.runtime._.36")),
+    (r"failed to obtain node lock", Severity.CRITICAL, N_("rules.runtime._.37"),
+     N_("rules.runtime._.38")),
     (r"master not discovered|no known master node|master_not_discovered",
-     Severity.CRITICAL, "마스터 탐색 실패",
-     "디스커버리/네트워크 문제로 마스터 선출에 실패했습니다. seed_hosts 와 방화벽을 확인합니다."),
+     Severity.CRITICAL, N_("rules.runtime._.39"),
+     N_("rules.runtime._.40")),
     (r"failed to execute bulk item|MapperParsingException|mapper_parsing_exception",
-     Severity.WARNING, "문서 색인 실패(매핑 오류)",
-     "필드 타입 충돌 또는 파싱 오류입니다. 수집 측 스키마를 점검합니다."),
-    (r"CircuitBreakingException", Severity.CRITICAL, "Circuit breaker 예외",
-     "메모리 한도 초과로 요청이 거부되었습니다."),
-    (r"EsRejectedExecutionException|rejected execution", Severity.WARNING, "스레드풀 거부",
-     "큐 포화로 요청이 거부되었습니다."),
+     Severity.WARNING, N_("rules.runtime._.41"),
+     N_("rules.runtime._.42")),
+    (r"CircuitBreakingException", Severity.CRITICAL, N_("rules.runtime._.43"),
+     N_("rules.runtime._.44")),
+    (r"EsRejectedExecutionException|rejected execution", Severity.WARNING, N_("rules.runtime._.45"),
+     N_("rules.runtime._.46")),
     (r"\[gc\]\[.*\]\[old\]|\[o\.e\.m\.j\.JvmGcMonitorService\].*\[old\]",
-     Severity.WARNING, "Old GC 경고 로그",
-     "JvmGcMonitorService 가 긴 GC 를 기록했습니다."),
-    (r"failed to flush", Severity.INFO, "flush 실패 메시지", ""),
+     Severity.WARNING, N_("rules.runtime._.47"),
+     N_("rules.runtime._.48")),
+    (r"failed to flush", Severity.INFO, N_("rules.runtime._.49"), ""),
     (r"disk watermark \[.*\] exceeded|flood stage disk watermark",
-     Severity.CRITICAL, "디스크 워터마크 초과 로그",
-     "디스크 부족으로 샤드 이동 또는 쓰기 차단이 발생했습니다."),
+     Severity.CRITICAL, N_("rules.runtime._.50"),
+     N_("rules.runtime._.51")),
     (r"transport.*Connection reset|NodeDisconnectedException|node_disconnected",
-     Severity.WARNING, "노드 간 연결 끊김",
-     "네트워크 불안정 또는 GC 로 인한 응답 지연입니다."),
-    (r"ShardLockObtainFailedException", Severity.WARNING, "샤드 락 획득 실패",
-     "샤드가 이전 상태에서 정리되지 않았습니다."),
+     Severity.WARNING, N_("rules.runtime._.52"),
+     N_("rules.runtime._.53")),
+    (r"ShardLockObtainFailedException", Severity.WARNING, N_("rules.runtime._.54"),
+     N_("rules.runtime._.55")),
 ]
 
 
-# 기동 시 JVM 옵션 줄(-XX:+ExitOnOutOfMemoryError, HeapDumpOnOutOfMemoryError 등)은 오류가 아니다
+# JVM option lines printed at startup (-XX:+ExitOnOutOfMemoryError, HeapDumpOnOutOfMemoryError, etc.) are not errors
 _STARTUP_NOISE = re.compile(r"JVM arguments|-XX:[+-]\w*OutOfMemoryError|JVM home|JVM version")
 
 
 def _es_log_files(files):
-    """ES 서버 로그만 남긴다. gc.log* 는 JVM 통합 로그라 ES 패턴 대상이 아니고,
-    <cluster>_server.json 은 <cluster>.log 와 같은 내용의 JSON 판이라 이중 집계를 막기 위해 제외한다."""
+    """Keeps only ES server logs. gc.log* is a JVM unified log, so ES patterns do not apply to it,
+    and <cluster>_server.json is the JSON version of the same content as <cluster>.log, so it is excluded when that .log file is present, to avoid counting twice.
+    """
     names = set(files)
     out = []
     for f in files:
@@ -205,7 +206,7 @@ def _es_log_files(files):
 
 
 def r_logs(ctx):
-    """logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는데 로그가 없으면 diagnostics.log 의 대상 노드 매칭 실패 기록을 근거로 수집 실패 원인을 알린다. 있으면 파일당 마지막 log_scan_bytes 만 최대 40개 파일 스캔해 고정 패턴(OOM, 긴 old GC, 마스터 미탐색, CircuitBreaking, rejected execution, 워터마크 초과, 노드 연결 끊김, 매핑 파싱 오류 등) 검출. 검출 패턴 중 가장 높은 심각도로 판정(LOG-001), 없으면 정상."""
+    """No logs/ directory → Info (LOG-000). If the bundle was collected in local/remote mode and diagnostics.log shows that the tool failed to match the target node, that failure is reported as the cause of the missing logs; otherwise the finding says the bundle has no server logs. If logs exist, scans only the last log_scan_bytes of each file, up to 40 files (gc.log* and duplicate _server.json excluded), for fixed patterns (OOM, long old GC, master not discovered, CircuitBreaking, rejected execution, watermark exceeded, node disconnected, mapping parse errors, etc.). The finding takes the highest severity among the detected patterns (LOG-001); none detected → OK."""
     files = ctx.b.log_files()
     if not files:
         dlog = ctx.b.text("diagnostics.log") or ""
@@ -213,22 +214,17 @@ def r_logs(ctx):
                   or "Could not match node publish address" in dlog)
         if failed and (ctx.diag_type or "") in ("local", "remote"):
             return [Finding(
-                "LOG-000", CAT, Severity.INFO, "%s 모드 수집이 대상 노드를 찾지 못해 로그·OS 정보가 빠짐" % ctx.diag_type,
-                observed="diagnostics.log 에 'Could not find the target node' 가 기록되어, REST 결과만 수집되었습니다"
-                         "(syscalls/ 와 logs/ 없음).",
-                impact="장애 시점의 예외·GC 정지 시간·노드 이탈 기록과 OS 설정(sysctl, limits)을 확인할 수 없습니다.",
-                recommend="local 모드는 --host 로 지정한 주소가 노드의 bound address 와 일치해야 합니다. "
-                          "loopback(localhost/127.0.0.1)로만 바인딩된 노드는 매칭되지 않으므로, "
-                          "노드의 실제 IP 를 --host 로 지정해 다시 수집하거나 sudo 권한과 서버 호스트에서의 실행 여부를 확인합니다.",
+                "LOG-000", CAT, Severity.INFO, T("rules.runtime.r_logs.01") % ctx.diag_type,
+                observed=T("rules.runtime.r_logs.02"),
+                impact=T("rules.runtime.r_logs.03"),
+                recommend=T("rules.runtime.r_logs.04"),
                 source="diagnostics.log")]
         return [Finding(
-            "LOG-000", CAT, Severity.INFO, "서버 로그 미포함 진단 번들",
-            observed="diagType=%s 로 수집되어 elasticsearch.log / gc.log 가 포함되지 않았습니다."
+            "LOG-000", CAT, Severity.INFO, T("rules.runtime.r_logs.05"),
+            observed=T("rules.runtime.r_logs.06")
                      % (ctx.diag_type or "api"),
-            impact="장애 시점의 예외·GC 정지 시간·노드 이탈 기록을 확인할 수 없어, "
-                   "원인 확정이 아닌 상태 기반 추정에 머무릅니다.",
-            recommend="가능하면 local 또는 remote 모드로 다시 수집하십시오. "
-                      "(diagnostics --type local) 로그가 포함되면 이 도구가 자동으로 함께 분석합니다.",
+            impact=T("rules.runtime.r_logs.07"),
+            recommend=T("rules.runtime.r_logs.08"),
             source="manifest.json")]
     counts = collections.Counter()
     samples = {}
@@ -241,6 +237,7 @@ def r_logs(ctx):
         scanned += 1
         for pat, sev, label, hint in _LOG_PATTERNS:
             rx = re.compile(pat, re.IGNORECASE)
+            label, hint = tr(label), tr(hint)
             n = 0
             for ln in text.splitlines():
                 if _STARTUP_NOISE.search(ln):
@@ -253,8 +250,8 @@ def r_logs(ctx):
                 counts[(label, sev, hint)] += n
     out = []
     if not counts:
-        return [Finding("LOG-001", CAT, Severity.OK, "로그에서 주요 오류 패턴 미검출",
-                        observed="로그 파일 %d개를 스캔했으나 알려진 위험 패턴이 없습니다." % scanned,
+        return [Finding("LOG-001", CAT, Severity.OK, T("rules.runtime.r_logs.09"),
+                        observed=T("rules.runtime.r_logs.10") % scanned,
                         source="logs/")]
     rows = []
     worst = Severity.INFO
@@ -265,12 +262,11 @@ def r_logs(ctx):
             worst = sev
     recs = [h for (_l, _s, h), _n in counts.most_common(5) if h]
     out.append(Finding(
-        "LOG-001", CAT, worst, "서버 로그 오류 패턴 검출",
-        observed="로그 %d개에서 %d종의 위험 패턴이 검출되었습니다." % (scanned, len(counts)),
-        impact="로그는 이 도구가 볼 수 있는 유일한 '시점' 증거입니다. 상태 지표와 교차 확인하면 "
-               "원인 추정이 확정으로 바뀝니다.",
+        "LOG-001", CAT, worst, T("rules.runtime.r_logs.11"),
+        observed=T("rules.runtime.r_logs.12") % (scanned, len(counts)),
+        impact=T("rules.runtime.r_logs.13"),
         recommend=" ".join(recs),
-        evidence=table(["패턴", "건수", "심각도", "샘플"], rows[: ctx.t["top_n"]]),
+        evidence=table([T("rules.runtime.r_logs.14"), T("rules.runtime.r_logs.15"), T("rules.runtime.r_logs.16"), T("rules.runtime.r_logs.17")], rows[: ctx.t["top_n"]]),
         source="logs/"))
     return out
 

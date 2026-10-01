@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Elasticsearch support-diagnostics 오프라인 분석기.
+Offline analyzer for Elasticsearch support-diagnostics bundles.
 
-사용 예:
+Examples:
   python3 analyze.py diagnostic-xxxx.zip
   python3 analyze.py diagnostic-xxxx.zip --html report.html
   python3 analyze.py ./api-diagnostics-20260814-045134 --html r.html --md r.md --json r.json
   python3 analyze.py bundle.zip --thresholds my_thresholds.json --no-ok
+  python3 analyze.py bundle.zip --html r.html --lang en
 
-외부 네트워크 접근이 전혀 없으며 Python 3.8+ 표준 라이브러리만 사용합니다.
+Reports are written in Korean and English by default (r.ko.html and r.en.html).
+Use --lang ko or --lang en to write one language under the exact name you give.
+No network access is made. Python 3.8+ standard library only.
 """
 
 import argparse
@@ -20,6 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from esdiag.i18n import LANGS, T, detect_lang, set_lang
 from esdiag import __version__
 from esdiag.engine import analyze
 from esdiag.rules import MODULES
@@ -38,39 +42,62 @@ def _safe_stdout():
         pass
 
 
+def _pre_lang(argv):
+    """Language named by --lang on the raw command line, read before argparse builds the help text."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    found = None
+    for i, a in enumerate(argv):
+        if a.startswith("--lang="):
+            found = a.split("=", 1)[1]
+        elif a == "--lang" and i + 1 < len(argv):
+            found = argv[i + 1]
+    if found in LANGS:
+        return found
+    return detect_lang()
+
+
+def _lang_path(path, lang, multi):
+    """report.html -> report.ko.html when several languages are written, otherwise unchanged."""
+    if not multi:
+        return path
+    stem, ext = os.path.splitext(path)
+    return "%s.%s%s" % (stem, lang, ext)
+
+
 def main(argv=None):
     _safe_stdout()
+    set_lang(_pre_lang(argv))
     p = argparse.ArgumentParser(
-        description="Elasticsearch 진단 번들 오프라인 분석기 v%s" % __version__,
+        description=T("analyze.main.01") % __version__,
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
-    p.add_argument("bundle", nargs="?", help="진단 번들 zip 파일 또는 압축 해제 디렉터리")
+    p.add_argument("bundle", nargs="?", help=T("analyze.main.02"))
     p.add_argument("--baseline", metavar="FILE",
-                   help="이전 시점의 진단 번들. 지정하면 두 번들을 비교해 증가분·증가율을 판정")
-    p.add_argument("--html", metavar="FILE", help="HTML 리포트 출력 경로")
-    p.add_argument("--md", metavar="FILE", help="Markdown 리포트 출력 경로")
-    p.add_argument("--json", metavar="FILE", help="JSON 결과 출력 경로")
+                   help=T("analyze.main.03"))
+    p.add_argument("--html", metavar="FILE", help=T("analyze.main.04"))
+    p.add_argument("--md", metavar="FILE", help=T("analyze.main.05"))
+    p.add_argument("--json", metavar="FILE", help=T("analyze.main.06"))
     p.add_argument("--out-dir", metavar="DIR",
-                   help="지정 시 <DIR>/es-diag-report.{html,md,json} 으로 일괄 저장")
+                   help=T("analyze.main.07"))
     p.add_argument("--support-summary", metavar="FILE",
-                   help="Elastic 공식 Support 팀 문의 시 참고할 요약(Markdown) 출력 경로. 지정한 때만 만든다")
+                   help=T("analyze.main.08"))
     p.add_argument("--mask", choices=["none", "basic", "strict"], default=None,
-                   help="요약의 마스킹 단계(기본 basic). basic=클러스터·노드·호스트·IP·경로·인증서, "
-                        "strict=basic + 인덱스·별칭·데이터 스트림·정책·템플릿 등 (--support-summary 와 함께)")
+                   help=T("analyze.main.09"))
     p.add_argument("--mask-map", metavar="FILE",
-                   help="별칭 ↔ 원래 이름 매핑 JSON 경로(기본: 요약 파일명 + .mask-map.json). "
-                        "폐쇄망 안에서만 보관한다 (--support-summary 와 함께)")
-    p.add_argument("--no-ok", action="store_true", help="정상 판정 항목 숨김")
-    p.add_argument("--quiet", action="store_true", help="콘솔 출력 생략")
-    p.add_argument("--thresholds", metavar="FILE", help="임계값 재정의 JSON 파일")
+                   help=T("analyze.main.10"))
+    p.add_argument("--lang", choices=["both", "ko", "en", "auto"], default="both",
+                   help=T("analyze.main.lang"))
+    p.add_argument("--no-ok", action="store_true", help=T("analyze.main.11"))
+    p.add_argument("--quiet", action="store_true", help=T("analyze.main.12"))
+    p.add_argument("--thresholds", metavar="FILE", help=T("analyze.main.13"))
     p.add_argument("--print-thresholds", action="store_true",
-                   help="기본 임계값을 JSON 으로 출력하고 종료")
+                   help=T("analyze.main.14"))
     mods = [m.__name__.split(".")[-1] for m in MODULES]
     p.add_argument("--only", metavar="MOD", action="append", choices=mods,
-                   help="특정 룰 모듈만 실행 (%s), 반복 지정 가능" % "|".join(mods))
+                   help=T("analyze.main.15") % "|".join(mods))
     p.add_argument("--fail-on", choices=["critical", "warning", "never"], default="never",
-                   help="해당 심각도 발견 시 종료코드 1 반환 (CI/배치 연계용)")
-    p.add_argument("--debug", action="store_true", help="룰 실행 오류 상세 출력")
-    p.add_argument("--check-env", action="store_true", help="실행 환경 사전 점검 후 종료")
+                   help=T("analyze.main.16"))
+    p.add_argument("--debug", action="store_true", help=T("analyze.main.17"))
+    p.add_argument("--check-env", action="store_true", help=T("analyze.main.18"))
     p.add_argument("--version", action="version", version="esdiag %s" % __version__)
     args = p.parse_args(argv)
 
@@ -81,9 +108,9 @@ def main(argv=None):
         print(json.dumps(DEFAULTS, indent=2, ensure_ascii=False))
         return 0
     if not args.bundle:
-        p.error("분석할 진단 번들 경로가 필요합니다.")
+        p.error(T("analyze.main.19"))
     if not os.path.exists(args.bundle):
-        print("입력 경로를 찾을 수 없습니다: %s" % args.bundle, file=sys.stderr)
+        print(T("analyze.main.20") % args.bundle, file=sys.stderr)
         return 2
 
     overrides = {}
@@ -92,24 +119,17 @@ def main(argv=None):
             overrides = json.load(fh)
 
     if (args.mask or args.mask_map) and not args.support_summary:
-        p.error("--mask, --mask-map 은 --support-summary 와 함께 써야 합니다.")
+        p.error(T("analyze.main.21"))
 
     if args.baseline and not os.path.exists(args.baseline):
-        print("baseline 경로를 찾을 수 없습니다: %s" % args.baseline, file=sys.stderr)
-        return 2
-    try:
-        result = analyze(args.bundle, thresholds=overrides, only=args.only,
-                         skip_ok=args.no_ok, baseline=args.baseline)
-    except ValueError as exc:
-        print("오류: %s" % exc, file=sys.stderr)
+        print(T("analyze.main.22") % args.baseline, file=sys.stderr)
         return 2
 
-    if not args.quiet:
-        out = text_report.console(result, show_ok=not args.no_ok)
-        try:
-            print(out)
-        except UnicodeEncodeError:              # 일부 윈도우 콘솔 대응
-            sys.stdout.write(out.encode("utf-8", "replace").decode("utf-8", "replace") + "\n")
+    # Screen language: --lang ko|en as given, otherwise the locale. The console language always runs first
+    # so that errors appear in it.
+    screen = detect_lang() if args.lang in ("both", "auto") else args.lang
+    langs = [screen] + [l for l in LANGS if l != screen] if args.lang == "both" else [screen]
+    multi = len(langs) > 1
 
     targets = {}
     if args.out_dir:
@@ -124,33 +144,66 @@ def main(argv=None):
     if args.json:
         targets["json"] = args.json
 
-    if "html" in targets:
-        _write(targets["html"], html_report.render(result))
-    if "md" in targets:
-        _write(targets["md"], text_report.markdown(result, show_ok=not args.no_ok))
-    if "json" in targets:
-        _write(targets["json"], json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
-    if args.support_summary:
-        rc = _support_summary(result, args)
-        if rc:
-            return rc
-    for kind, path in targets.items():
-        print("생성: %s (%s)" % (path, kind), file=sys.stderr)
+    bundles = {}                    # opened once, shared by every language pass
+    written = []                    # (message key, arguments), printed in the screen language at the end
+    first_map = None
+    for lang in langs:
+        set_lang(lang)
+        try:
+            result = analyze(args.bundle, thresholds=overrides, only=args.only,
+                             skip_ok=args.no_ok, baseline=args.baseline, bundles=bundles)
+        except ValueError as exc:
+            print(T("analyze.main.23") % exc, file=sys.stderr)
+            return 2
 
-    if args.debug and result.errors:
-        for err in result.errors:
-            print("[룰 오류] %s\n%s" % (err["rule"], err["error"]), file=sys.stderr)
+        if lang == screen and not args.quiet:
+            out = text_report.console(result, show_ok=not args.no_ok)
+            try:
+                print(out)
+            except UnicodeEncodeError:              # some Windows consoles
+                sys.stdout.write(out.encode("utf-8", "replace").decode("utf-8", "replace") + "\n")
 
-    if args.fail_on == "critical" and result.counts[Severity.CRITICAL] > 0:
+        if args.support_summary:
+            rc, first_map = _support_summary(result, args, lang, multi, first_map, written)
+            if rc:
+                return rc
+        if "html" in targets:
+            path = _lang_path(targets["html"], lang, multi)
+            _write(path, html_report.render(result))
+            written.append(("analyze.main.24", (path, "html")))
+        if "md" in targets:
+            path = _lang_path(targets["md"], lang, multi)
+            _write(path, text_report.markdown(result, show_ok=not args.no_ok))
+            written.append(("analyze.main.24", (path, "md")))
+        if "json" in targets:
+            path = _lang_path(targets["json"], lang, multi)
+            _write(path, json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+            written.append(("analyze.main.24", (path, "json")))
+        if lang == screen:
+            screen_result = result
+
+    set_lang(screen)
+    for key, margs in written:
+        print(T(key) % margs, file=sys.stderr)
+
+    if args.debug and screen_result.errors:
+        for err in screen_result.errors:
+            print(T("analyze.main.25") % (err["rule"], err["error"]), file=sys.stderr)
+
+    if args.fail_on == "critical" and screen_result.counts[Severity.CRITICAL] > 0:
         return 1
-    if args.fail_on == "warning" and (result.counts[Severity.CRITICAL] or
-                                      result.counts[Severity.WARNING]):
+    if args.fail_on == "warning" and (screen_result.counts[Severity.CRITICAL] or
+                                      screen_result.counts[Severity.WARNING]):
         return 1
     return 0
 
 
-def _support_summary(result, args):
-    """Elastic 공식 Support 팀 문의용 요약을 만든다. 마스킹 후 식별자가 남으면 아무것도 쓰지 않고 2 를 돌려준다."""
+def _support_summary(result, args, lang, multi, first_map, written):
+    """Write the summary for Elastic Support. If an identifier survives masking, write nothing and return 2.
+
+    Returns (exit code, alias map of the first language). The map file is written once; a later language
+    gets its own map file only if its aliases differ.
+    """
     from esdiag.mask import Masker
     from esdiag.report import handoff
     level = args.mask or "basic"
@@ -158,20 +211,31 @@ def _support_summary(result, args):
     try:
         content = handoff.render(result, masker, level, __version__)
     except handoff.MaskLeak as exc:
-        print("오류: 마스킹 후에도 식별자 %d건이 남아 요약을 만들지 않았습니다. "
-              "--mask strict 로 다시 시도하거나 결과를 직접 확인하세요." % len(exc.leaks), file=sys.stderr)
-        return 2
-    _write(args.support_summary, content)
-    print("생성: %s (Elastic 공식 Support 팀 요약, 마스킹 %s)" % (args.support_summary, level), file=sys.stderr)
+        print(T("analyze._support_summary.01") % len(exc.leaks), file=sys.stderr)
+        return 2, first_map
+    path = _lang_path(args.support_summary, lang, multi)
+    _write(path, content)
+    written.append(("analyze._support_summary.02", (path, level)))
     if level != "none":
+        mapping = masker.mapping()
         map_path = args.mask_map or (args.support_summary + ".mask-map.json")
-        _write(map_path, json.dumps(masker.mapping(), indent=2, ensure_ascii=False))
-        try:
-            os.chmod(map_path, 0o600)
-        except OSError:
-            pass
-        print("생성: %s (별칭 매핑 — 고객 환경 밖으로 내보내지 마세요)" % map_path, file=sys.stderr)
-    return 0
+        if first_map is None:
+            _write(map_path, json.dumps(mapping, indent=2, ensure_ascii=False))
+            try:
+                os.chmod(map_path, 0o600)
+            except OSError:
+                pass
+            written.append(("analyze._support_summary.03", (map_path,)))
+            first_map = mapping
+        elif mapping != first_map:
+            alt = _lang_path(map_path, lang, True)
+            _write(alt, json.dumps(mapping, indent=2, ensure_ascii=False))
+            try:
+                os.chmod(alt, 0o600)
+            except OSError:
+                pass
+            written.append(("analyze._support_summary.03", (alt,)))
+    return 0, first_map
 
 
 def _write(path, content):

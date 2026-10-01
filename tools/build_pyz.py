@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""단일 파일 배포본(esdiag.pyz) 생성. 표준 라이브러리 zipapp 만 사용한다.
+"""Build the single-file distribution (esdiag.pyz) with the standard library zipapp only.
 
-    python3 tools/build_pyz.py            # dist/esdiag.pyz 생성
-    python3 esdiag.pyz 번들.zip --html report.html
+    python3 tools/build_pyz.py            # writes dist/esdiag.pyz
+    python3 esdiag.pyz bundle.zip --html report.html
 
-.pyz 는 Python 인터프리터로 실행하는 zip 파일이다. 폐쇄망에는 이 파일 하나만 반입하면 된다.
+A .pyz is a zip file that the Python interpreter runs. An air-gapped site only needs this one file.
+The message catalogs (esdiag/i18n/*.txt) are copied in with the package and read with pkgutil.
 """
 
 import os
@@ -39,7 +40,7 @@ def main():
         zipapp.create_archive(stage, target, interpreter="/usr/bin/env python3", compressed=True)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
-    print("생성: %s (esdiag %s, %.0f KB)" % (target, esdiag.__version__, os.path.getsize(target) / 1024.0))
+    print("wrote %s (esdiag %s, %.0f KB)" % (target, esdiag.__version__, os.path.getsize(target) / 1024.0))
     return 0
 
 

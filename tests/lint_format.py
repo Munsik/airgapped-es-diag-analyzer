@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""% 포맷 문자열 정적 검사.
-
-'문자열 % 값' 형태에서 포맷 문자열 안의 '%' 가 올바른 변환 지정자(%s, %d, %.1f, %% 등)인지 확인한다.
-'70% 이상' 처럼 리터럴 % 를 %% 로 쓰지 않으면 실행 시 ValueError 가 난다. 해당 분기가 드물게 실행되면
-테스트로는 잡히지 않으므로, 코드를 실행하지 않고 AST 로 전수 검사한다.
+"""Static checks for message keys and %-format strings.
 
     python3 tests/lint_format.py
+
+Without running any rule, this walks the AST of every module and checks:
+  - every T("key"), N_("key") and tr("key") used in code exists in both ko.txt and en.txt
+  - every catalog key is used somewhere (dynamic prefixes and documentation keys are exempt)
+  - for 'text % args' (text is a literal or a catalog key) every % is a valid conversion,
+    the count of fields matches a tuple of arguments, in both languages
+  - plural markers [one|many] follow a number field
+A literal '70% or more' written without %% raises ValueError at run time. A rarely executed branch is
+never caught by tests, so this checks them all statically.
 """
 import ast
 import glob
@@ -15,11 +20,18 @@ import re
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+sys.path.insert(0, ROOT)
+
+from esdiag.i18n import parse  # noqa: E402
+
 SPEC = re.compile(r"%(\([^)]*\))?[#0\- +]*(\*|\d+)?(\.(\*|\d+))?[diouxXeEfFgGcrsa%]")
+MARKER = re.compile(r"\[[^\[\]|%]*\|[^\[\]|%]*\]")
+# Keys built at run time ("sev." + id, "cat." + id ...) and keys read by tools/gen_rules_doc.py.
+DYNAMIC_PREFIXES = ("sev.", "cat.", "grade.", "area.", "status.", "basis.", "doc.", "th.", "gen.", "kb.")
 
 
 def bad_percents(fmt):
-    """유효한 지정자로 설명되지 않는 % 위치 목록."""
+    """Positions of % that no valid conversion explains."""
     covered = set()
     for m in SPEC.finditer(fmt):
         covered.update(range(m.start(), m.end()))
@@ -30,47 +42,88 @@ def count_specs(fmt):
     return len([m for m in SPEC.finditer(fmt) if not m.group(0).endswith("%")])
 
 
+def load(lang):
+    with open(os.path.join(ROOT, "esdiag", "i18n", lang + ".txt"), encoding="utf-8") as fh:
+        return parse(fh.read(), lang + ".txt")
+
+
+def key_of(node):
+    """Catalog key when node is T("k") / tr("k") / N_("k"), else None."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("T", "tr", "N_") \
+            and len(node.args) == 1 and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+        return node.args[0].value
+    return None
+
+
 def main():
+    cats = {"ko": load("ko"), "en": load("en")}
     problems = []
+    used = set()
+    checked = 0
     files = sorted(glob.glob(os.path.join(ROOT, "esdiag", "**", "*.py"), recursive=True)) + \
         [os.path.join(ROOT, "analyze.py")]
-    checked = 0
     for path in files:
-        src = open(path, encoding="utf-8").read()
-        tree = ast.parse(src)
-        # 모듈 수준 문자열 상수(ORCH_NOTE 등)도 포맷 문자열로 쓰이면 검사한다
+        rel = os.path.relpath(path, ROOT)
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        # Module-level string constants that are used as format strings (e.g. _SCOPE) are catalog keys now.
         consts = {}
         for n in tree.body:
-            if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str):
-                for t in n.targets:
-                    if isinstance(t, ast.Name):
-                        consts[t.id] = n.value.value
+            if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name):
+                k = key_of(n.value)
+                if k is not None:
+                    consts[n.targets[0].id] = k
+        for node in ast.walk(tree):
+            # A key stored in a variable or tuple (e.g. a list of messages printed later) still counts as used.
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in cats["ko"]:
+                used.add(node.value)
+            k = key_of(node)
+            if k is not None:
+                used.add(k)
+                for lang, cat in cats.items():
+                    if k not in cat:
+                        problems.append("%s:%d  key %r missing in %s.txt" % (rel, node.lineno, k, lang))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)):
                 continue
-            if isinstance(node.left, ast.Constant) and isinstance(node.left.value, str):
-                fmt = node.left.value
-            elif isinstance(node.left, ast.Name) and node.left.id in consts:
-                fmt = consts[node.left.id]
-            else:
-                continue
-            if True:
+            left = node.left
+            fmts = []
+            k = key_of(left)
+            if k is None and isinstance(left, ast.Name) and left.id in consts:
+                k = consts[left.id]
+            if k is not None:
+                fmts = [(lang, cat[k]) for lang, cat in cats.items() if k in cat]
+            elif isinstance(left, ast.Constant) and isinstance(left.value, str):
+                fmts = [("code", left.value)]
+            for lang, fmt in fmts:
                 checked += 1
                 bad = bad_percents(fmt)
                 if bad:
                     i = bad[0]
-                    problems.append("%s:%d  잘못된 %% 사용: ...%s..." % (
-                        os.path.relpath(path, ROOT), node.lineno, fmt[max(0, i - 12):i + 8].replace("\n", " ")))
+                    problems.append("%s:%d  [%s] bad %% usage: ...%s..." % (
+                        rel, node.lineno, lang, fmt[max(0, i - 12):i + 8].replace("\n", " ")))
                     continue
-                # 인자 개수 대조(튜플 리터럴일 때만 확정 가능)
                 if isinstance(node.right, ast.Tuple) and "%(" not in fmt:
                     n = count_specs(fmt)
                     if n != len(node.right.elts):
-                        problems.append("%s:%d  지정자 %d개 / 인자 %d개 불일치" % (
-                            os.path.relpath(path, ROOT), node.lineno, n, len(node.right.elts)))
+                        problems.append("%s:%d  [%s] %d fields but %d arguments" % (
+                            rel, node.lineno, lang, n, len(node.right.elts)))
+    # Catalog-only checks
+    for lang, cat in cats.items():
+        for k, v in cat.items():
+            for m in MARKER.finditer(v):
+                if lang == "ko":
+                    problems.append("ko.txt: %s has a plural marker" % k)
+                    break
+                if not SPEC.search(v[:m.start()].replace("%%", "")):
+                    problems.append("en.txt: %s plural marker without a number field before it" % k)
+                    break
+    for k in cats["ko"]:
+        if k in used or k.startswith(DYNAMIC_PREFIXES):
+            continue
+        problems.append("ko.txt: key %s is not used by any module" % k)
     for p in problems:
         print("FAIL " + p)
-    print("포맷 문자열 %d개 검사, 문제 %d건" % (checked, len(problems)))
+    print("%d format strings checked, %d problems" % (checked, len(problems)))
     return 1 if problems else 0
 
 

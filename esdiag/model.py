@@ -1,4 +1,6 @@
-"""진단 결과 모델."""
+"""Diagnostic result model."""
+
+from .i18n import T, tr
 
 
 class Severity(object):
@@ -8,35 +10,47 @@ class Severity(object):
     OK = "OK"
 
     ORDER = {CRITICAL: 0, WARNING: 1, INFO: 2, OK: 3}
-    # 헬스 스코어 감점 가중치
+    # Health score penalty weights
     WEIGHT = {CRITICAL: 18, WARNING: 6, INFO: 0, OK: 0}
-    LABEL_KO = {
-        CRITICAL: "치명",
-        WARNING: "주의",
-        INFO: "참고",
-        OK: "정상",
+    # Catalog keys of the display labels
+    LABEL_KEY = {
+        CRITICAL: "sev.critical",
+        WARNING: "sev.warning",
+        INFO: "sev.info",
+        OK: "sev.ok",
     }
+
+    @classmethod
+    def label(cls, severity):
+        """Display label of a severity in the current language."""
+        return T(cls.LABEL_KEY[severity])
+
+
+def category_label(category):
+    """Display label of a category id (cluster, node, shard ...) in the current language."""
+    return T("cat." + str(category))
 
 
 class Finding(object):
-    """룰 1건의 판정 결과.
+    """Result of one rule.
 
-    id           : 룰 식별자 (예: JVM-001)
-    category     : 화면 분류 (클러스터/노드/샤드·인덱스/운영/보안)
-    severity     : Severity 값
-    title        : 한 줄 제목
-    observed     : 실제로 관측된 값(사실)
-    impact       : 이 상태가 유발하는 영향
-    recommend    : 조치 권고 (명령/설정 포함 가능)
-    evidence     : 표 형태 근거 {"columns": [...], "rows": [[...], ...]} 또는 None
-    affected     : 영향 대상 목록(노드명/인덱스명)
-    refs         : 참고 문서 경로(오프라인에서도 의미 있는 문서 제목 + URL)
-    source       : 근거 파일명
+    id           : rule id (for example JVM-001)
+    category     : category id (cluster, node, shard, ops, security ...); category_label() gives the text
+    severity     : Severity value
+    title        : one-line title
+    observed     : the value actually observed (the fact)
+    impact       : what this state causes
+    recommend    : recommended action (may include commands or settings)
+    evidence     : table {"columns": [...], "rows": [[...], ...]} or None
+    affected     : affected targets (node or index names)
+    refs         : reference documents, (title, URL); a title that is a catalog key is translated
+    source       : name of the file the finding rests on
+    basis        : basis label in the current language (set by the engine); basis_id is the neutral id
     """
 
     __slots__ = (
         "id", "category", "severity", "title", "observed", "impact",
-        "recommend", "evidence", "affected", "refs", "source", "basis",
+        "recommend", "evidence", "affected", "refs", "source", "basis", "basis_id",
     )
 
     def __init__(self, id, category, severity, title, observed="",
@@ -51,14 +65,16 @@ class Finding(object):
         self.recommend = recommend
         self.evidence = evidence
         self.affected = affected or []
-        self.refs = refs or []
+        self.refs = [(tr(t), u) for t, u in (refs or [])]
         self.source = source
         self.basis = None
+        self.basis_id = None
 
     def to_dict(self):
         return {
             "id": self.id,
-            "category": self.category,
+            "category": category_label(self.category),
+            "category_id": self.category,
             "severity": self.severity,
             "title": self.title,
             "observed": self.observed,
@@ -69,6 +85,7 @@ class Finding(object):
             "refs": self.refs,
             "source": self.source,
             "basis": self.basis,
+            "basis_id": self.basis_id,
         }
 
     def __repr__(self):

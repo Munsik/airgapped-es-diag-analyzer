@@ -1,197 +1,215 @@
-# 변경 이력
+# Changelog
 
-형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
-각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
+English · [한국어](CHANGELOG.ko.md)
+
+This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Each entry is written as "previous behavior → current behavior (reason)". Use it to trace why a result differs from an earlier report.
+
+## [0.11.0] - 2026-10-01
+
+### Added
+
+- English support. Console, Markdown, HTML, JSON, and the Support summary now come out in Korean and English. User-facing text moved to the `esdiag/i18n/ko.txt` and `en.txt` catalogs. The catalogs are read with `pkgutil`, so they also work in `esdiag.pyz` and the standalone executable
+- `--lang both|ko|en|auto` (default `both`): `both` writes both languages and adds `.ko` / `.en` to the file name (`report.html` → `report.ko.html`, `report.en.html`). `ko` / `en` write one language to the exact name given. The console language comes from the locale or `ESDIAG_LANG`. The bundle is opened once, and the masking map file is written once
+- Language-neutral IDs in the JSON: `category_id`, `basis_id`, `grade_id`, and per-area `area_id` / `status_id` / `category_ids`. Process these values, not the report text
+- `RULES.md` (English) and `RULES.ko.md` (Korean). Both are generated from the catalogs by `tools/gen_rules_doc.py` (`--lang`, `--check`)
+- `README.md`, `COVERAGE.md`, and `CHANGELOG.md` are in English. The Korean versions are `*.ko.md`
+- `docs/STYLE.md`: style, glossary, and placeholder rules. `tests/i18n_check.py`: checks that both catalogs have the same keys, and checks `%` fields, HTML tags, dashes, and banned phrases
+
+### Changed
+
+- Code comments, docstrings, tests, and tool scripts are now in English. Korean output is byte-for-byte identical to the previous version (compared on 3 synthetic bundles)
+- Finding logic that depended on Korean strings now uses language-neutral IDs (category, grade, area, evidence type)
+- The console area table computes column widths in code, so alignment holds when English labels are longer
 
 ## [0.10.0] - 2026-09-29
 
-### 추가
+### Added
 
-- `--support-summary FILE`: Elastic 공식 Support 팀 문의 시 케이스에 붙일 요약 Markdown. 지정한 때만 생성. 치명·주의 판정의 관측·근거 구분·근거 파일·근거 표를 담고, 조치 권고·서버 로그 발췌·hot threads 스택은 담지 않음
-- `--mask none|basic|strict`(기본 basic): 요약의 식별자를 별칭(`node-001` 등)으로 치환. basic 은 클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소, strict 는 인덱스·정책·템플릿 등 추가
-- `--mask-map FILE`: 별칭 ↔ 원래 이름 매핑(권한 0600). 기본 경로는 요약 파일명 + `.mask-map.json`
-- 마스킹 후 원본 식별자나 미등록 IPv4 가 남으면 요약과 매핑을 쓰지 않고 종료 코드 2
-- `tests/test_handoff.py`: 카나리 식별자 기반 합성 검증(외부 번들 불필요)
+- `--support-summary FILE`: a summary Markdown to attach to the case when contacting Elastic Support. It is generated only when specified. It contains the observed value, evidence type, evidence file, and evidence table for Critical and Warning findings. It does not contain recommended actions, server log excerpts, or hot threads stacks
+- `--mask none|basic|strict` (default basic): replaces identifiers in the summary with aliases (`node-001` and so on). basic covers cluster, node, host, IP, path, certificate, license, and repository. strict adds index, policy, template, and similar names
+- `--mask-map FILE`: alias ↔ original name map (permission 0600). The default path is the summary file name + `.mask-map.json`
+- If an original identifier or an unregistered IPv4 address remains after masking, the summary and map are not written and the exit code is 2
+- `tests/test_handoff.py`: synthetic verification based on canary identifiers (no external bundle needed)
 
-### 변경
+### Changed
 
-- README 문구: "Elastic Support" → "Elastic 공식 Support 팀". README 의 포맷 문자열 검사 건수를 실제 값으로 수정
+- README wording: "Elastic Support" → "Elastic 공식 Support 팀" (the official Elastic Support team, in the Korean README). The format-string check count in the README is corrected to the actual value
 
 ## [0.9.3] - 2026-09-29
 
-최종 점검(두 local 번들, Python 3.8.20 / 3.12, HTML 데스크톱·모바일 렌더링)에서 확인된 사항 반영.
+Reflects findings from the final review (two local bundles, Python 3.8.20 / 3.12, HTML rendering on desktop and mobile).
 
-### 변경
+### Changed
 
-- 조치 우선순위: 판정마다 1줄 → 같은 원인 묶음(샤드 미할당: CLU-001·002·003·004.shards_availability·IDX-002, 디스크 워터마크: DISK-001~003·CLU-004.disk)을 대표 1건 + 관련 판정으로 표시. 콘솔·Markdown·HTML·JSON(`priority`) 공통. 본문 판정은 그대로
-- 조치 우선순위 정렬: 같은 심각도 안에서 카테고리 이름 가나다순 → 보고서 영역 순서(가용성 → 자원 → … → 구성)
-- SYS-001: 262144 이상이면 정상 → 262144 미만 치명(bootstrap check), 1048576 미만 참고(공식 권고값: 기본값이 1048576 보다 낮으면 1048576 으로 설정), 이상 정상
-- CLU-003: allocation explain 의 일반 안내문 원문 → 대상 샤드와 거부한 decider 이름(예: `test-index[0] replica: can_allocate=no. 거부한 decider: same_shard`)
-- 수집 시각: ISO 원문 → `2026-09-29 03:34:09 UTC (한국 시간 2026-09-29 12:34)`. JSON 의 `collected_at` 은 그대로 두고 `collected_display` 추가
+- Action priorities: one line per finding → findings with the same cause are grouped into one representative entry plus related findings (unassigned shards: CLU-001, 002, 003, 004.shards_availability, IDX-002; disk watermark: DISK-001 to 003, CLU-004.disk). Applies to console, Markdown, HTML, and JSON (`priority`). The finding list in the body is unchanged
+- Action priority order: within the same severity, category names in Korean alphabetical order → report area order (Availability → Capacity → ... → Configuration)
+- SYS-001: OK at 262144 or higher → Critical below 262144 (bootstrap check), Info below 1048576 (official recommendation: if the default is lower than 1048576, set it to 1048576), OK at or above
+- CLU-003: the generic guidance text from allocation explain → the target shard and the name of the decider that denied it (for example `test-index[0] replica: can_allocate=no` with decider `same_shard`)
+- Collection time: raw ISO string → `2026-09-29 03:34:09 UTC (Korea time 2026-09-29 12:34)`. `collected_at` in the JSON is unchanged, and `collected_display` is added
 
-### 수정
+### Fixed
 
-- 영역별 점검 결과: `OS 설정`(SYS-001~004) 카테고리가 어느 영역에도 속하지 않아 집계에서 빠지던 것 → `구성` 영역에 포함
-- `--no-ok`: 판정 건수·영역 요약에서 정상이 0 으로 표시되던 것 → 화면에서만 숨기고 건수에는 포함
-- `--only`: 도움말의 모듈 목록이 오래되어 settings·sharding·deep·syscalls 가 빠져 있고 오타를 넣으면 아무 룰도 실행하지 않던 것 → 실제 모듈 목록에서 생성, 잘못된 이름은 오류
-- 권고 문구의 백틱(`)이 HTML 에 그대로 보이던 것 제거, SYS-001~003 에 공식 문서 링크 추가
-- CLU-024: 값이 없을 때 "전체 상태 크기 -." 처럼 빈 값이 표시되던 것 → 있는 값만 표시
-- 조치 우선순위의 긴 관측값이 말줄임표 없이 잘리던 것 → `…` 표시
+- Area results: the "OS settings" category (SYS-001 to 004) belonged to no area and was left out of the totals → now included in the Configuration area
+- `--no-ok`: OK showed as 0 in the finding counts and area summary → hidden from the display only, still included in the counts
+- `--only`: the module list in the help was out of date and missed settings, sharding, deep, and syscalls, and a misspelled name ran no rules → the list is generated from the actual modules, and an invalid name is an error
+- Backticks (`) in recommendation text showed literally in the HTML → removed. Official documentation links added to SYS-001 to 003
+- CLU-024: an empty value showed as "total state size -." when no value existed → only the values that exist are shown
+- Long observed values in action priorities were cut off with no ellipsis → shown with `…`
 
-### 검증
+### Verification
 
-- `tests/test_local_mode.py`: 13개 → 18개(SYS-001 권고값 구간, `--no-ok` 건수, 우선순위 묶음)
-- Python 3.8.20 과 3.12 에서 두 번들 판정 결과 동일 확인
+- `tests/test_local_mode.py`: 13 → 18 assertions (SYS-001 recommended-value ranges, `--no-ok` counts, priority grouping)
+- Confirmed that Python 3.8.20 and 3.12 give the same findings for both bundles
 
 ## [0.9.2] - 2026-09-29
 
-### 추가
+### Added
 
-- 단일 번들 판정 룰 107개, 두 번들 비교 룰 9개(판정 ID 164개 + 비교 DIF-001~012)
-- `syscalls/` 분석(local/remote 모드): SYS-001 vm.max_map_count(최소 262144), SYS-002 swap 이 있을 때 vm.swappiness, SYS-003 ES 프로세스 nofile 65535 / nproc 4096, SYS-004 dmesg 의 커널 OOM killer 기록
+- 107 single-bundle rules and 9 bundle-comparison rules (164 finding IDs plus comparison DIF-001~012)
+- `syscalls/` analysis (local/remote mode): SYS-001 vm.max_map_count (minimum 262144), SYS-002 vm.swappiness when swap exists, SYS-003 ES process nofile 65535 / nproc 4096, SYS-004 kernel OOM killer records in dmesg
 
-### 검증
+### Verification
 
-- 검증 범위 확대: api 모드에 더해 local 모드(self-managed 8.19.21 단일 노드) 실번들 검증. remote·다중 노드 local 은 미검증
-- `tests/test_local_mode.py` 추가: 외부 번들 없이 합성 데이터로 local 모드 분기 13개 단정 (LOG-001 오탐이 되살아나면 실패하는 것 확인)
+- Wider validation scope: in addition to api mode, validated on a real local-mode bundle (self-managed 8.19.21, single node). Remote and multi-node local are not validated
+- Added `tests/test_local_mode.py`: 13 assertions on local-mode branches using synthetic data, no external bundle needed (confirmed that it fails if the LOG-001 false positive returns)
 
-### 수정
+### Fixed
 
-- LOG-001: 기동 로그의 JVM 옵션 줄(`-XX:+ExitOnOutOfMemoryError` 등)을 OutOfMemoryError 로 잡아 치명으로 판정하던 것 → 기동 옵션 줄 제외 (실번들에서 확인된 오탐)
-- 로그 스캔: `.log.gz` 를 압축 해제 없이 읽던 것 → 해제 후 스캔, `gc.log*`(JVM 로그)와 `*_server.json`(같은 내용의 JSON 판)은 스캔 대상에서 제외, `translog` 단어 매칭 → `failed to flush` 로 축소
+- LOG-001: JVM option lines in the startup log (such as `-XX:+ExitOnOutOfMemoryError`) were matched as OutOfMemoryError and judged Critical → startup option lines are excluded (a false positive found on a real bundle)
+- Log scan: `.log.gz` was read without decompression → decompressed before scanning. `gc.log*` (JVM log) and `*_server.json` (the JSON copy of the same content) are excluded from the scan. The `translog` word match is narrowed to `failed to flush`
 
 ## [0.9.1] - 2026-09-29
 
-### 변경
+### Changed
 
-- 배포 형태 감지: `node.store.allow_mmap` 설정만 있으면 ECK 로 판정하던 것 → 제외 (self-managed 에서도 흔한 설정이라 CFG-*·SET-004 가 참고로 잘못 내려감)
-- CLU-006: 마스터 후보 4대 이상 짝수를 주의로 보던 것 → 판정 안 함 (공식: 짝수면 ES 가 투표 구성에서 1대를 제외하며 내결함성은 줄지 않음). 2대는 치명 → 주의
-- TP-001: 누적 rejection 1,000건 이상이면 치명 → 수집 시점에 해당 풀 queue 가 남아 있을 때만 치명, 그 외 주의
-- BRK-001: 발동 이력만으로 치명 → 수집 시점 사용률 70% 이상일 때만 치명, 그 외 주의
-- SNP-002: 실패/부분 스냅샷이 있으면 치명 → 그 뒤에 성공 스냅샷이 있으면 주의
-- IDX-002: 치명 → 주의 (primary 는 정상이고 복제본만 미할당)
-- SEC-002: 모든 노드가 loopback 에만 바인딩되어 있으면 주의로 하향
-- IDX-005: 존재하지 않는 `indices.store.throttle` 설정을 안내하던 권고 문구 수정
-- OS-002: swap 사용량을 함께 보고
-- LOG-000: local / remote 로 수집했으나 대상 노드 매칭 실패로 syscalls·logs 가 빠진 경우 `diagnostics.log` 를 근거로 원인과 재수집 방법 안내
-- RULES.md 생성기: 제목이 조건식인 룰의 빈 제목, DISK-008 의 `%%` 표기, 임계값 주석 혼입 수정
-- `tests/check_docs.py`: README 표의 markdown escape(`SET-\*`) 때문에 실패하던 검사 수정
+- Deployment type detection: ECK was assumed whenever the `node.store.allow_mmap` setting was present → removed (this setting is common in self-managed clusters too, which wrongly lowered CFG-* and SET-004 to Info)
+- CLU-006: 4 or more master-eligible nodes, even count, was a Warning → no finding (official: with an even count, ES excludes one node from the voting configuration and fault tolerance does not drop). 2 nodes: Critical → Warning
+- TP-001: 1,000 or more cumulative rejections was Critical → Critical only when the pool still has a queue at collection time, otherwise Warning
+- BRK-001: Critical on trip history alone → Critical only when usage at collection time is 70% or higher, otherwise Warning
+- SNP-002: Critical if any failed or partial snapshot exists → Warning if a successful snapshot exists after it
+- IDX-002: Critical → Warning (the primary is fine and only the replica is unassigned)
+- SEC-002: lowered to Warning when every node binds only to loopback
+- IDX-005: fixed a recommendation that pointed to the nonexistent `indices.store.throttle` setting
+- OS-002: now also reports swap usage
+- LOG-000: when a local or remote collection lacks syscalls or logs because the target node did not match, the cause and how to recollect are explained based on `diagnostics.log`
+- `RULES.md` generator: fixed empty titles for rules whose title is a conditional expression, the `%%` notation in DISK-008, and threshold comments leaking into the text
+- `tests/check_docs.py`: fixed a check that failed on markdown escaping in the README table (`SET-\*`)
 
 ## [0.9.0] - 2026-09-22
 
-첫 공개 버전(0.9.0)입니다. 1.0 전까지는 판정 기준·출력 형식이 바뀔 수 있습니다. **이 도구는 api 모드 진단 번들로 검증되었습니다. local / remote 모드(서버 로그·OS 명령 결과 포함) 번들은 파일 구성이 달라 확인이 필요할 수 있습니다.** 판정 기준은 Elasticsearch 9.4 공식 문서(2026-09 대조)입니다.
-실번들 검증은 9.4.4(Elastic Cloud Hosted, 3노드 단일 tier)로 했고, 9.5.3 다중 tier(hot/warm/cold/frozen) 클러스터의
-실행 결과로 오탐·미탐을 교정했습니다.
+This is the first public version (0.9.0). Until 1.0, finding criteria and output formats may change. **This tool is validated with api-mode diagnostics bundles. Bundles from local / remote mode (including server logs and OS command output) have a different file layout and may need checking.** Finding criteria follow the official Elasticsearch 9.4 documentation (checked 2026-09).
+Real-bundle validation used 9.4.4 (Elastic Cloud Hosted, 3 nodes, single tier). False positives and false negatives were corrected using results from a 9.5.3 multi-tier (hot/warm/cold/frozen) cluster.
 
-### 추가
+### Added
 
-- 단일 번들 판정 룰 106개, 두 번들 비교 룰 9개(판정 ID 160개 + 비교 DIF-001~012)
-- 모든 판정에 근거 구분 표기: 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산
-- 설정 변경 분석(SET-001~006)과 설정 지식 베이스 94종(기본값·dynamic/static·의미·방향별 영향)
-- 과다 샤딩 분석(OVS-001~003), tier 전체 CPU 포화(HOT-005)
-- `--baseline` 비교 모드: 누적 카운터를 증가분·시간당 발생률로 판정, 디스크 포화 예상일, 판정 변화(신규/악화/해소)
-- 입력 미수집 처리: 필요한 파일이 없으면 판정하지 않고 "확인하지 못함" 으로 기록
-- 룰 격리: 룰 하나가 실패해도 나머지 판정과 리포트 생성은 계속, 실패 룰은 "도구 오류로 판정하지 못한 항목" 에 기록
-- 배포 형태 감지(ECH/ECE/ECK/self-managed): 오케스트레이터 관리 설정은 참고로 하향
-- 버전 기준점과 VER-001(기준보다 새 버전 분석 시 알림)
-- 단일 파일 배포본 `esdiag.pyz`, 단독 실행 파일 빌드 스크립트, `--check-env`
-- `RULES.md` 자동 생성기(코드에서 조건·임계값·입력·문서를 추출)
-- 검증 도구: 계산 로직 단정문, 판정 분기 구동, 입력 변형 퍼징, 포맷 문자열 정적 검사, 전체 실행 스크립트
+- 106 single-bundle rules and 9 bundle-comparison rules (160 finding IDs plus comparison DIF-001~012)
+- Every finding shows its evidence type: Official / Reported fact / Tool threshold / Computed
+- Settings change analysis (SET-001 to 006) and 94 settings in the knowledge base (default, dynamic/static, meaning, impact by direction)
+- Oversharding analysis (OVS-001 to 003) and tier-wide CPU saturation (HOT-005)
+- `--baseline` comparison mode: cumulative counters are judged as increments and hourly rates, with projected disk-full date and finding changes (new/worse/resolved)
+- Handling of uncollected input: if a required file is missing, the rule makes no finding and records "cannot be determined"
+- Rule isolation: if one rule fails, the other findings and the report still complete. Failed rules are listed under "Items not evaluated because of a tool error"
+- Deployment type detection (ECH/ECE/ECK/self-managed): settings managed by the orchestrator are lowered to Info
+- Version baseline and VER-001 (notice when a version newer than the baseline is analyzed)
+- Single-file distribution `esdiag.pyz`, a build script for the standalone executable, and `--check-env`
+- Automatic `RULES.md` generator (extracts conditions, thresholds, inputs, and documentation from the code)
+- Verification tools: assertions on calculation logic, driving of finding branches, input mutation fuzzing, static check of format strings, and a full-run script
 
-### 헬스 체크 관점 최종 조정
+### Final adjustments for a health-check view
 
-- 리포트 맨 앞에 **영역별 점검 결과** 추가: 가용성 / 자원·용량 / 데이터 구조 / 성능 / 데이터 보호·운영 / 보안 / 구성(콘솔·Markdown·HTML·JSON 공통)
-- 판정 분류 순서를 헬스 체크 우선순위로 변경(가용성 → 자원 → 데이터 구조 → 성능 → 데이터 보호 → 보안 → 구성). 대부분 참고인 설정 변경이 앞에 오던 순서를 조정
-- 모니터링 구성 확인 추가(OPS-007): 클러스터 안의 모니터링 데이터 유무와 별도 모니터링 클러스터 확인 안내
-- ILM-002: 모든 ILM 오류를 치명 → 롤오버 단계 실패만 치명(write index 가 계속 커짐), 그 외 단계·write index 삭제 실패는 주의
-- IDX-006: 버전 충돌은 정상 운영에서도 증가한다는 해석 안내 추가
+- Added **results by area** at the top of the report: Availability / Capacity / Data structure / Performance / Data protection and operations / Security / Configuration (same in console, Markdown, HTML, and JSON)
+- Changed the finding order to health-check priority (Availability → Capacity → Data structure → Performance → Data protection → Security → Configuration). Settings changes, mostly Info, no longer come first
+- Added a monitoring setup check (OPS-007): whether monitoring data exists in the cluster, with guidance to check for a separate monitoring cluster
+- ILM-002: every ILM error was Critical → only a failure in the rollover step is Critical (the write index keeps growing). Failures in other steps and failures to delete the write index are Warning
+- IDX-006: added a note that version conflicts also grow during normal operation
 
-### 번들 활용 확대 (제로베이스 점검)
+### Wider use of the bundle (zero-base review)
 
-진단 번들 104개 파일을 전수 대조한 결과 53개를 읽지 않고 있었습니다. 안정성 판단에 쓰이는 사실을 담은 파일을 추가로 활용해 현재 62개를 씁니다.
+A full comparison against the 104 files in a diagnostics bundle found 53 that were not being read. The files that hold facts relevant to stability are now used, bringing the total to 62.
 
-- `mapping.json`: 필드 수 한도 근접(MAP-004), text 필드 fielddata(MAP-005), nested 한도(MAP-006), 실제 인덱스의 비양자화 벡터(VEC-005)
-- `ilm_policies.json`: 크기 기준 없는 롤오버(ILM-004, 롤오버 과다의 원인), 롤오버 기준 50GB 초과(ILM-005), 삭제 단계 없음(ILM-006)
-- `cluster_state.json`: voting config exclusion 잔존(CLU-022)
-- `nodes_shutdown_status.json`: 종료 정체·레코드 잔존(SHUT-001)
-- `shard_stores.json`: 저장소 예외(IDX-012)
-- `remote_cluster_info.json`: 원격 클러스터 연결 끊김(OPS-003)
-- `searchable_snapshots_cache_stats.json`: frozen shared cache 교체 과다(FRZ-001)
-- `nodes_stats`: 스크립트 컴파일 한도 발동(PERF-010), ingest processor 별 시간(ING-002), 클러스터 상태 발행 실패·크기(CLU-024), 디스크 I/O 사용률(DISK-008)
-- `nodes.json`: 노드 간 플러그인 불일치(CLU-023)
-- `slm_policies.json`: `snapshot.json` 이 시각 없는 목록 형식이면 SLM 의 마지막 성공 시각으로 RPO 산정(이전에는 RPO 판정 자체가 빠짐), 마지막 실패가 마지막 성공보다 최근인 정책(SNP-007, 지금 백업 실패 중)
-- `ml_trained_models_stats.json`, `watcher_stack.json`, `autoscaling_capacity.json`, `rollup_jobs.json`: 모델 배포 이상(ML-003), watcher 수동 중지(OPS-005), 오토스케일링 요구 용량(OPS-004), deprecated rollup(OPS-006)
+- `mapping.json`: field count near the limit (MAP-004), fielddata on text fields (MAP-005), nested limit (MAP-006), unquantized vectors in actual indices (VEC-005)
+- `ilm_policies.json`: rollover without a size condition (ILM-004, a cause of too many rollovers), rollover condition above 50GB (ILM-005), no delete phase (ILM-006)
+- `cluster_state.json`: leftover voting config exclusions (CLU-022)
+- `nodes_shutdown_status.json`: stalled shutdowns and leftover records (SHUT-001)
+- `shard_stores.json`: store exceptions (IDX-012)
+- `remote_cluster_info.json`: disconnected remote clusters (OPS-003)
+- `searchable_snapshots_cache_stats.json`: excessive frozen shared cache eviction (FRZ-001)
+- `nodes_stats`: script compilation limit tripped (PERF-010), time per ingest processor (ING-002), cluster state publication failures and size (CLU-024), disk I/O utilization (DISK-008)
+- `nodes.json`: plugin mismatch between nodes (CLU-023)
+- `slm_policies.json`: when `snapshot.json` is a list without timestamps, RPO is calculated from the last SLM success time (previously the RPO finding was missing). Also policies whose last failure is newer than the last success (SNP-007, backups failing now)
+- `ml_trained_models_stats.json`, `watcher_stack.json`, `autoscaling_capacity.json`, `rollup_jobs.json`: model deployment problems (ML-003), Watcher stopped manually (OPS-005), autoscaling required capacity (OPS-004), deprecated rollup (OPS-006)
 
-### 9.5.3 번들 검증 (두 번째 실번들)
+### 9.5.3 bundle validation (second real bundle)
 
-- 파일 구성은 9.4.4 와 동일(104개). 주요 파일의 필드 구조를 대조해 9.5 에서 추가된 설정(ES|QL·telemetry)은 판정 무관으로 확인
-- `cluster_stats.indices.search` 의 쿼리 유형별 사용 횟수를 활용해 비용이 큰 검색 패턴 비중 판정 추가(PERF-011). 이전 문서의 "쿼리 관련 판정 불가" 를 "유형 비중은 판정, 인덱스 특정은 불가" 로 정정
-- hot threads 분류를 2단계로 변경: 작업 성격을 결정하는 호출(grok·painless·무시된 필드 저장 등)을 스택 전체에서 먼저 찾고, 없으면 위쪽 프레임부터 분류. 맨 위가 JSON 복사인 문서 파싱 스레드가 "JSON 직렬화" 로 잘못 분류되던 문제 수정. 파싱 프레임 수 12 → 40
-- **메모리**: 대형 번들에서 분석 1회 최대 3.3GB → 약 0.9GB, 17초 → 7초. cluster_state 는 필요한 배열만 잘라 파싱, mapping 은 인덱스 단위로 파싱·요약 후 폐기, 원문 문자열 캐시 제거, 숫자 정규화를 제자리 변환으로
-- 테스트 픽스처가 3노드 번들을 전제하던 부분(노드 재배정·인덱스 설정 복사·기대값 계산)을 번들 무관하게 수정. 두 번들 모두 단정문 55개 통과, 설정 지식 베이스 기본값이 9.5.3 보고값과도 일치
+- The file layout is the same as 9.4.4 (104 files). Comparing the field structure of the main files showed that the settings added in 9.5 (ES|QL, telemetry) do not affect findings
+- Added a finding for the share of expensive search patterns (PERF-011) using the per-query-type usage counts in `cluster_stats.indices.search`. Corrected the earlier documentation statement "query-related findings are not possible" to "the share by type is judged, but the index cannot be identified"
+- hot threads classification now has 2 stages: first look through the whole stack for calls that decide the kind of work (grok, painless, storing ignored fields, and so on), and if none is found, classify from the top frames. Fixed a document-parsing thread whose top frame is a JSON copy being misclassified as "JSON serialization". Parsed frames raised from 12 to 40
+- **Memory**: for a large bundle, peak per analysis 3.3GB → about 0.9GB, and 17 seconds → 7 seconds. cluster_state parses only the arrays it needs, mapping is parsed and summarized per index and then discarded, the raw string cache is removed, and number normalization is done in place
+- Test fixtures that assumed a 3-node bundle (node reassignment, index settings copy, expected value calculation) no longer depend on the bundle. Both bundles pass all 55 assertions, and the knowledge base defaults also match the values reported by 9.5.3
 
-### 문서 사실 오류 정정
+### Documentation fact correction
 
-- "api 모드에는 인덱스별 매핑이 없다" → 틀린 서술. api 모드 번들에도 `mapping.json`(`GET _mapping`)이 있으며 이제 판정에 사용합니다.
+- "api mode has no per-index mapping" was wrong. api-mode bundles also contain `mapping.json` (`GET _mapping`), and it is now used for findings.
 
-### 판정 기준 교정 (공식 문서·ES 동작과 불일치하던 것)
+### Corrected criteria (did not match official documentation or ES behavior)
 
-| 항목 | 이전 | 현재 | 근거 |
+| Item | Previous | Current | Reason |
 | --- | --- | --- | --- |
-| 디스크 워터마크 | 85/90/95% 고정 | max_headroom(200/150/100GB) 반영한 실효 워터마크 | 번들의 ES 보고 기본값, 할당 설정 문서 |
-| frozen 전용 노드 디스크 | low/high 적용 → shared cache 선점유(90%)를 치명으로 판정 | `flood_stage.frozen`(95%, headroom 20GB)만 적용 | frozen tier 동작 |
-| heap 1GB당 샤드 20개 | 전 버전 적용 | 8.3 미만만 적용 | 8.3 릴리스에서 공식 폐기, 필드 매퍼 heap 산정으로 대체 |
-| heap/RAM | 55% | 50% (+2%p 오차 허용) | Important settings |
-| 대형 샤드 | 60GB | 50GB | Size your shards (10~50GB) |
-| refresh_interval | 미지정 인덱스도 판정 | 1초 이하를 명시한 경우만 | 미지정 시 search idle 로 refresh 생략 |
-| swap | swap 존재 시 경고 | memory_lock 적용 시 제외 | swap 대책 3가지 중 하나 충족 |
-| GC 로그 | `-Xlog:disable` 있으면 꺼짐으로 판정 | 마지막 disable 이후 gc 파일 로깅 유무 | JVM 옵션 적용 순서 |
-| dense_vector 양자화 | index_options 미지정도 경고 | 비양자화(hnsw/flat) 명시만 | 8.14 기본 int8_hnsw, 9.1 384차원 이상 bbq_hnsw |
-| codec | 모든 대형 인덱스 | logsdb·time_series 제외 | 해당 모드는 best_compression 기본 |
-| allow_rebalance 기본값 | indices_all_active | always | 9.4.4 가 yml 없이 보고한 값(교차 검증) |
-| search 큐 기본값 | 1000 고정 | 자동 산정(스레드 수 × 1000, 9.4.4 관측) — 명시 사실만 보고 | 번들 ES 보고값 |
-| 스냅샷 RPO | 진행 중·실패 스냅샷 시각까지 '마지막 스냅샷' 으로 사용 | 마지막 성공(SUCCESS) 스냅샷 기준, 성공 없으면 치명 | 복구 가능한 백업만 RPO 에 해당 |
+| Disk watermark | Fixed 85/90/95% | Effective watermark that applies max_headroom (200/150/100GB) | Defaults reported by ES in the bundle, allocation settings documentation |
+| Disk on frozen-only nodes | low/high applied → the shared cache pre-allocation (90%) judged Critical | Only `flood_stage.frozen` (95%, headroom 20GB) applies | Frozen tier behavior |
+| 20 shards per 1GB of heap | Applied to all versions | Applied only below 8.3 | Officially retired in 8.3 and replaced by a field mapper heap estimate |
+| heap/RAM | 55% | 50% (2 percentage points of tolerance) | Important settings |
+| Large shard | 60GB | 50GB | Size your shards (10-50GB) |
+| refresh_interval | Indices without a value were also judged | Only when 1 second or less is set explicitly | When unset, refresh is skipped while the index is search idle |
+| swap | Warning if swap exists | Excluded when memory_lock is applied | Meets one of the 3 swap mitigations |
+| GC log | `-Xlog:disable` present → judged off | Whether gc file logging exists after the last disable | Order in which JVM options apply |
+| dense_vector quantization | Warning even when index_options is unset | Only when unquantized (hnsw/flat) is set explicitly | Default int8_hnsw in 8.14, bbq_hnsw for 384 dimensions or more in 9.1 |
+| codec | All large indices | logsdb and time_series excluded | Those modes default to best_compression |
+| allow_rebalance default | indices_all_active | always | Value 9.4.4 reports without a yml (cross-checked) |
+| search queue default | Fixed 1000 | Auto-sized (threads × 1000, observed on 9.4.4); only stated facts are reported | Value reported by ES in the bundle |
+| Snapshot RPO | In-progress and failed snapshot times were used as the "last snapshot" | Based on the last successful (SUCCESS) snapshot; Critical if there is none | Only a recoverable backup counts toward RPO |
 
-### 오탐 제거
+### False positives removed
 
-| 항목 | 이전 | 현재 |
+| Item | Previous | Current |
 | --- | --- | --- |
-| 쓰기 차단(IDX-008) | 차단된 모든 인덱스를 치명(롤오버된 백킹 인덱스 1,634개 등) | 현재 쓰기 대상·flood stage 차단만 치명, 롤오버 완료·searchable snapshot 은 정상, 단독 인덱스는 참고(IDX-011) |
-| 노드 비교(스펙·샤드 수·자원·작업량) | 전체 데이터 노드를 한꺼번에 비교 | 같은 tier 끼리만 비교, tier 간 차이는 NODE-003 참고 표 |
-| 시스템 인덱스 판별 | `.` 시작 전부 시스템 → `.ds-*` 사용자 데이터 누락 | `.ds-<이름>` 은 데이터 스트림 이름 기준으로 판별 |
-| hot threads | 대기 시간 포함 %, 시그니처 목록 순서로 분류, 치명 가능 | `cpu=` 값만 사용, 최상위 프레임부터 분류, 500ms 스냅샷이라 최대 주의 |
-| 매핑 heap(SHD-010) | 마스터·ML 노드 포함 | 데이터 노드만(공식 산정식 대상) |
-| 필드 한도(MAP-001) | 모두 주의 | ignore_dynamic_beyond_limit=true 면 참고 |
-| 전체 필드 수(MAP-002) | 주의 | 참고(인덱스별 합계라 공식 기준 없음) |
-| 부분 번들 | 파일 미수집을 '미설정' 으로 판정(예: 스냅샷 저장소 없음 치명) | 입력 미수집이면 판정하지 않음 |
-| 설정 이중 판정 | ARS 등이 SET-001 과 전용 룰에서 중복 | 전용 룰 설정은 `[판정: 룰ID]` 표기, SET 심각도에서 제외 |
-| 빈 인덱스(SHD-011) | 막 롤오버된 write index 포함 | 현재 쓰기 대상 제외 |
-| node.processors | 명시만 해도 변경으로 보고 | 실제 할당 CPU 와 같으면 변경 아님 |
-| 버전 알림(VER-001) | 주의(조치 목록에 포함) | 참고 |
-| 과다 샤딩(OVS-001) | 샤드당 50GB 미만이면 과다 | 공식 하한 10GB 미만일 때만, 권장 개수는 상한 50GB 로 산정 |
+| Write block (IDX-008) | Every blocked index was Critical (for example 1,634 rolled-over backing indices) | Critical only for current write targets and flood stage blocks. Rolled-over indices and searchable snapshots are OK. Standalone indices are Info (IDX-011) |
+| Node comparison (spec, shard count, resources, workload) | All data nodes compared together | Compared only within the same tier. Differences between tiers go to the NODE-003 reference table |
+| System index detection | Everything starting with `.` is a system index → `.ds-*` user data missed | `.ds-<name>` is judged by the data stream name |
+| hot threads | % including wait time, classified in signature list order, could be Critical | Uses only the `cpu=` value, classified from the top frame, at most Warning because it is a 500ms snapshot |
+| Mapping heap (SHD-010) | Included master and ML nodes | Data nodes only (the target of the official formula) |
+| Field limit (MAP-001) | All Warning | Info if ignore_dynamic_beyond_limit=true |
+| Total field count (MAP-002) | Warning | Info (a sum across indices, so no official criterion) |
+| Partial bundle | A file not collected was judged "not set" (for example, no snapshot repository was Critical) | No finding when the input was not collected |
+| Double judgment of settings | ARS and others counted twice, in SET-001 and in a dedicated rule | Settings with a dedicated rule are marked `[finding: rule ID]` and excluded from SET severity |
+| Empty index (SHD-011) | Included a write index that had just rolled over | Current write targets excluded |
+| node.processors | Reported as changed even if only set explicitly | Not a change when equal to the CPUs actually allocated |
+| Version notice (VER-001) | Warning (included in the action list) | Info |
+| Oversharding (OVS-001) | Excessive if under 50GB per shard | Only when under the official lower bound of 10GB. The recommended count is calculated with the 50GB upper bound |
 
-### 미탐 보완
+### False negatives fixed
 
-| 항목 | 이전 | 현재 |
+| Item | Previous | Current |
 | --- | --- | --- |
-| OS-001 | 위험 노드가 있으면 주의 노드를 목록에서 누락 | 위험·주의 구간 노드를 모두 표시 |
-| tier 전체 포화 | tier 비교로 바꾼 뒤 신호 소실 | HOT-005 로 별도 판정(편중이 아닌 용량 부족) |
-| fully mounted(cold) 인덱스 | searchable snapshot 전체를 크기 판정에서 제외 | partial(frozen)만 제외, fully mounted 는 실제 크기라 포함 |
-| 컴포넌트 템플릿 | `composed_of` 가 병합되지 않음 → MAP-003·VEC-002·VEC-003 이 컴포넌트 매핑을 보지 못함 | 병합 정상화 |
-| TPL-001 | 패턴 목록이 걸러져 발생 불가 | 정상 동작, 대상도 '레거시 템플릿이 composable 에 가려지는 경우' 로 재설계(동일 priority 중복은 ES 가 생성 거부) |
+| OS-001 | When a node was at risk, Warning nodes were left out of the list | Nodes in both the risk and warning ranges are shown |
+| Tier-wide saturation | Signal lost after switching to tier comparison | Judged separately by HOT-005 (a capacity shortage, not skew) |
+| fully mounted (cold) indices | All searchable snapshots excluded from size findings | Only partial (frozen) are excluded. fully mounted is included because its size is real |
+| Component templates | `composed_of` was not merged → MAP-003, VEC-002, and VEC-003 could not see component mappings | Merge fixed |
+| TPL-001 | Could never fire because the pattern list was filtered | Works, and its target is redefined as "a legacy template hidden by a composable template" (ES refuses to create duplicates with the same priority) |
 
-### 견고성
+### Reliability
 
-- `BRK-002` 의 `"70% 이상"` 이 `%` 포맷 지정자로 해석되어 실행 시 오류 → `%%` 로 수정, 코드 전체 포맷 문자열 정적 검사 도입
-- 번들 파일 형식이 다르면 분석 시작 단계에서 전체가 멈추던 경로 제거
-- 통계 파일의 숫자 문자열을 적재 시 숫자로 정규화, 숫자·dict·문자열 목록 안전 접근자 도입
-- 인덱스 수 × 샤드 수 반복 제거(인덱스 2만·샤드 6만 규모 대응)
-- 오타 난 임계값 키를 조용히 무시하던 동작 → 경고
-- 사용하지 않는 임계값 12개 제거(조정해도 효과가 없던 값)
+- The `"70% or higher"` text in `BRK-002` was read as a `%` format specifier and raised an error at run time → changed to `%%`, and a static check of all format strings in the code was added
+- Removed a path where a different bundle file format stopped the whole run at the start of analysis
+- Numeric strings in stats files are normalized to numbers on load, and safe accessors for numbers, dicts, and string lists were added
+- Removed the repeated index count × shard count loop (handles 20,000 indices and 60,000 shards)
+- A misspelled threshold key was silently ignored → now a warning
+- Removed 12 unused thresholds (values that had no effect when tuned)
 
-### 리포트
+### Report
 
-- 가중치 점수 제거(공식 기준 없는 임의 산식, 대형 클러스터에서 0점) → 건수 기반 종합 판정만 표시
-- 영역 필터가 앵커 이동이라 샌드박스 뷰어에서 동작하지 않음 → 심각도 × 영역 조합 필터 버튼
-- 룰 실행 오류가 본문에 그대로 노출 → 하단 "도구 오류로 판정하지 못한 항목" 에 요약, 추적 정보는 접어서 표시. Markdown 에도 포함
-- 노드 상태 매트릭스, 저장 용량 상위 인덱스, 심각도 분포 막대, 인쇄용 스타일
+- Removed the weighted score (an arbitrary formula with no official basis, and 0 points on large clusters) → only the overall judgment based on counts is shown
+- The area filter used anchor jumps and did not work in sandboxed viewers → severity × area combination filter buttons
+- Rule execution errors appeared directly in the body → summarized under "Items not evaluated because of a tool error" at the bottom, with the trace collapsed. Also included in Markdown
+- Node status matrix, top indices by storage, severity distribution bar, and print styles

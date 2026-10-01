@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""룰 모듈 집합. 새 룰은 함수를 만들어 해당 모듈의 RULES 에 추가하면 된다.
+"""Rule modules. To add a rule, write a function and add it to RULES in its module.
 
-REQUIRES: '설정이 없다' 또는 '대상이 없다' 를 판정하는 룰은 원본 파일이 수집되었을 때만 실행한다.
-파일이 없는 것(미수집)과 값이 없는 것(미설정)은 다른 사실이기 때문이다.
-각 항목은 any-of 목록이며, 하나라도 있으면 실행한다.
+REQUIRES: a rule that reports "setting is missing" or "nothing found" runs only if the source file was collected.
+A missing file (not collected) and a missing value (not set) are different facts.
+Each entry is an any-of list: the rule runs if at least one file is present.
 """
 
+from ..i18n import T
 from . import cluster, deep, guidance, hotspot, nodes, ops, runtime, settings, sharding, shards, syscalls
 
 MODULES = [cluster, settings, nodes, shards, sharding, guidance, hotspot, ops, deep, runtime, syscalls]
@@ -68,13 +69,13 @@ REQUIRES = {
     "r_geoip": [["geoip_stats.json"]], "r_ccr": [["ccr_stats.json"]],
     # runtime
     "r_hot_threads": [["nodes_hot_threads.txt"]],
-    # syscalls (local/remote 모드)
+    # syscalls (local/remote mode)
     "r_os_config": [["syscalls/sysctl.txt", "syscalls/proc-limit.txt", "syscalls/dmesg.txt"]],
     # settings
     "r_cluster_setting_changes": [_CS], "r_yml_shadowed": [_CS, _NODES],
     "r_node_setting_changes": [_NODES], "r_node_setting_consistency": [_NODES],
     "r_index_setting_changes": [_SET],
-    # deep (이전에 읽지 않던 파일)
+    # deep (files that were not read before)
     "r_search_usage": [["cluster_stats.json"]], "r_disk_io_utilization": [_STATS], "r_mapping_limits_actual": [["mapping.json"]], "r_vector_mapping_actual": [["mapping.json"]],
     "r_ilm_policies": [["ilm_policies.json"]], "r_voting_exclusions": [["cluster_state.json"]],
     "r_node_shutdown": [["nodes_shutdown_status.json"]], "r_shard_store_errors": [["shard_stores.json"]],
@@ -90,11 +91,11 @@ REQUIRES = {
 
 
 def missing_inputs(bundle, fn):
-    """충족되지 않은 입력 그룹 목록(비어 있으면 실행 가능)."""
+    """List of input groups that are not satisfied (empty means the rule can run)."""
     miss = []
     for group in REQUIRES.get(fn.__name__, []):
         if not any(bundle.exists(f) for f in group):
-            miss.append(" 또는 ".join(group))
+            miss.append(T("rules.missing_inputs.01").join(group))
     return miss
 
 

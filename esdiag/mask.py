@@ -1,38 +1,39 @@
 # -*- coding: utf-8 -*-
-"""Elastic 공식 Support 팀 전달용 요약의 식별자 마스킹.
+"""Identifier masking for the summary sent to Elastic Support.
 
-번들에서 알려진 식별자를 모아 일관된 별칭(node-001, index-003 ...)으로 바꾼다.
-룰마다 마스킹을 넣지 않고, 요약을 만드는 출력 단계에서 문자열 전체에 한 번 적용한다.
+Collects known identifiers from the bundle and replaces them with consistent aliases (node-001, index-003 ...).
+Masking is not added to each rule. It is applied once to the whole string at the output step that builds the summary.
 
-단계
-  none   마스킹하지 않는다.
-  basic  클러스터명·UUID, 노드명·ID, 호스트명, IP, 경로, 인증서 subject, 라이선스 발급 대상, 저장소 설정값
-  strict basic + 인덱스·데이터 스트림·별칭, ILM/SLM 정책, 템플릿, 스냅샷·저장소 이름, 파이프라인, ML/Transform 이름
+Levels
+  none   no masking.
+  basic  cluster name and UUID, node name and ID, hostname, IP, paths, certificate subject, license issued-to, repository settings
+  strict basic + indices, data streams, aliases, ILM/SLM policies, templates, snapshot and repository names, pipelines, ML/Transform names
 
-원칙
-  - 점(.)으로 시작하는 시스템 이름(.kibana 등)과 '@' 가 들어간 기본 제공 이름(logs@lifecycle 등)은 식별 정보가 아니므로 바꾸지 않는다.
-  - loopback(127.0.0.1, ::1)과 0.0.0.0 은 바꾸지 않는다(바인딩 문제 판정에 필요).
-  - 알려진 이름만 바꾸는 방식이라 목록에 없는 식별자는 놓칠 수 있다. 그래서 출력 직전에 leaks() 로 다시 검사하고,
-    남아 있으면 파일을 쓰지 않는다.
+Rules
+  - System names starting with a dot (.kibana etc.) and built-in names containing '@' (logs@lifecycle etc.) are not identifying, so they are kept.
+  - loopback (127.0.0.1, ::1) and 0.0.0.0 are kept (needed for bind problem findings).
+  - Only known names are replaced, so identifiers missing from the lists can slip through. leaks() therefore checks again just before output,
+    and no file is written if anything remains.
 """
 
 import collections
 import ipaddress
 import re
+from .i18n import T
 
 LEVELS = ("none", "basic", "strict")
 
-# 식별 정보가 아닌 흔한 단어(노드 이름이 이 단어 자체일 때 본문의 같은 단어까지 바뀌는 것을 막는다)
+# common words that are not identifying (stops the same word in the text from being replaced when a node is named exactly that)
 _COMMON = frozenset([
     "elasticsearch", "elastic", "kibana", "logstash", "master", "data", "hot", "warm", "cold", "frozen",
     "content", "ingest", "node", "nodes", "default", "logs", "log", "metrics", "cluster", "test", "true",
     "false", "none", "all", "auto", "index", "indices", "shard", "shards", "es", "yml", "json", "path",
-    # 별칭 접두어(별칭이 다시 치환되지 않도록)
+    # alias prefixes (so aliases are not replaced again)
     "uuid", "host", "cert", "org", "value", "alias", "policy", "template", "repo", "snapshot", "pipeline",
     "job", "datastream", "ip",
 ])
 
-# 기본 설치 경로는 환경을 특정하지 않으므로 그대로 둔다
+# default install paths do not identify an environment, so they are kept
 _DEFAULT_PATHS = frozenset([
     "/usr/share/elasticsearch", "/usr/share/elasticsearch/data", "/usr/share/elasticsearch/logs",
     "/usr/share/elasticsearch/config", "/var/lib/elasticsearch", "/var/log/elasticsearch",
@@ -44,11 +45,11 @@ _DELIM = re.compile(r"([-.:/\\@])")
 _IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w])")
 _IPV6 = re.compile(r"(?<![\w:])[0-9A-Fa-f:]{2,45}(?![\w:])")
 
-# 노드 설정 중 값이 식별 정보일 수 있는 키(부분 일치)
+# node settings whose value may be identifying (partial match)
 _SETTING_HINT = re.compile(
     r"(path|host|address|url|endpoint|bucket|location|dir$|file$|keystore|truststore|certificate|"
     r"cluster\.name|node\.name|initial_master_nodes|seed_hosts|\.key$)", re.I)
-# 노드 attributes 중 값을 바꿀 키(부분 일치). availability_zone 처럼 진단에 필요한 값은 그대로 둔다
+# node attributes whose value is replaced (partial match). Values needed for diagnosis, such as availability_zone, are kept
 _ATTR_HINT = re.compile(r"(host|name|rack|pod|ip$|addr)", re.I)
 
 _KIND_PREFIX = collections.OrderedDict([
@@ -77,7 +78,7 @@ def _keep_ip(text):
 
 
 def _strs(v):
-    """문자열 또는 문자열 목록 → 문자열 목록."""
+    """string or list of strings -> list of strings."""
     if isinstance(v, str):
         return [v]
     if isinstance(v, (list, tuple)):
@@ -86,7 +87,7 @@ def _strs(v):
 
 
 def _walk(obj, want, out, depth=0):
-    """중첩 JSON 을 훑어 want(키 이름 집합)에 해당하는 문자열 값을 out 에 모은다."""
+    """Walks nested JSON and collects string values whose key is in want (a set of key names) into out."""
     if depth > 8:
         return
     if isinstance(obj, dict):
@@ -102,7 +103,7 @@ def _walk(obj, want, out, depth=0):
 
 
 def _flatten(d, prefix=""):
-    """평탄/중첩이 섞인 settings 를 (키, 값) 목록으로."""
+    """settings that mix flat and nested keys -> list of (key, value)."""
     out = []
     if isinstance(d, dict):
         for k, v in d.items():
@@ -115,7 +116,7 @@ def _flatten(d, prefix=""):
 
 
 def _addr_parts(text):
-    """'host/1.2.3.4:9300', '[::1]:9300', '10.0.0.1:9300' → 호스트·IP 부분 목록."""
+    """'host/1.2.3.4:9300', '[::1]:9300', '10.0.0.1:9300' -> list of host and IP parts."""
     parts = []
     for piece in str(text).split("/"):
         piece = piece.strip()
@@ -130,24 +131,24 @@ def _addr_parts(text):
 
 
 class Masker(object):
-    """식별자 → 별칭 치환기. 같은 값은 항상 같은 별칭이 된다."""
+    """identifier -> alias replacer. The same value always gets the same alias."""
 
     def __init__(self, ctx=None, level="basic"):
         if level not in LEVELS:
-            raise ValueError("알 수 없는 마스킹 단계: %s" % level)
+            raise ValueError(T("mask.Masker.__init__.01") % level)
         self.level = level
-        self._alias = {}                # 소문자 원본 → 별칭
-        self._orig = {}                 # 별칭 → 원본(매핑 파일용)
-        self._kind = {}                 # 별칭 → 종류
+        self._alias = {}                # lowercase original -> alias
+        self._orig = {}                 # alias -> original (for the mapping file)
+        self._kind = {}                 # alias -> kind
         self._seq = collections.Counter()
-        self._simple = {}               # 구분자 단위 조회용(소문자)
-        self._special = []              # 공백·쉼표 등이 들어 있어 구분자 단위로 못 찾는 값(긴 것부터)
+        self._simple = {}               # lookup by delimiter-separated token (lowercase)
+        self._special = []              # values with spaces or commas that cannot be found by token (longest first)
         self._max_parts = 1
         if ctx is not None and level != "none":
             self._collect(ctx)
             self._special.sort(key=lambda s: -len(s))
 
-    # ---------------- 등록 ----------------
+    #     # ---------------- registration ----------------
     def add(self, kind, value):
         if self.level == "none" or not isinstance(value, str):
             return
@@ -159,9 +160,9 @@ class Masker(object):
             return
         if v.startswith(".") or ("@" in v and kind in ("policy", "template")):
             return
-        if not re.search(r"[A-Za-z0-9가-힣]", v):
+        if not re.search("[A-Za-z0-9\uac00-\ud7a3]", v):
             return
-        if re.match(r"^_\w+_$", v) or re.match(r"^-?\d+(\.\d+)?$", v):      # _local_, 9200 같은 값
+        if re.match(r"^_\w+_$", v) or re.match(r"^-?\d+(\.\d+)?$", v):      # values like _local_ or 9200
             return
         if _is_ip(v) and _keep_ip(v):
             return
@@ -292,7 +293,7 @@ class Masker(object):
         for s in ids:
             add("job", s)
 
-    # ---------------- 치환 ----------------
+    #     # ---------------- replacement ----------------
     def _alloc_ip(self, text):
         low = text.lower()
         if low not in self._alias:
@@ -300,7 +301,7 @@ class Masker(object):
         return self._alias.get(low, text)
 
     def text(self, s):
-        """문자열 한 개를 마스킹한다."""
+        """Masks one string."""
         if self.level == "none" or not isinstance(s, str) or not s:
             return s
         for v in self._special:
@@ -315,20 +316,20 @@ class Masker(object):
         low = span.lower()
         if low in self._simple:
             return self._simple[low]
-        toks = _DELIM.split(span)               # [값, 구분자, 값, 구분자, ...]
+        toks = _DELIM.split(span)               # [value, delimiter, value, delimiter, ...]
         n = len(toks)
         if n == 1:
             return span
         out, i = [], 0
         while i < n:
-            if i % 2:                           # 구분자 위치에서는 시작하지 않는다
+            if i % 2:                           # do not start at a delimiter position
                 out.append(toks[i])
                 i += 1
                 continue
             hit = None
             for j in range(min(n, i + 2 * self._max_parts), i, -1):
                 if j % 2 == 0:
-                    continue                    # 값으로 끝나는 구간만
+                    continue                    # only spans that end with a value
                 cand = "".join(toks[i:j]).lower()
                 if cand in self._simple:
                     hit = (j, self._simple[cand])
@@ -354,7 +355,7 @@ class Masker(object):
         return self._alloc_ip(text)
 
     def value(self, v):
-        """문자열·목록·dict 를 재귀적으로 마스킹한 사본."""
+        """Recursively masked copy of a string, list or dict."""
         if isinstance(v, str):
             return self.text(v)
         if isinstance(v, list):
@@ -365,12 +366,12 @@ class Masker(object):
             return dict((k, self.value(x)) for k, x in v.items())
         return v
 
-    # ---------------- 검사·매핑 ----------------
+    #     # ---------------- check and mapping ----------------
     def leaks(self, text):
-        """마스킹 결과에 원본 식별자나 IP 가 남아 있으면 [(종류, 별칭)] 로 돌려준다.
+        """If the masked result still contains an original identifier or IP, returns [(kind, alias)].
 
-        치환 로직과 별개로 대소문자 무시 부분 문자열 검색을 쓴다(단어 경계 때문에 놓친 경우를 잡기 위함).
-        길이 6 미만 값은 일반 단어와 겹칠 수 있어 검사에서 제외한다.
+        Uses a case-insensitive substring search separate from the replacement logic (to catch cases missed because of word boundaries).
+        Values shorter than 6 characters can overlap with ordinary words, so they are excluded from the check.
         """
         if self.level == "none":
             return []
@@ -381,11 +382,11 @@ class Masker(object):
                 found.append((self._kind[alias], alias))
         for m in _IPV4.finditer(text):
             if not any(int(p) > 255 for p in m.group(0).split(".")) and not _keep_ip(m.group(0)):
-                found.append(("ip", "(미등록 IP)"))
+                found.append(("ip", T("mask.Masker.leaks.01")))
         return found
 
     def mapping(self):
-        """별칭 → {원본, 종류}. 폐쇄망 안에서만 보관한다."""
+        """alias -> {original, kind}. Kept only inside the air-gapped network."""
         return dict((a, {"original": o, "kind": self._kind[a]}) for a, o in sorted(self._orig.items()))
 
     def counts(self):

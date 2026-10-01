@@ -1,503 +1,513 @@
-# esdiag — Elasticsearch 진단 번들 오프라인 분석기
+# esdiag: offline analyzer for Elasticsearch diagnostic bundles
 
-**버전 0.10.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
+English · [한국어](README.ko.md)
 
-Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
+**Version 0.11.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
 
-보안 등급 때문에 진단 파일을 외부로 반출할 수 없는 환경을 위해 만들었습니다.
-네트워크 호출이 없고, Python 표준 라이브러리만 사용합니다.
+esdiag analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
 
-> **검증 범위: api 모드(ECH 9.4.4·9.5.3)와 local 모드(self-managed 8.19.21 단일 노드, 서버 로그·`syscalls/` 포함) 실번들로 검증되었습니다. remote 모드와 다중 노드 local 모드 번들은 아직 실번들로 검증하지 않았습니다.**
+It is built for environments where security policy does not allow diagnostic files to leave the site.
+It makes no network calls and uses only the Python standard library.
+
+> **Validation scope: verified on real bundles in api mode (ECH 9.4.4 and 9.5.3) and in local mode (self-managed 8.19.21, single node, including server logs and `syscalls/`). Remote mode and multi-node local mode bundles have not been verified on real bundles yet.**
 >
-> **이 도구는 Elastic 공식 지원 도구가 아니며, Elastic 공식 Support 팀의 분석을 대체하지 않습니다.** 판정은 번들에 기록된 사실과 공개된 공식 문서 기준에 근거합니다. 모든 판정에 그 근거가 공식 기준인지, ES 가 보고한 사실인지, 도구가 정한 임계값인지 표기합니다.
+> **This is not an official Elastic tool and does not replace analysis by Elastic Support.** Findings rest on facts recorded in the bundle and on the published official docs. Every finding states whether its basis is an official threshold, a fact reported by Elasticsearch, or a threshold set by the tool.
 
 ---
 
-## 목차
+## Table of contents
 
-- [주요 특징](#주요-특징)
-- [빠른 시작](#빠른-시작)
-- [요구 사항과 실행 환경](#요구-사항과-실행-환경)
-- [진단 번들 수집](#진단-번들-수집)
-- [판정 기준점(버전)](#판정-기준점버전)
-- [판정 체계](#판정-체계)
-- [분석 원칙](#분석-원칙)
-- [리포트 구성](#리포트-구성)
-- [Elastic 공식 Support 팀 요약](#elastic-공식-support-팀-요약)
-- [문서](#문서)
-- [임계값 조정](#임계값-조정)
-- [룰 추가](#룰-추가)
-- [검증](#검증)
-- [한계](#한계)
-- [구조](#구조)
-
----
-
-## 주요 특징
-
-- **폐쇄망 전제** — 외부 통신·CDN·폰트·패키지 설치 없음. 저장소를 그대로 반입해 실행
-- **의존성 없음** — Python 3.8 이상 표준 라이브러리만 사용
-- **116개 판정 룰** — 단일 번들 107개 + 두 번들 비교 9개
-- **원인 단위 조치 우선순위** — 같은 원인에서 나온 판정(예: yellow·미할당 샤드·allocation explain·replica 초과)은 대표 1건으로 묶고 나머지는 관련 판정으로 표시
-- **판정 근거 구분** — 모든 판정에 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산 표기
-- **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 94종 지식 베이스)
-- **과다 샤딩 분석** — 인덱스별로 줄일 수 있는 샤드 수, 데이터 스트림 롤오버 과다, 샤드 크기 분포
-- **tier 인식** — hot/warm/cold/frozen 을 구분해 같은 역할끼리만 비교
-- **비교 모드** — 이전 번들과 비교해 누적 카운터를 "지금도 증가 중인가" 로 판정
-- **대형 번들 대응** — 수백 MB 파일(cluster_state, mapping)은 필요한 조각만 파싱하거나 인덱스 단위로 요약하며 읽어 메모리를 제한
-- **번들 활용 범위 명시** — 진단 번들 104개 파일 중 62개를 판정에 사용, 나머지 42개는 중복·기능 미사용 시 비어 있음·판정 대상 아님으로 사유를 [COVERAGE.md](COVERAGE.md) 에 기록
-- **미수집·도구 오류 구분** — 파일이 없으면 판정하지 않고, 룰 하나가 실패해도 리포트는 끝까지 생성
-- **투명한 명세** — 판정 조건·임계값을 코드에서 자동 추출한 [RULES.md](RULES.md)
-- **단일 파일 HTML 리포트** — 인라인 CSS/JS 만 사용해 어떤 브라우저에서도 오프라인으로 열림
+- [Key features](#key-features)
+- [Quick start](#quick-start)
+- [Requirements and runtime environment](#requirements-and-runtime-environment)
+- [Collecting a diagnostic bundle](#collecting-a-diagnostic-bundle)
+- [Baseline version](#baseline-version)
+- [Findings model](#findings-model)
+- [Analysis principles](#analysis-principles)
+- [Report layout](#report-layout)
+- [Elastic Support summary](#elastic-support-summary)
+- [Documentation](#documentation)
+- [Adjusting thresholds](#adjusting-thresholds)
+- [Adding rules](#adding-rules)
+- [Verification](#verification)
+- [Limitations](#limitations)
+- [Structure](#structure)
 
 ---
 
-## 빠른 시작
+## Key features
+
+- **Built for air-gapped networks**: no external communication, CDN, fonts or package installs. Copy the repository in and run it
+- **No dependencies**: Python 3.8 or later, standard library only
+- **116 rules**: 107 for a single bundle and 9 for comparing two bundles
+- **Action priority by root cause**: findings that come from the same cause (for example yellow status, unassigned shards, allocation explain and replicas above the node count) are grouped under one representative finding, and the rest are shown as related findings
+- **Evidence basis on every finding**: Official / Reported fact / Tool threshold / Computed
+- **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 94 settings)
+- **Oversharding analysis**: shards that can be removed per index, excess data stream rollovers, and shard size distribution
+- **Tier awareness**: hot/warm/cold/frozen are separated, and only nodes with the same role are compared
+- **Comparison mode**: compares against an earlier bundle to decide whether a cumulative counter is still increasing
+- **Large bundle handling**: files of several hundred MB (cluster_state, mapping) are parsed only where needed or summarized per index, which keeps memory bounded
+- **Stated bundle coverage**: 62 of the 104 files in a diagnostic bundle are used for findings. For the other 42, [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) gives the reason: duplicate, empty when the feature is unused, or not a basis for findings
+- **Not collected vs tool error**: a finding is skipped when its input file is missing, and the report is still generated when a single rule fails
+- **Transparent specification**: [RULES.md](RULES.md) ([한국어](RULES.ko.md)) lists every condition and threshold, extracted from the code
+- **Single-file HTML report**: inline CSS and JS only, so it opens offline in any browser
+
+---
+
+## Quick start
 
 ```bash
-# 저장소 클론 후 바로 실행 — pip install 불필요
+# Clone the repository and run it. No pip install needed.
 git clone https://github.com/Munsik/airgapped-es-diag-analyzer.git
 cd airgapped-es-diag-analyzer
 
-# 실행 환경 점검
+# Check the runtime environment
 python3 analyze.py --check-env
 
-# 콘솔 요약
+# Console summary
 python3 analyze.py diagnostic-20260814.zip
 
-# HTML / Markdown / JSON 한 번에
+# HTML, Markdown and JSON in one run
 python3 analyze.py diagnostic-20260814.zip --out-dir ./report
 
-# 이전 번들과 비교
+# Compare with an earlier bundle
 python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
 ```
 
-인터넷이 없는 폐쇄망에서는 저장소를 zip 으로 내려받아 반입한 뒤 압축을 풀고 같은 방식으로 실행합니다.
+On an air-gapped network, download the repository as a zip, carry it in, unzip it and run it the same way.
 
-### 옵션
+### Options
 
-| 옵션 | 설명 |
+| Option | Description |
 | --- | --- |
-| `--html FILE` / `--md FILE` / `--json FILE` | 형식별 출력 경로 |
-| `--out-dir DIR` | `es-diag-report.{html,md,json}` 일괄 생성 |
-| `--baseline FILE` | 이전 시점 번들과 비교해 증가분·증가율 판정 |
-| `--support-summary FILE` | Elastic 공식 Support 팀 문의용 요약(Markdown)을 함께 만듭니다. 지정한 때만 생성 |
-| `--mask none\|basic\|strict` | 요약의 마스킹 단계(기본 `basic`). `--support-summary` 와 함께 사용 |
-| `--mask-map FILE` | 별칭 ↔ 원래 이름 매핑 JSON 경로(기본: 요약 파일명 + `.mask-map.json`). `--support-summary` 와 함께 사용 |
-| `--no-ok` | 정상 판정 숨김 |
-| `--only MODULE` | 특정 룰 모듈만 실행(`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `ops` `deep` `runtime` `syscalls`), 반복 지정 가능 |
-| `--thresholds FILE` | 임계값 재정의 JSON(알 수 없는 키는 경고 후 무시) |
-| `--print-thresholds` | 기본 임계값 출력 |
-| `--fail-on critical\|warning` | 해당 심각도가 있으면 종료 코드 1 |
-| `--quiet` / `--debug` | 콘솔 출력 생략 / 도구 오류 상세 출력 |
-| `--check-env` | 실행 환경 점검 |
-| `--version` | 도구 버전 |
+| `--html FILE` / `--md FILE` / `--json FILE` | Output path for each format |
+| `--out-dir DIR` | Write `es-diag-report.{html,md,json}` together |
+| `--baseline FILE` | Compare with an earlier bundle and report increases and growth rates |
+| `--support-summary FILE` | Also write a summary (Markdown) for a case with Elastic Support. Written only when specified |
+| `--mask none\|basic\|strict` | Masking level for the summary (default `basic`). Use with `--support-summary` |
+| `--mask-map FILE` | Path of the alias-to-original-name mapping JSON (default: summary file name + `.mask-map.json`). Use with `--support-summary` |
+| `--lang both\|ko\|en\|auto` | Output language (default `both`). `both` writes Korean and English and adds `.ko` / `.en` to the file name (`report.html` becomes `report.ko.html` and `report.en.html`). `ko` and `en` write one language and use the name exactly as given. `auto` follows the locale. The environment variable `ESDIAG_LANG` also sets it |
+| `--no-ok` | Hide OK findings |
+| `--only MODULE` | Run only the given rule modules (`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `ops` `deep` `runtime` `syscalls`). Can be repeated |
+| `--thresholds FILE` | JSON file that overrides thresholds (unknown keys are ignored with a warning) |
+| `--print-thresholds` | Print the default thresholds |
+| `--fail-on critical\|warning` | Exit with code 1 if a finding of that severity exists |
+| `--quiet` / `--debug` | Suppress console output / print tool error details |
+| `--check-env` | Check the runtime environment |
+| `--version` | Tool version |
 
-종료 코드: `0` 정상, `1` `--fail-on` 조건 충족, `2` 입력 오류(경로 없음, 진단 번들로 인식 불가) 또는 요약 마스킹 실패(아래 참고).
+Exit codes: `0` success, `1` the `--fail-on` condition was met, `2` input error (path not found, not recognized as a diagnostic bundle) or summary masking failure (see below).
 
 ---
 
-## 요구 사항과 실행 환경
+## Requirements and runtime environment
 
-**외부 패키지 의존성이 없습니다.** `requirements.txt` 는 이를 명시하기 위해 두었습니다. 필요한 것은 Python 인터프리터 하나입니다.
+**There are no external package dependencies.** `requirements.txt` exists only to state this. All you need is a Python interpreter.
 
-| 항목 | 내용 |
+| Item | Details |
 | --- | --- |
-| Python | 3.8 이상 — 3.8.20 / 3.12.3 에서 전체 검증 통과, 두 버전의 판정 결과 동일 |
-| Python 3.6~3.7 | 정적 분석상 동작 가능(3.7 전용 기능 1곳에 폴백 있음), **실행 미검증** |
-| 표준 모듈 | argparse, collections, datetime, fnmatch, html, io, json, math, os, re, sys, tempfile, traceback, zipfile, zlib |
+| Python | 3.8 or later. Full validation passed on 3.8.20 and 3.12.3, with identical findings on both |
+| Python 3.6-3.7 | Should work by static analysis (one 3.7-only feature has a fallback), **not verified by running** |
+| Standard modules | argparse, collections, datetime, fnmatch, html, io, json, math, os, re, sys, tempfile, traceback, zipfile, zlib |
 | OS | Linux / macOS / Windows |
-| 입력 | 진단 번들 zip 또는 압축 해제 디렉터리 |
-| 규모·메모리 | 실번들(인덱스 2,494개, 번들 압축 해제 약 500MB) 7초·최대 약 0.9GB. 합성 번들(인덱스 2만·샤드 6만) 약 30초 |
+| Input | Diagnostic bundle zip or an unzipped directory |
+| Scale and memory | Real bundle (2,494 indices, about 500MB unzipped): 7 seconds, up to about 0.9GB. Synthetic bundle (20,000 indices, 60,000 shards): about 30 seconds |
 
-`--check-env` 는 Python 버전, 표준 모듈, zlib(zip 해제), 콘솔 인코딩, 출력 경로 쓰기 권한을 확인합니다.
-zlib 이 빠진 최소 빌드 Python 이면 번들을 압축 해제한 디렉터리를 입력하면 됩니다.
-콘솔이 한글을 표시하지 못해도 분석은 중단되지 않으며, 파일 출력은 항상 UTF-8 입니다.
+`--check-env` checks the Python version, the standard modules, zlib (needed to unzip), console encoding, and write permission on the output path.
+If Python is a minimal build without zlib, pass the unzipped bundle directory instead.
+If the console cannot display Korean, the analysis still runs. File output is always UTF-8.
 
-### 반입 형태
+### How to bring it in
 
-| 형태 | 방법 |
+| Form | Method |
 | --- | --- |
-| 소스 클론(기본) | `git clone` 후 `python3 analyze.py ...` |
-| 소스 zip 반입 | GitHub 에서 zip 다운로드 후 압축 해제 → `python3 analyze.py ...` |
-| 단일 파일(선택) | `python3 tools/build_pyz.py` 로 `dist/esdiag.pyz` 생성 → `python3 esdiag.pyz ...` |
-| 단독 실행 파일(선택) | `bash tools/build_binary.sh` 로 `dist/esdiag` 생성 → `./esdiag ...` (Python 불필요) |
+| Source clone (default) | `git clone`, then `python3 analyze.py ...` |
+| Source zip | Download the zip from GitHub and unzip it, then `python3 analyze.py ...` |
+| Single file (optional) | Build `dist/esdiag.pyz` with `python3 tools/build_pyz.py`, then `python3 esdiag.pyz ...` |
+| Standalone executable (optional) | Build `dist/esdiag` with `bash tools/build_binary.sh`, then `./esdiag ...` (no Python needed) |
 
-### 환경별 선택
+### Choosing by environment
 
-| 대상 환경 | 방법 |
+| Target environment | Method |
 | --- | --- |
-| Python 3.8 이상이 있음(RHEL 9 기본 3.9, Ubuntu 20.04 이상 등) | 저장소 반입 후 `python3 analyze.py` 실행 |
-| RHEL 8, python3 미설치 | 기본 포함된 `/usr/libexec/platform-python`(3.6)으로 실행 가능하나 미검증. 가능하면 python39 등 설치 |
-| RHEL 7 | 기본 Python 이 2.7 이라 사용 불가. python3 설치 또는 단독 실행 파일 |
-| 폐쇄망 내부 분석용 Windows PC | Python 설치본 사용. 설치가 막혀 있으면 python.org 의 Windows embeddable package 로 실행 가능(미검증) |
-| Python 설치 자체가 불가 | 단독 실행 파일 빌드 |
+| Python 3.8 or later is installed (RHEL 9 ships 3.9, Ubuntu 20.04 and later, and so on) | Copy the repository in and run `python3 analyze.py` |
+| RHEL 8 without python3 | Can run with the bundled `/usr/libexec/platform-python` (3.6), but this is not verified. Install python39 or later if possible |
+| RHEL 7 | The default Python is 2.7 and cannot be used. Install python3 or use the standalone executable |
+| Windows PC used for analysis inside the air-gapped network | Use an installed Python. If installation is blocked, the Windows embeddable package from python.org should work (not verified) |
+| Python cannot be installed at all | Build the standalone executable |
 
-어느 경우든 진단 번들은 폐쇄망 밖으로 나가지 않습니다. 서버가 아니라 폐쇄망 내부의 분석용 PC 에서 분석해도 됩니다.
+In every case the diagnostic bundle stays inside the air-gapped network. You can also analyze on a PC inside the network instead of on the server.
 
-### 단독 실행 파일 빌드(선택)
+### Building the standalone executable (optional)
 
 ```bash
-bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상환경 사용)
+bash tools/build_binary.sh     # dist/esdiag (PyInstaller, uses a build-only virtual environment)
 ```
 
-- PyInstaller 는 빌드 머신에만 필요합니다. 결과물은 Python 없이 실행됩니다.
-- Linux 바이너리는 **빌드한 OS 의 glibc 버전 이상에서만** 실행됩니다. 대상 서버와 같거나 더 오래된 OS 에서 빌드하십시오.
-  그래서 저장소에는 빌드된 바이너리를 넣지 않습니다.
-- Windows 실행 파일은 Windows 에서 빌드해야 합니다.
+- PyInstaller is needed only on the build machine. The result runs without Python.
+- A Linux binary **runs only on the glibc version of the build OS or later**. Build on an OS that is the same as or older than the target server.
+  For this reason the repository does not include a built binary.
+- Build the Windows executable on Windows.
 
 ---
 
-## 진단 번들 수집
+## Collecting a diagnostic bundle
 
-| 수집 모드 | 포함 내용 | 분석 범위 |
+| Collection mode | Contents | Analysis scope |
 | --- | --- | --- |
-| `api` | REST API 응답 | 상태·구성·통계 기반 판정 |
-| `local` / `remote` | API + 서버 로그(elasticsearch.log, gc.log) + `syscalls/` | 위 전부 + 로그 패턴 분석 + OS 설정(SYS-001~004) |
+| `api` | REST API responses | Findings based on state, configuration and statistics |
+| `local` / `remote` | API + server logs (elasticsearch.log, gc.log) + `syscalls/` | Everything above, plus log pattern analysis and OS settings (SYS-001 to SYS-004) |
 
-로그가 있어야 "언제" 발생했는지 확인할 수 있으므로 가능하면 `local` 또는 `remote` 로 수집하십시오.
+Logs show when an event happened, so collect in `local` or `remote` mode when you can.
 
-> **참고:** local 모드의 `syscalls/` 는 진단을 실행한 호스트 한 대의 값만 담습니다.
-> local / remote 모드 번들을 분석할 때는 리포트 하단의 "입력 미수집" · "도구 오류" 항목을 함께 확인하십시오.
-> 수집 방법은 [공식 문서](https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnostic)를 참고하십시오.
+> **Note:** `syscalls/` in local mode holds values from the one host where the diagnostics ran.
+> When you analyze a local or remote mode bundle, also check "Input not collected" and "Tool errors" at the bottom of the report.
+> For how to collect, see the [official docs](https://www.elastic.co/docs/troubleshoot/elasticsearch/diagnostic).
 
-**정기적으로 두 번 수집해 `--baseline` 으로 비교하는 것을 권장합니다.** rejection·GC·circuit breaker 는 노드 기동 이후 누적값이라, 번들 하나로는 지금도 발생 중인지 알 수 없습니다.
+**Collect twice at an interval and compare with `--baseline`.** Rejections, GC and circuit breaker counts are cumulative since node start, so one bundle cannot tell you whether they are still occurring.
 
 ---
 
-## 판정 기준점(버전)
+## Baseline version
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| 판정 기준 Elasticsearch 버전 | **9.4** |
-| 공식 문서 대조 시점 | 2026-09 |
-| 실번들 검증 | 9.4.4(ECH, 3노드 단일 tier) · 9.5.3(ECH, 14노드 hot/warm/cold/frozen) — api 모드 |
-| 검증된 수집 모드 | **api**(위 두 번들) · **local**(diagnostics 9.4.1 로 수집한 self-managed ES 8.19.21 단일 노드, Rocky Linux 9). **remote 와 다중 노드 local 은 미검증** |
-| 대형 번들 검증 | 9.5.3 번들(인덱스 2,494개, cluster\_state 190MB, mapping 178MB): 분석 7초, 최대 메모리 약 0.9GB |
-| 지원 최소 버전 | 8.0(미만은 해당 버전에 있는 API 범위에서만 동작) |
+| Elasticsearch version used as the baseline | **9.4** |
+| Date checked against the official docs | 2026-09 |
+| Verified on real bundles | 9.4.4 (ECH, 3 nodes, single tier) and 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), both in api mode |
+| Verified collection modes | **api** (the two bundles above) and **local** (self-managed ES 8.19.21 single node on Rocky Linux 9, collected with diagnostics 9.4.1). **Remote and multi-node local are not verified** |
+| Large bundle check | 9.5.3 bundle (2,494 indices, cluster\_state 190MB, mapping 178MB): analysis in 7 seconds, peak memory about 0.9GB |
+| Minimum supported version | 8.0 (earlier versions work only for the APIs that exist in that version) |
 
-기준은 `esdiag/__init__.py` 에 고정되어 있고 모든 리포트 상단에 표기됩니다.
-기준보다 새로운 버전을 분석하면 `VER-001`(참고)이 표시됩니다.
+The baseline is fixed in `esdiag/__init__.py` and printed at the top of every report.
+If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 
-### 버전에 따라 판정이 갈리는 지점
+### Findings that depend on the version
 
-| 버전 | 판정 | 내용 |
+| Version | Finding | Detail |
 | --- | --- | --- |
-| 8.0 | SET-\* | `action.destructive_requires_name` 기본값 true |
-| 8.3 | SHD-001 | heap 1GB당 샤드 20개 기준은 8.3 미만에만 적용(8.3 에서 공식 폐기) |
-| 8.5 | DISK-\* | 디스크 워터마크에 max\_headroom(low 200GB / high 150GB / flood 100GB) 반영 |
-| 8.14 | VEC-002 | dense\_vector index\_options 미지정 시 int8\_hnsw 기본 |
-| 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq\_hnsw 기본 |
-| 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` 기본 적용 |
+| 8.0 | SET-\* | `action.destructive_requires_name` defaults to true |
+| 8.3 | SHD-001 | The 20 shards per 1GB of heap guideline applies only below 8.3 (officially retired in 8.3) |
+| 8.5 | DISK-\* | Disk watermarks use max\_headroom (low 200GB / high 150GB / flood 100GB) |
+| 8.14 | VEC-002 | dense\_vector defaults to int8\_hnsw when index\_options is not set |
+| 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq\_hnsw |
+| 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` applies by default |
 
 ---
 
-## 판정 체계
+## Findings model
 
-### 심각도
+### Severity
 
-| 단계 | 의미 |
+| Level | Meaning |
 | --- | --- |
-| 치명 | 지금 장애 중이거나 방치하면 곧 장애가 되는 항목 |
-| 주의 | 성능·안정성·복구력이 이미 손상된 항목 |
-| 참고 | 맥락 정보, 개선 여지 |
-| 정상 | 점검했고 문제가 없는 항목(점검 범위를 보이기 위해 남김) |
+| Critical | An outage is happening now, or will be soon if left alone |
+| Warning | Performance, stability or recoverability is already degraded |
+| Info | Context, or room to improve |
+| OK | Checked and no problem found (kept to show what was checked) |
 
-### 판정 근거 구분
+### Evidence basis
 
-| 구분 | 의미 | 판정 ID 수 |
+| Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
-| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 64 |
-| 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 56 |
-| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 44 |
-| 비교 계산 | 두 번들 간 증가분·증가율·선형 외삽 | DIF-001~012 |
+| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 64 |
+| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 56 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 44 |
+| Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-012 |
 
-고객에게 전달할 때 "공식 기준·사실 보고" 는 근거로, "도구 판단" 은 권고로 제시하십시오.
+When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
 
-### 종합 판정
+### Overall result
 
-치명·주의 건수로만 정합니다. 치명이 있으면 **조치 필요**, 주의 5건 이상이면 **점검 권고**, 주의 1~4건이면 **양호(개선 여지)**, 없으면 **양호** 입니다.
-가중치 점수는 쓰지 않습니다. 공식 기준이 없는 임의 산식이고, 대형 클러스터에서는 쉽게 0점이 되어 정보가 없기 때문입니다.
+Decided only by the number of Critical and Warning findings. Any Critical gives **Action needed**. 5 or more Warnings give **Review recommended**. 1-4 Warnings give **Good (room to improve)**. Otherwise the result is **Good**.
+No weighted score is used. It would be an arbitrary formula with no official basis, and large clusters would easily score 0, which carries no information.
 
-### 확인하지 못한 항목
+### Items that could not be checked
 
-두 종류를 구분해 리포트 하단에 따로 표시합니다. 둘 다 "문제 없음" 이 아니라 **"확인하지 못함"** 입니다.
+These are shown separately at the bottom of the report, in two kinds. Neither means "no problem". Both mean **"could not be checked"**.
 
-| 구분 | 원인 | 조치 |
+| Kind | Cause | Action |
 | --- | --- | --- |
-| 입력 미수집 | 룰이 필요로 하는 파일이 번들에 없음(수집 모드·계정 권한·도구 버전) | 수집 조건 확인 후 재수집 |
-| 도구 오류 | 이 도구가 해당 번들의 데이터 형식을 처리하지 못함 | JSON 출력의 `rule_errors` 를 도구 관리자에게 전달 |
+| Input not collected | A file the rule needs is not in the bundle (collection mode, account privileges, tool version) | Check the collection conditions and collect again |
+| Tool error | This tool could not process the data format of the bundle | Send `rule_errors` from the JSON output to the tool maintainer |
 
-룰 하나가 실패해도 나머지 판정과 리포트 생성은 계속됩니다.
-
----
-
-## 분석 원칙
-
-### tier 인식
-
-데이터 노드는 역할 조합으로 tier(hot / content / warm / cold / frozen)를 나눕니다. **스펙·샤드 수·자원 사용률·작업량은 같은 tier 끼리만 비교합니다.** tier 간 차이는 정상 설계라 판정하지 않고 NODE-003 에 tier 별 스펙 표만 둡니다.
-다만 tier 의 모든 노드가 CPU 한계 근처라면 편중이 아니라 용량 부족이므로 HOT-005 로 판정합니다.
-frozen 전용 노드는 shared cache 가 디스크 대부분을 미리 점유하므로 low/high 워터마크를 적용하지 않고 `flood_stage.frozen`(95%, max_headroom 20GB)만 봅니다.
-
-### 인덱스 분류
-
-- `.ds-<data stream>-*` 백킹 인덱스는 **사용자 데이터**입니다. 데이터 스트림 이름이 `.` 으로 시작할 때만(`.ds-.kibana-*` 등) 시스템 인덱스로 봅니다.
-- searchable snapshot 은 마운트 방식에 따라 다르게 다룹니다.
-  - **partial 마운트(frozen, `partial-*`)**: store 크기가 로컬 캐시 크기라 원본 크기가 아닙니다 → 크기 판정(소형·대형·과다 샤딩)에서 제외
-  - **fully mounted(cold, `restored-*`)**: 샤드 전체가 로컬에 복사되어 store 크기가 실제 크기입니다 → 크기 판정에 포함
-  - 둘 다 스냅샷이 원본이라 shrink·force-merge 를 할 수 없습니다 → 조치형 판정(세그먼트·삭제 문서·인덱스별 과다 샤딩)에서 제외하고, 원인(롤오버·primary 설정) 조치를 안내합니다.
-- 쓰기 차단은 롤오버 완료 인덱스와 searchable snapshot 에서는 ILM 의 정상 동작이므로 판정하지 않습니다.
-  **현재 쓰기 대상(데이터 스트림 write index, alias write index)의 차단과 flood stage 차단만** 치명으로 봅니다.
-
-### 설정 변경 분석
-
-기본값과 다른 설정을 찾아 **원래 기본값 / 현재 값 / dynamic·static / 의미 / 변경 영향(↑ 올림 · ↓ 내림)** 을 보고합니다.
-
-| 판정 | 대상 |
-| --- | --- |
-| SET-001 | persistent / transient 에 명시된 클러스터 설정 중 기본값과 다른 것 |
-| SET-002 | 기본값과 같은 값을 명시한 설정(업그레이드 시 새 기본값을 따라가지 못함) |
-| SET-003 | elasticsearch.yml 값이 API 설정에 가려져 무시되는 경우 |
-| SET-004 | 노드 설정(yml, static 포함) 중 기본값과 다른 것 |
-| SET-005 | 데이터 노드 간 설정 불일치 |
-| SET-006 | 사용자 인덱스 설정 중 기본값과 다른 것 |
-
-공식 적용 우선순위(transient > persistent > elasticsearch.yml > 기본값)를 따릅니다.
-번들의 `cluster_settings_defaults` 는 yml 값이 반영된 값이고, API 로 명시한 키는 기본값을 보고하지 않습니다.
-그래서 **원래 기본값은 공식 문서 기준 지식 베이스(`esdiag/settings_kb.py`)** 를 쓰고, 등록되지 않은 설정은 "설명 미등록" 으로 값만 보고합니다.
-전용 룰이 따로 판정하는 설정(예: ARS → CLU-014)은 표에 `[판정: 룰ID]` 로 표시하고 SET 심각도에서 빼서 이중 판정을 막습니다.
-
-### 과다 샤딩 분석
-
-| 판정 | 기준 |
-| --- | --- |
-| OVS-001 | primary 2개 이상 인덱스의 샤드당 평균이 공식 하한 10GB 미만 → 줄일 수 있는 샤드 = (현재 − ceil(크기/50GB)) × (1 + replica) |
-| OVS-002 | 데이터 스트림 백킹 인덱스의 샤드당 크기 중앙값이 1GB 미만(롤오버 과다) |
-| OVS-003 | 사용자 primary 샤드 크기 분포(<1GB / 1~10GB / 10~50GB / 50GB+), 10GB 미만이 80% 이상이면 전반적 과다 샤딩 |
-
-데이터 스트림의 현재 write index 는 채워지는 중이라 크기 판정에서 제외합니다.
-
-### 비교 모드
-
-| 판정 | 내용 |
-| --- | --- |
-| DIF-001 | 클러스터 상태 악화/개선 |
-| DIF-002~003 | 노드 재기동(uptime 역전), 노드 이탈·신규 |
-| DIF-004~005 | rejection 증가분과 시간당 발생률(증가 없으면 과거 이력으로 분류) |
-| DIF-006~007 | 구간 내 old GC 비중, circuit breaker 발동 증가분 |
-| DIF-008 | 디스크 증가 속도 → high watermark 도달 예상일(선형 외삽, frozen 제외) |
-| DIF-009~011 | 구간 처리량과 분포, 인덱스 증가량, 인덱스 생성·삭제 |
-| DIF-012 | 판정 변화(신규 발생 / 악화 / 해소) |
+If one rule fails, the other findings and the report are still produced.
 
 ---
 
-## 리포트 구성
+## Analysis principles
 
-HTML 리포트(단일 파일)의 순서입니다. Markdown·콘솔도 같은 내용을 담습니다.
+### Tier awareness
 
-1. 헤더 — 클러스터, 버전, 배포 형태, 수집 시각·모드, 도구 버전·판정 기준, 종합 판정, 심각도 분포
-2. **영역별 점검 결과** — 가용성 / 자원·용량 / 데이터 구조 / 성능 / 데이터 보호·운영 / 보안 / 구성의 상태와 건수
-3. 이전 번들 대비 변화(`--baseline` 지정 시)
-4. 조치 우선순위 — 치명·주의 목록, 클릭하면 해당 판정으로 이동
-5. 노드 상태 한눈에 보기 — heap·CPU·load·디스크·샤드 수 막대
-6. 저장 용량 상위 인덱스
-7. 필터 — 심각도 × 분류 조합
-8. 판정 결과 — 헬스 체크 영역 순서로, 관측 / 영향 / 권고 / 근거 표 / 출처 파일 / 참고 문서, 근거 구분 표기
-9. 판정 근거 구분 설명, 확인하지 못한 항목(입력 미수집·도구 오류)
+Data nodes are grouped into tiers (hot / content / warm / cold / frozen) by their role combination. **Specs, shard counts, resource usage and workload are compared only within the same tier.** Differences between tiers are intended design and are not reported as findings. NODE-003 holds only a per-tier spec table.
+If every node in a tier is near its CPU limit, the cause is lack of capacity, not skew, and HOT-005 reports it.
+Dedicated frozen nodes have most of their disk taken up in advance by the shared cache, so the low and high watermarks are not applied. Only `flood_stage.frozen` (95%, max_headroom 20GB) is checked.
 
-### 헬스 체크 영역
+### Index classification
 
-| 영역 | 포함 분류 | 대표 판정 |
+- `.ds-<data stream>-*` backing indices are **user data**. They count as system indices only when the data stream name itself starts with `.` (such as `.ds-.kibana-*`).
+- Searchable snapshots are handled differently depending on the mount type.
+  - **Partial mount (frozen, `partial-*`)**: the store size is the local cache size, not the original size. Excluded from size-based findings (small, large, oversharding).
+  - **Fully mounted (cold, `restored-*`)**: whole shards are copied locally, so the store size is the real size. Included in size-based findings.
+  - For both, the snapshot is the source, so shrink and force-merge are not possible. They are excluded from action-type findings (segments, deleted documents, per-index oversharding), and the guidance points to the cause (rollover, primary count setting).
+- Write blocks on rolled-over indices and on searchable snapshots are normal ILM behavior and are not reported.
+  **Only a block on the current write target (data stream write index, alias write index) and a flood stage block** are Critical.
+
+### Settings change analysis
+
+Settings that differ from the default are reported with the **original default / current value / dynamic or static / meaning / impact of change (↑ raised, ↓ lowered)**.
+
+| Finding | Scope |
+| --- | --- |
+| SET-001 | Cluster settings set in persistent / transient that differ from the default |
+| SET-002 | Settings explicitly set to the same value as the default (they do not follow a new default after an upgrade) |
+| SET-003 | elasticsearch.yml values that are ignored because an API setting overrides them |
+| SET-004 | Node settings (yml, including static) that differ from the default |
+| SET-005 | Settings that differ between data nodes |
+| SET-006 | User index settings that differ from the default |
+
+The official precedence applies (transient > persistent > elasticsearch.yml > default).
+`cluster_settings_defaults` in the bundle already reflects yml values, and a key set through the API does not report its default.
+So the **original default comes from a knowledge base built from the official docs (`esdiag/settings_kb.py`)**. Settings not registered there are reported with the value only and marked "no description registered".
+Settings judged by a dedicated rule (for example ARS, reported as CLU-014) are marked `[finding: rule ID]` in the table and left out of the SET severity, so nothing is reported twice.
+
+### Oversharding analysis
+
+| Finding | Criterion |
+| --- | --- |
+| OVS-001 | Index with 2 or more primaries whose average shard size is below the official lower bound of 10GB. Removable shards = (current - ceil(size/50GB)) × (1 + replicas) |
+| OVS-002 | Median shard size of data stream backing indices is below 1GB (excess rollover) |
+| OVS-003 | Distribution of user primary shard sizes (<1GB / 1-10GB / 10-50GB / 50GB+). If 80% or more are below 10GB, oversharding is general |
+
+The current write index of a data stream is still filling, so it is excluded from size-based findings.
+
+### Comparison mode
+
+| Finding | Detail |
+| --- | --- |
+| DIF-001 | Cluster status got worse or better |
+| DIF-002 to DIF-003 | Node restart (uptime went backward), nodes that left or joined |
+| DIF-004 to DIF-005 | Rejection increase and hourly rate (with no increase, classified as past history) |
+| DIF-006 to DIF-007 | Share of old GC in the interval, increase in circuit breaker trips |
+| DIF-008 | Disk growth rate and the expected date of reaching the high watermark (linear extrapolation, frozen excluded) |
+| DIF-009 to DIF-011 | Throughput and its distribution in the interval, index growth, index creation and deletion |
+| DIF-012 | Change in findings (new / worse / resolved) |
+
+---
+
+## Report layout
+
+The HTML report (single file) has this order. Markdown and console output contain the same content.
+
+1. Header: cluster, version, deployment type, collection time and mode, tool version and baseline, overall result, severity counts
+2. **Results by area**: status and counts for Availability / Capacity / Data structure / Performance / Data protection and operations / Security / Configuration
+3. Changes since the earlier bundle (when `--baseline` is given)
+4. Action priority: list of Critical and Warning findings, each linking to its finding
+5. Node status at a glance: bars for heap, CPU, load, disk and shard count
+6. Top indices by storage
+7. Filter: severity × category
+8. Findings, in health check area order: Observed / Impact / Recommendation / Evidence table / Source file / Reference docs, with the evidence basis
+9. Explanation of evidence basis, and items that could not be checked (input not collected, tool error)
+
+### Health check areas
+
+| Area | Categories | Representative findings |
 | --- | --- | --- |
-| 가용성 | 클러스터 | 상태·미할당 샤드·마스터 정족수·샤드 한도·노드 종료·voting exclusion |
-| 자원·용량 | 노드, 핫스팟·밸런싱 | heap·GC·CPU·디스크·워터마크·스레드풀·circuit breaker·tier 포화·편중 |
-| 데이터 구조 | 샤드·인덱스, 벡터 검색 | 샤드 크기·과다 샤딩·매핑 한도·쓰기 차단·벡터 메모리 |
-| 성능 | 성능 기준, 런타임 | 비용이 큰 검색 패턴·캐시·ingest·hot threads·로그 |
-| 데이터 보호·운영 | 운영 | 스냅샷 RPO·SLM·ILM·라이선스·모니터링·ML |
-| 보안 | 보안·인증 | 보안 기능·TLS 인증서 만료 |
-| 구성 | 설정 기준, 설정 변경 | 공식 필수 설정·기본값 대비 변경 |
+| Availability | Cluster | Status, unassigned shards, master quorum, shard limit, node shutdown, voting exclusion |
+| Capacity | Node, Hot spots and balancing | heap, GC, CPU, disk, watermarks, thread pools, circuit breakers, tier saturation, skew |
+| Data structure | Shards and indices, Vector search | Shard size, oversharding, mapping limits, write blocks, vector memory |
+| Performance | Performance baselines, Runtime | Expensive search patterns, caches, ingest, hot threads, logs |
+| Data protection and operations | Operations | Snapshot RPO, SLM, ILM, license, monitoring, ML |
+| Security | Security and authentication | Security features, TLS certificate expiry |
+| Configuration | Configuration baselines, Settings changes | Required official settings, changes from defaults |
 
 ---
 
-## Elastic 공식 Support 팀 요약
+## Elastic Support summary
 
-`--support-summary FILE` 을 지정하면 분석 리포트와 별도로, Elastic 공식 Support 팀에 문의할 때 케이스에 붙일 수 있는 요약 Markdown 을 만듭니다. 지정하지 않으면 만들지 않습니다.
+With `--support-summary FILE`, esdiag writes a Markdown summary, separate from the analysis report, that you can attach to a case with Elastic Support. Without the option, no summary is written.
 
 ```bash
-python3 analyze.py diagnostic.zip --support-summary support-summary.md            # 기본 basic 마스킹
+python3 analyze.py diagnostic.zip --support-summary support-summary.md            # default basic masking
 python3 analyze.py diagnostic.zip --support-summary support-summary.md --mask strict
 ```
 
-**담는 것**: 클러스터 개요, 영역별 점검 결과, 치명·주의 판정의 관측 사실·근거 구분·번들 내 근거 파일·근거 표(최대 10행), 참고 판정, 확인하지 못한 항목, 노드 요약.
-**담지 않는 것**: 도구의 조치 권고 문구, 서버 로그 발췌 원문, hot threads 스레드 이름과 스택. 로그 판정은 건수·분류만 남습니다.
+**Included**: cluster overview, results by area, and for Critical and Warning findings the observed facts, evidence basis, source files in the bundle and evidence tables (up to 10 rows). Also Info findings, items that could not be checked, and a node summary.
+**Not included**: the tool's recommendation text, raw server log excerpts, hot threads thread names and stacks. For log findings only the counts and categories remain.
 
-마스킹은 값을 `node-001`, `ip-001`, `path-001` 같은 별칭으로 바꾸며, 같은 값은 항상 같은 별칭입니다. 원래 값은 매핑 파일(`*.mask-map.json`, 권한 0600)에만 있으므로 Support 팀 답변의 별칭을 되돌려 볼 수 있습니다. **매핑 파일은 고객 환경 밖으로 내보내지 마십시오.**
+Masking replaces values with aliases such as `node-001`, `ip-001` and `path-001`. The same value always gets the same alias. The original values are only in the mapping file (`*.mask-map.json`, permission 0600), so you can translate aliases in Support's reply back. **Do not take the mapping file out of the customer environment.**
 
-| 단계 | 대상 |
+| Level | Masked |
 | --- | --- |
-| `none` | 마스킹하지 않음 |
-| `basic`(기본) | 클러스터 이름·UUID, 노드 이름·ID·호스트·IP·전송 주소, 노드 설정의 경로·주소·URL·버킷 값, 인증서 경로·subject, 라이선스 발급 대상, 저장소 버킷·경로·엔드포인트 |
-| `strict` | basic + 인덱스·별칭·데이터 스트림·백킹 인덱스, ILM·SLM 정책, 템플릿, 파이프라인, 저장소·스냅샷, ML·transform·rollup ID |
+| `none` | Nothing is masked |
+| `basic` (default) | Cluster name and UUID, node name, ID, host, IP and transport address, paths, addresses, URLs and bucket values in node settings, certificate paths and subjects, license holder, repository buckets, paths and endpoints |
+| `strict` | basic + indices, aliases, data streams and backing indices, ILM and SLM policies, templates, pipelines, repositories and snapshots, ML / transform / rollup IDs |
 
-출력 문자열마다 마스킹을 적용한 뒤, 원본 식별자(대소문자 무시)와 등록되지 않은 IPv4 가 남았는지 별도로 검사합니다. 하나라도 남으면 **요약과 매핑 파일을 쓰지 않고** 종료 코드 2 로 끝납니다. 이 검사는 번들에서 수집한 식별자 기준이므로, 요약을 보내기 전에 눈으로 한 번 확인하십시오.
+After masking each output string, a separate check looks for leftover original identifiers (case-insensitive) and unregistered IPv4 addresses. If anything is left, **the summary and the mapping file are not written** and the exit code is 2. The check covers identifiers collected from the bundle, so read the summary yourself once before you send it.
 
-한계: 6자 미만 값은 일반 단어와 겹칠 수 있어 남았는지 검사하지 않습니다. `.` 로 시작하는 시스템 인덱스, 기본 설치 경로, 루프백 주소, 버전·시각은 마스킹하지 않습니다. 이 요약은 Support 케이스를 대신하지 않으며, 원본 진단 번들을 요청받는 경우는 별도입니다.
+Limits: values shorter than 6 characters can overlap ordinary words, so they are not checked for leftovers. System indices that start with `.`, default install paths, loopback addresses, versions and timestamps are not masked. This summary does not replace a Support case, and a request for the original diagnostic bundle is a separate matter.
 
 ---
 
-## 문서
+## Documentation
 
-| 문서 | 내용 |
+| Document | Contents |
 | --- | --- |
-| [RULES.md](RULES.md) | 116개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
-| [COVERAGE.md](COVERAGE.md) | Elastic 공식 문서 항목별 반영 여부와 판정할 수 없는 항목의 이유 |
-| [CHANGELOG.md](CHANGELOG.md) | 변경 이력 — 이전 동작 → 현재 동작과 근거 |
+| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 116 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
+| [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) | Which official doc items are covered, and why some items cannot be judged |
+| [CHANGELOG.md](CHANGELOG.md) ([한국어](CHANGELOG.ko.md)) | Change history: previous behavior → current behavior, and the reason |
 
-RULES.md 는 직접 수정하지 않습니다. 룰을 바꾼 뒤 재생성합니다.
+Do not edit RULES.md or RULES.ko.md by hand. Regenerate them after you change a rule.
 
 ```bash
-python3 tools/gen_rules_doc.py            # RULES.md 재생성
-python3 tools/gen_rules_doc.py --check    # 임계값 누락·미사용, docstring 누락 검사
+python3 tools/gen_rules_doc.py            # regenerate RULES.md and RULES.ko.md
+python3 tools/gen_rules_doc.py --check    # check for missing or unused thresholds and missing docstrings
 ```
 
 ---
 
-## 임계값 조정
+## Adjusting thresholds
 
 ```bash
-python3 analyze.py --print-thresholds > my.json   # 기본값 추출
-# my.json 에서 필요한 키만 남기고 수정
+python3 analyze.py --print-thresholds > my.json   # extract the defaults
+# keep only the keys you need in my.json and edit them
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 99개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
+The source of each of the 99 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
-## 룰 추가
+## Adding rules
 
-1. 해당 모듈(`esdiag/rules/*.py`)에 함수를 만들고 `RULES` 에 등록합니다.
-2. 함수 docstring 에 판정 조건을 정확히 적습니다(RULES.md 에 그대로 실립니다).
-3. 필요한 입력 파일을 `esdiag/rules/__init__.py` 의 `REQUIRES` 에 선언합니다.
-4. 판정 ID 의 근거 구분을 `esdiag/basis.py` 에 등록합니다.
-5. 새 임계값은 `esdiag/thresholds.py` 에 출처 주석과 함께 추가합니다.
-6. 숫자 필드는 `num()`, dict 목록은 `dicts()`, 문자열 목록은 `strs()`, dict 항목은 `items()` 로 읽습니다(버전별 형식 차이 대응).
-7. `tests/drive_branches.py` 에 판정이 실제로 발생하는 시나리오를 추가합니다(미실행 분기가 남지 않게).
-8. `bash tests/run_all.sh <번들>` 이 통과하는지 확인합니다.
+1. Write a function in the matching module (`esdiag/rules/*.py`) and register it in `RULES`.
+2. State the exact condition in the function docstring. It is copied as is into RULES.md.
+3. Declare the input files it needs in `REQUIRES` in `esdiag/rules/__init__.py`.
+4. Register the evidence basis of the finding ID in `esdiag/basis.py`.
+5. Add any new threshold to `esdiag/thresholds.py` with a source comment.
+6. Read numeric fields with `num()`, lists of dicts with `dicts()`, lists of strings with `strs()` and dict entries with `items()`. This absorbs format differences between versions.
+7. Add a scenario to `tests/drive_branches.py` that makes the finding actually fire, so no branch is left unexecuted.
+8. Confirm that `bash tests/run_all.sh <bundle>` passes.
 
 ```python
 def r_example(ctx):
-    """heap_used_percent >= example_warn 인 노드가 있으면 주의."""
+    """Warning if any node has heap_used_percent >= example_warn."""
     bad = [n.name for n in ctx.nodes if (n.heap_used_pct or 0) >= ctx.t["example_warn"]]
     if not bad:
         return []
-    return [Finding("EX-001", "노드", Severity.WARNING, "예시 판정",
-                    observed="대상 노드: %s" % ", ".join(bad),
-                    impact="영향", recommend="권고",
+    return [Finding("EX-001", "node", Severity.WARNING, T("rules.example.r_example.01"),
+                    observed=T("rules.example.r_example.02") % ", ".join(bad),
+                    impact=T("rules.example.r_example.03"),
+                    recommend=T("rules.example.r_example.04"),
                     evidence=table(["node"], [[b] for b in bad]),
                     source="nodes_stats.json")]
 ```
 
-문자열에 `%` 를 쓰고 `%` 포맷을 적용할 때는 `%%` 로 씁니다(`tests/lint_format.py` 가 검사합니다).
+Do not write user-facing text in the code. Add it under the same key to `esdiag/i18n/ko.txt` and `en.txt` and read it with `T("key")`. Text inside tables is marked with `N_("key")` and converted with `tr()` where it is used. Follow [docs/STYLE.md](docs/STYLE.md) for style and terms. `tests/i18n_check.py` checks the keys, `%` fields and dashes of both catalogs.
+
+When a string contains a literal `%` and a `%` format is applied to it, write `%%` (`tests/lint_format.py` checks this).
 
 ---
 
-## 검증
+## Verification
 
 ```bash
 bash tests/run_all.sh diagnostic.zip
 ```
 
-| 검사 | 내용 | 현재 결과 |
+| Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 489개, 문제 0 |
-| `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현 | 55개 통과 |
-| `tests/drive_branches.py` | 시나리오 51개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 51개 통과, 미실행 판정 분기 0 |
-| `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
-| `tools/gen_rules_doc.py --check` | 임계값·docstring 정합성 | 문제 0 |
-| `tests/test_local_mode.py` | local/remote 모드 전용 처리(logs/ 오탐·gz·이중 집계, syscalls/ 분기, 수집 실패 안내)를 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |
-| `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
-| `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 818 strings, 0 problems |
+| `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases | 55 passed |
+| `tests/drive_branches.py` | Forces every finding branch to run with 51 scenarios and checks the severity too | 51 passed, 0 finding branches not run |
+| `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
+| `tools/gen_rules_doc.py --check` | Consistency of thresholds and docstrings | 0 problems |
+| `tests/test_local_mode.py` | Local and remote mode handling (false positives from logs/, gz, double counting, syscalls/ branches, collection failure messages) on synthetic data. No external bundle needed | 0 failures |
+| `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
+| `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |
 
-`tests/make_broken_bundle.py` 는 정상 번들에 장애 상황을 주입한 번들을 만듭니다(리포트 예시·수동 확인용).
-
----
-
-## 한계
-
-- **remote 모드와 다중 노드 local 모드는 실번들로 검증하지 않았습니다.** local 모드는 단일 노드 테스트 환경 1건으로 확인했으며, 운영 규모 번들에서는 파일 구성(예: 노드별 로그 파일명)이 다를 수 있습니다.
-
-아래는 도구가 아니라 진단 번들 수집 범위에서 오는 한계입니다.
-
-- **쿼리 본문이 없습니다.** 쿼리 유형별 누적 사용 횟수(`cluster_stats.indices.search`)로 비용이 큰 패턴의 비중은 판정하지만(PERF-011), 어떤 인덱스의 어떤 쿼리인지는 slowlog 나 Search Profiler 로 확인해야 합니다.
-- **보안 구성(사용자·역할·권한)은 판정하지 않습니다.** 보안 감사 영역이고 민감 정보라, 보안 기능 활성화와 인증서 만료만 봅니다.
-- **인덱스 설정의 기본값은 번들에 없습니다.** 인덱스 설정 지식 베이스(30종)는 공식 문서 기준이며 번들로 교차 검증되지 않습니다.
-- **OS 커널 설정**(readahead, vm.swappiness, vm.max_map_count 원본값)은 api 모드 번들에 없어 판정하지 않습니다. local / remote 모드의 `syscalls/` 중 sysctl(vm.max_map_count, vm.swappiness), proc-limit(nofile, nproc), dmesg(OOM killer)만 읽습니다(SYS-001~004). readahead, THP, iostat, jstack, netstat 등은 아직 읽지 않습니다.
-- **hot threads 는 수집 순간 500ms 스냅샷**입니다. 부하가 없을 때 수집하면 신호가 나오지 않습니다.
-- 디스크 포화 예상(DIF-008)은 두 시점 사이의 선형 외삽입니다.
-
-판정할 수 없는 항목 전체와 이유는 [COVERAGE.md](COVERAGE.md) 에 있습니다.
+`tests/make_broken_bundle.py` creates a bundle with failure conditions injected into a healthy bundle (for report examples and manual checks).
 
 ---
 
-## 구조
+## Limitations
+
+- **Remote mode and multi-node local mode are not verified on real bundles.** Local mode was checked on one single-node test environment. A production-scale bundle may have a different file layout (for example per-node log file names).
+
+The limits below come from what a diagnostic bundle collects, not from the tool.
+
+- **Query bodies are not in the bundle.** The share of expensive patterns is judged from the cumulative use count per query type (`cluster_stats.indices.search`, PERF-011). To find which query on which index, use slowlog or the Search Profiler.
+- **Security configuration (users, roles, privileges) is not judged.** It belongs to a security audit and is sensitive data. Only whether security features are enabled and certificate expiry are checked.
+- **Index setting defaults are not in the bundle.** The index settings knowledge base (30 settings) is based on the official docs and is not cross-checked against the bundle.
+- **OS kernel settings** (readahead, vm.swappiness, raw vm.max_map_count) are not in api mode bundles, so they are not judged. From `syscalls/` in local and remote mode, only sysctl (vm.max_map_count, vm.swappiness), proc-limit (nofile, nproc) and dmesg (OOM killer) are read (SYS-001 to SYS-004). readahead, THP, iostat, jstack and netstat are not read yet.
+- **Hot threads is a 500ms snapshot** taken at collection time. If you collect when the cluster is idle, it shows no signal.
+- The disk saturation forecast (DIF-008) is a linear extrapolation between two points in time.
+
+[COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) lists every item that cannot be judged, with the reason.
+
+---
+
+## Structure
 
 ```
 .
-├── analyze.py                  # CLI 진입점
-├── requirements.txt            # 외부 의존성 없음(명시용)
+├── analyze.py                  # CLI entry point
+├── requirements.txt            # no external dependencies (for the record)
 ├── esdiag/
-│   ├── __init__.py             # 버전, 판정 기준점, 버전 분기
-│   ├── loader.py               # zip/디렉터리 로딩, api·local·remote 레이아웃 흡수
-│   ├── context.py              # 정규화 계층: 실효 워터마크, tier, 인덱스 분류, 쓰기 대상, 배포 형태
-│   ├── thresholds.py           # 전체 임계값(출처 주석 포함)
-│   ├── settings_kb.py          # 설정 지식 베이스(기본값·종류·의미·영향)
-│   ├── basis.py                # 판정 근거 구분
-│   ├── engine.py               # 룰 실행·격리, 미수집 처리, 종합 판정, 버전 점검
-│   ├── envcheck.py             # 실행 환경 점검(--check-env)
-│   ├── mask.py                 # Support 팀 요약용 마스킹(별칭 치환, 누출 검사)
-│   ├── diff.py                 # 두 번들 비교
+│   ├── __init__.py             # version, baseline, version gates
+│   ├── loader.py               # zip/directory loading, absorbs api, local and remote layouts
+│   ├── context.py              # normalization layer: effective watermarks, tiers, index classification, write targets, deployment type
+│   ├── thresholds.py           # all thresholds (with source comments)
+│   ├── settings_kb.py          # settings knowledge base (defaults, type, meaning, impact)
+│   ├── basis.py                # evidence basis of findings
+│   ├── engine.py               # rule execution and isolation, not-collected handling, overall result, version check
+│   ├── envcheck.py             # runtime environment check (--check-env)
+│   ├── mask.py                 # masking for the Support summary (alias replacement, leak check)
+│   ├── diff.py                 # two-bundle comparison
+│   ├── i18n/                   # ko.txt and en.txt message catalogs, T() / tr() / N_()
 │   ├── model.py                # Finding / Severity
-│   ├── util.py                 # 단위 파싱, 안전 접근자(num·dicts·strs·items)
+│   ├── util.py                 # unit parsing, safe accessors (num, dicts, strs, items)
 │   ├── rules/                  # cluster · settings · nodes · shards · sharding · guidance · hotspot · ops · deep · runtime
-│   └── report/                 # text(콘솔·Markdown) · html(단일 파일) · handoff(Support 팀 요약)
+│   └── report/                 # text (console, Markdown) · html (single file) · handoff (Support summary)
 ├── tools/
-│   ├── gen_rules_doc.py        # RULES.md 생성기 + 정합성 검사
-│   ├── build_pyz.py            # 단일 파일 배포본(esdiag.pyz) 빌드(선택)
-│   └── build_binary.sh         # 단독 실행 파일 빌드(선택)
+│   ├── gen_rules_doc.py        # RULES.md generator + consistency check
+│   ├── build_pyz.py            # build the single-file distribution (esdiag.pyz), optional
+│   └── build_binary.sh         # build the standalone executable, optional
 ├── tests/
-│   ├── run_all.sh              # 전체 검증
-│   ├── check_docs.py           # 문서 정합성 검사
-│   ├── lint_format.py          # 포맷 문자열 정적 검사
-│   ├── verify_logic.py         # 계산 로직 단정문
-│   ├── drive_branches.py       # 판정 분기 구동
-│   ├── fuzz_rules.py           # 입력 변형 퍼징
-│   ├── test_handoff.py         # Support 팀 요약·마스킹 검증(합성 데이터)
-│   └── make_broken_bundle.py   # 장애 주입 번들 생성
-├── RULES.md                    # 룰 명세(자동 생성)
-├── COVERAGE.md                 # 공식 문서 대조표
-└── CHANGELOG.md                # 변경 이력
+│   ├── run_all.sh              # run all checks
+│   ├── i18n_check.py           # message catalog check (keys, fields, dashes)
+│   ├── check_docs.py           # documentation consistency check
+│   ├── lint_format.py          # static check of format strings
+│   ├── verify_logic.py         # assertions on calculation logic
+│   ├── drive_branches.py       # drives every finding branch
+│   ├── fuzz_rules.py          # input mutation fuzzing
+│   ├── test_handoff.py         # Support summary and masking checks (synthetic data)
+│   └── make_broken_bundle.py   # create a bundle with injected failures
+├── docs/STYLE.md              # style and glossary
+├── README.md / README.ko.md
+├── RULES.md / RULES.ko.md      # rule specification (generated)
+├── COVERAGE.md / .ko.md        # comparison with the official docs
+└── CHANGELOG.md / .ko.md       # change history
 ```
 
 ---
 
-## 릴리스 절차
+## Release procedure
 
 ```bash
-# 1) esdiag/__init__.py 의 __version__ 과 CHANGELOG.md 를 갱신
-# 2) 명세 재생성과 전체 검증
+# 1) Update __version__ in esdiag/__init__.py and CHANGELOG.md
+# 2) Regenerate the specification and run all checks
 python3 tools/gen_rules_doc.py
-bash tests/run_all.sh <검증용 번들.zip>
-# 3) (선택) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
+bash tests/run_all.sh <bundle-for-validation.zip>
+# 3) (optional) Build the single-file distribution and attach it to GitHub Releases (do not commit it)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
-git tag v0.10.0
+git tag v0.11.0
 ```
 
-검증용 진단 번들과 그 분석 리포트에는 고객 환경 정보(클러스터 이름, 인덱스 이름, 호스트)가 들어 있으므로 저장소에 올리지 않습니다.
+Validation diagnostic bundles and their analysis reports contain customer environment information (cluster names, index names, hosts), so do not commit them to the repository.
 
 ---
 
-## 라이선스
+## License
 
 This project is open-sourced software licensed under the [MIT license](LICENSE).

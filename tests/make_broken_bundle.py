@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""정상 진단 번들을 변조해 '문제 있는 클러스터' 번들을 만든다.
+"""Build a "broken cluster" bundle by mutating a healthy diagnostics bundle.
 
-룰이 실제로 동작하는지 검증하거나, 고객에게 리포트 예시를 보여줄 때 사용한다.
-    python3 tests/make_broken_bundle.py <정상번들.zip> <출력디렉터리>
+Use it to check that the rules fire, or to produce a sample report.
+    python3 tests/make_broken_bundle.py <healthy_bundle.zip> <output_dir>
 """
 
 import json
@@ -35,7 +35,7 @@ def main():
     root = os.path.join(out, [d for d in os.listdir(out)
                               if os.path.isdir(os.path.join(out, d))][0])
 
-    # 1) 클러스터 red + 미할당 샤드
+    # 1) cluster red + unassigned shards
     h = load(root, "cluster_health.json")
     h.update({"status": "red", "unassigned_shards": 12, "unassigned_primary_shards": 4,
               "active_shards_percent_as_number": 91.3, "number_of_pending_tasks": 137,
@@ -50,12 +50,12 @@ def main():
                   "ur": "ALLOCATION_FAILED" if i % 2 else "NODE_LEFT",
                   "ud": "failed shard on node [xyz]: shard failure, reason [merge failed]"})
         idx[i] = s
-    # 초대형 샤드 + 대형 샤드
+    # very large shard + large shard
     idx[20] = dict(idx[20], store=str(240 * 1024 ** 3), prirep="p")
     idx[21] = dict(idx[21], store=str(80 * 1024 ** 3), prirep="p")
     save(root, "indices.json", idx)
 
-    # 2) 노드 상태 악화
+    # 2) degraded node state
     ns = load(root, "nodes_stats.json")
     for i, (nid, n) in enumerate(ns["nodes"].items()):
         n["jvm"]["mem"]["heap_used_percent"] = [92, 88, 61][i % 3]
@@ -90,13 +90,13 @@ def main():
         n["process"]["mlockall"] = False
     save(root, "nodes.json", ni)
 
-    # 3) 라이선스 만료 임박
+    # 3) license about to expire
     lic = load(root, "licenses.json")
     lic["license"]["expiry_date"] = "2026-08-30T00:00:00.000Z"
     lic["license"]["expiry_date_in_millis"] = 1787011200000
     save(root, "licenses.json", lic)
 
-    # 4) ILM 오류 / SLM 실패 / 스냅샷 실패
+    # 4) ILM error / SLM failure / snapshot failure
     ilm = load(root, os.path.join("commercial", "ilm_explain.json"))
     keys = list(ilm["indices"].keys())[:3]
     for k in keys:
@@ -115,11 +115,11 @@ def main():
         snap["snapshots"][0]["state"] = "PARTIAL"
         snap["snapshots"][0]["shards"] = {"total": 139, "failed": 7, "successful": 132}
         for s in snap["snapshots"]:
-            s["end_time_in_millis"] = 1785000000000      # 오래된 스냅샷
+            s["end_time_in_millis"] = 1785000000000      # old snapshot
             s["start_time_in_millis"] = 1785000000000
     save(root, "snapshot.json", snap)
 
-    # 5) 위험한 클러스터 설정
+    # 5) risky cluster settings
     cs = load(root, "cluster_settings.json")
     cs["persistent"].update({
         "cluster.routing.allocation.enable": "primaries",
@@ -129,7 +129,7 @@ def main():
     cs["transient"]["cluster.routing.allocation.exclude._name"] = "instance-0000000121"
     save(root, "cluster_settings.json", cs)
 
-    # 6) 인덱스 설정: replica 0, 과도한 replica, 블록, 없는 tier
+    # 6) index settings: replica 0, excessive replicas, block, missing tier
     st = load(root, "settings.json")
     names = [n for n in st.keys() if not n.startswith(".")][:3] or list(st.keys())[:3]
     if names:
@@ -142,7 +142,7 @@ def main():
         st[names[1]]["settings"]["index"].setdefault("mapping", {})["total_fields"] = {"limit": "6000"}
     save(root, "settings.json", st)
 
-    # 7) 인덱스 통계: 느린 검색, 삭제 문서, merge throttle
+    # 7) index stats: slow search, deleted documents, merge throttle
     istat = load(root, "indices_stats.json")
     tnames = list(istat["indices"].keys())[:3]
     for t in tnames:
@@ -159,19 +159,19 @@ def main():
         pri["segments"] = dict(pri.get("segments", {}), count=900)
     save(root, "indices_stats.json", istat)
 
-    # 8) internal health 지표 악화
+    # 8) degraded internal health indicators
     ih = load(root, "internal_health.json")
     ih["status"] = "red"
     ih["indicators"]["shards_availability"] = {
         "status": "red", "symptom": "This cluster has unavailable shards.",
         "details": {"unassigned_primaries": 4, "unassigned_replicas": 8},
-        "diagnosis": [{"cause": "primary 샤드가 할당되지 않음",
-                       "action": "allocation explain 으로 decider 사유를 확인"}]}
+        "diagnosis": [{"cause": "primary shard is not allocated",
+                       "action": "check the decider reason with allocation explain"}]}
     ih["indicators"]["disk"]["status"] = "yellow"
     ih["indicators"]["disk"]["symptom"] = "2 nodes are over the high watermark."
     save(root, "internal_health.json", ih)
 
-    # 9) 서버 로그 추가(local 모드 흉내)
+    # 9) add server logs (imitates local mode)
     logdir = os.path.join(root, "logs", "instance-0000000120")
     os.makedirs(logdir, exist_ok=True)
     with open(os.path.join(logdir, "elasticsearch.log"), "w", encoding="utf-8") as fh:
@@ -184,7 +184,7 @@ def main():
             "[2026-08-14T03:14:00,000][WARN ][o.e.c.InternalClusterInfoService] [node-1] EsRejectedExecutionException: rejected execution of coordinating operation",
         ]) + "\n")
 
-    # 10) self-managed 처럼 보이게(오케스트레이터 관리 설정 룰 검증용)
+    # 10) make it look self-managed (to exercise the orchestrator-managed settings rules)
     man = load(root, "manifest.json")
     man["runner"] = "local"
     save(root, "manifest.json", man)
@@ -199,15 +199,15 @@ def main():
         st["network"] = {"host": "127.0.0.1"}
         st.pop("discovery", None)
         n["jvm"]["input_arguments"] = ["-Xms8g", "-Xmx8g", "-XX:+UseG1GC"]
-        n["build_type"] = "tar"                                  # archive 설치
-        n["transport_address"] = "127.0.0.1:9300"                # 실제 바인딩 주소 = loopback
+        n["build_type"] = "tar"                                  # archive install
+        n["transport_address"] = "127.0.0.1:9300"                # actual bind address = loopback
         n["total_indexing_buffer_in_bytes"] = 64 * 1024 ** 2
     save(root, "nodes.json", ni)
     h = load(root, "cluster_health.json")
     h["cluster_name"] = "elasticsearch"
     save(root, "cluster_health.json", h)
 
-    # 11) 문서 수/매핑 오버헤드/search context/벡터
+    # 11) document count, mapping overhead, search contexts, vectors
     istat = load(root, "indices_stats.json")
     names = list(istat["indices"].keys())
     istat["indices"][names[5]]["primaries"]["docs"] = {"count": 900000000, "deleted": 5000}
@@ -251,14 +251,14 @@ def main():
                               "index_options": {"type": "hnsw", "m": 16}}}}}}})
     save(root, "index_templates.json", it)
 
-    # 11-b) 샤드 단위 문서 수(cat shards)
+    # 11-b) per-shard document count (cat shards)
     idx2 = load(root, "indices.json")
     for j, sh in enumerate(idx2):
         if sh.get("prirep") == "p" and sh.get("state") == "STARTED":
             sh["docs"] = str(2100000000 if j % 7 == 0 else (450000000 if j % 7 == 1 else sh.get("docs")))
     save(root, "indices.json", idx2)
 
-    # 11-c) 설정 변경 + 과다 샤딩 주입
+    # 11-c) settings changes + oversharding
     cs3 = load(root, "cluster_settings.json")
     cs3["persistent"]["search"] = {"max_buckets": "500000"}
     cs3["persistent"]["indices"] = {"breaker": {"total": {"limit": "98%"}}}
@@ -276,7 +276,7 @@ def main():
         st3[nm] = {"settings": {"index": {"number_of_shards": "10", "number_of_replicas": "1",
                                           "translog": {"durability": "async"}}}}
         base = json.loads(json.dumps(ist3["indices"][list(ist3["indices"].keys())[0]]))
-        base["primaries"]["store"]["size_in_bytes"] = 20 * 1024 ** 3        # 20GB 를 10개로 = 샤드당 2GB
+        base["primaries"]["store"]["size_in_bytes"] = 20 * 1024 ** 3        # 20GB over 10 shards = 2GB per shard
         base["primaries"]["docs"] = {"count": 1000000, "deleted": 0}
         ist3["indices"][nm] = base
         for p_ in range(10):
@@ -287,7 +287,7 @@ def main():
     save(root, "indices_stats.json", ist3)
     save(root, "indices.json", sh3)
 
-    # 12) 수집 시각을 8시간 뒤로(=diff 비교용 '현재' 번들)
+    # 12) move the collection time 8 hours later (the "current" bundle for diff comparison)
     import datetime
     man = load(root, "manifest.json")
     ts = man.get("collectionDate")

@@ -1,22 +1,23 @@
 # -*- coding: utf-8 -*-
-"""노드 레벨 판정 룰 (JVM / OS / 디스크 / 스레드풀 / 브레이커)."""
+"""Node-level rules (JVM / OS / disk / thread pools / breakers)."""
 
 import collections
 
+from ..i18n import T, N_
 from ..model import Finding, Severity, table
 from ..util import dig, fmt_bytes, fmt_ms, fmt_num, pct, dicts, num, items
 
-CAT = "노드"
-DOC_HEAP = ("Heap 크기 설정",
+CAT = "node"
+DOC_HEAP = (N_("rules.nodes._.01"),
             "https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration")
-DOC_DISK = ("디스크 기반 샤드 할당(워터마크)",
+DOC_DISK = (N_("rules.nodes._.02"),
             "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings")
-DOC_TP = ("스레드풀과 rejection",
+DOC_TP = (N_("rules.nodes._.03"),
           "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings")
 
 
 def r_heap_usage(ctx):
-    """노드별 jvm.mem.heap_used_percent(수집 순간값). >= heap_used_pct_crit → 치명, >= heap_used_pct_warn → 주의, 그 외 정상."""
+    """Per-node jvm.mem.heap_used_percent (point-in-time at collection). >= heap_used_pct_crit → Critical, >= heap_used_pct_warn → Warning, otherwise OK."""
     rows, warn, crit = [], [], []
     for n in ctx.nodes:
         used = n.heap_used_pct
@@ -32,30 +33,28 @@ def r_heap_usage(ctx):
         return []
     if crit:
         return [Finding(
-            "JVM-001", CAT, Severity.CRITICAL, "Heap 사용률 위험 수준",
-            observed="heap 사용률 %d%% 이상 노드: %s" % (ctx.t["heap_used_pct_crit"], ", ".join(crit)),
-            impact="old GC 가 잦아지고 STW 시간이 길어지면서 요청 지연·circuit breaker·노드 이탈로 이어집니다.",
-            recommend="수집 시점의 순간값이므로 먼저 지속성을 확인합니다. 원인은 대개 "
-                      "(1) 과도한 샤드 수, (2) fielddata/aggregation 메모리, (3) 대용량 bulk/스크롤, "
-                      "(4) 매핑 폭증 중 하나입니다. 아래 샤드·fielddata 항목과 함께 봅니다.",
+            "JVM-001", CAT, Severity.CRITICAL, T("rules.nodes.r_heap_usage.01"),
+            observed=T("rules.nodes.r_heap_usage.02") % (ctx.t["heap_used_pct_crit"], ", ".join(crit)),
+            impact=T("rules.nodes.r_heap_usage.03"),
+            recommend=T("rules.nodes.r_heap_usage.04"),
             evidence=table(["node", "heap%", "used", "max", "RAM", "roles"], rows),
             affected=crit, refs=[DOC_HEAP], source="nodes_stats.json")]
     if warn:
         return [Finding(
-            "JVM-001", CAT, Severity.WARNING, "Heap 사용률 높음",
-            observed="heap 사용률 %d%% 이상 노드: %s" % (ctx.t["heap_used_pct_warn"], ", ".join(warn)),
-            impact="여유 heap 이 줄면 GC 빈도가 올라가고 응답시간 변동이 커집니다.",
-            recommend="샤드 수, fielddata, 대형 aggregation 사용 여부를 함께 점검합니다.",
+            "JVM-001", CAT, Severity.WARNING, T("rules.nodes.r_heap_usage.05"),
+            observed=T("rules.nodes.r_heap_usage.02") % (ctx.t["heap_used_pct_warn"], ", ".join(warn)),
+            impact=T("rules.nodes.r_heap_usage.06"),
+            recommend=T("rules.nodes.r_heap_usage.07"),
             evidence=table(["node", "heap%", "used", "max", "RAM", "roles"], rows),
             affected=warn, refs=[DOC_HEAP], source="nodes_stats.json")]
-    return [Finding("JVM-001", CAT, Severity.OK, "Heap 사용률 정상",
-                    observed="모든 노드가 %d%% 미만입니다." % ctx.t["heap_used_pct_warn"],
+    return [Finding("JVM-001", CAT, Severity.OK, T("rules.nodes.r_heap_usage.08"),
+                    observed=T("rules.nodes.r_heap_usage.09") % ctx.t["heap_used_pct_warn"],
                     evidence=table(["node", "heap%", "used", "max", "RAM", "roles"], rows),
                     source="nodes_stats.json")]
 
 
 def r_heap_sizing(ctx):
-    """heap_max >= heap_max_bytes_crit(32GiB) 또는 using_compressed_ordinary_object_pointers=false → 주의(JVM-002). heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → 주의(JVM-003). heap_init(Xms) != heap_max(Xmx) → 주의(JVM-004)."""
+    """heap_max >= heap_max_bytes_crit (32GiB) or using_compressed_ordinary_object_pointers=false → Warning (JVM-002). heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → Warning (JVM-003). heap_init (Xms) != heap_max (Xmx) → Warning (JVM-004)."""
     out, rows = [], []
     oops_off, oversize, mismatch, too_big_vs_ram = [], [], [], []
     for n in ctx.nodes:
@@ -76,35 +75,31 @@ def r_heap_sizing(ctx):
     if oops_off or oversize:
         targets = sorted(set(oops_off) | set(oversize))
         out.append(Finding(
-            "JVM-002", CAT, Severity.WARNING, "Heap 32GB 경계 초과(compressed oops 손실 가능)",
-            observed="대상 노드: %s" % ", ".join(targets),
-            impact="heap 이 압축 포인터 경계를 넘으면 객체 포인터가 8바이트로 커져 "
-                   "같은 데이터를 담는 데 더 많은 heap 을 쓰게 됩니다. 26~30GB 보다 오히려 불리할 수 있습니다.",
-            recommend="heap 을 30GB 이하(권장 26~30GB)로 낮추고, 남는 메모리는 파일시스템 캐시로 둡니다. "
-                      "메모리가 더 필요하면 노드를 수직 확장하기보다 노드를 늘립니다.",
+            "JVM-002", CAT, Severity.WARNING, T("rules.nodes.r_heap_sizing.01"),
+            observed=T("rules.nodes.r_heap_sizing.02") % ", ".join(targets),
+            impact=T("rules.nodes.r_heap_sizing.03"),
+            recommend=T("rules.nodes.r_heap_sizing.04"),
             evidence=ev, affected=targets, refs=[DOC_HEAP], source="nodes.json / nodes_stats.json"))
     if too_big_vs_ram:
         out.append(Finding(
-            "JVM-003", CAT, Severity.WARNING, "Heap 이 물리 메모리 대비 과다",
-            observed="heap/RAM 비율이 %d%% 를 넘는 노드: %s"
+            "JVM-003", CAT, Severity.WARNING, T("rules.nodes.r_heap_sizing.05"),
+            observed=T("rules.nodes.r_heap_sizing.06")
                      % (ctx.t["heap_vs_ram_pct_warn"], ", ".join(too_big_vs_ram)),
-            impact="Lucene 은 off-heap(파일시스템 캐시)에서 세그먼트를 읽습니다. heap 을 키울수록 "
-                   "캐시에 남는 메모리가 줄어 디스크 I/O 가 늘고 검색이 느려집니다.",
-            recommend="공식 권장은 Xms/Xmx 를 전체 메모리의 50% 이하로 두는 것입니다. "
-                      "컨테이너 환경에서는 cgroup 메모리 한도 기준입니다.",
+            impact=T("rules.nodes.r_heap_sizing.07"),
+            recommend=T("rules.nodes.r_heap_sizing.08"),
             evidence=ev, affected=too_big_vs_ram, refs=[DOC_HEAP], source="nodes.json"))
     if mismatch:
         out.append(Finding(
-            "JVM-004", CAT, Severity.WARNING, "Xms 와 Xmx 불일치",
-            observed="대상 노드: %s" % ", ".join(mismatch),
-            impact="heap 이 동적으로 확장되면서 재할당과 GC 패턴 변동이 생깁니다.",
-            recommend="Xms 와 Xmx 를 동일한 값으로 고정합니다.",
+            "JVM-004", CAT, Severity.WARNING, T("rules.nodes.r_heap_sizing.09"),
+            observed=T("rules.nodes.r_heap_sizing.02") % ", ".join(mismatch),
+            impact=T("rules.nodes.r_heap_sizing.10"),
+            recommend=T("rules.nodes.r_heap_sizing.11"),
             evidence=ev, affected=mismatch, source="nodes.json"))
     return out
 
 
 def r_gc(ctx):
-    """old 비중 = old collection_time / uptime, 시간당 old GC = old count / uptime(h), young 비중 = young time / uptime. old 비중 >= old_gc_time_ratio_crit 또는 시간당 >= old_gc_per_hour_crit → 치명. old 비중 >= warn, 시간당 >= warn, young 비중 >= young_gc_time_ratio_warn 중 하나 → 주의. 그 외 정상. 누적값이므로 비교 모드(DIF-006)가 더 정확하다."""
+    """old share = old collection_time / uptime, old GC per hour = old count / uptime (h), young share = young time / uptime. old share >= old_gc_time_ratio_crit or per-hour >= old_gc_per_hour_crit → Critical. Any of old share >= warn, per-hour >= warn, or young share >= young_gc_time_ratio_warn → Warning. Otherwise OK. These are cumulative values, so compare mode (DIF-006) is more accurate."""
     rows, warn, crit = [], [], []
     for n in ctx.nodes:
         up = n.uptime_ms or 0
@@ -126,33 +121,30 @@ def r_gc(ctx):
             warn.append(n.name)
     if not rows:
         return []
-    ev = table(["node", "uptime", "old GC 횟수", "old GC 시간", "old 비중",
-                "young 횟수", "young 시간", "young 비중", "old GC/시간"], rows)
+    ev = table(["node", "uptime", T("rules.nodes.r_gc.01"), T("rules.nodes.r_gc.02"), T("rules.nodes.r_gc.03"),
+                T("rules.nodes.r_gc.04"), T("rules.nodes.r_gc.05"), T("rules.nodes.r_gc.06"), T("rules.nodes.r_gc.07")], rows)
     if crit:
         return [Finding(
-            "JVM-005", CAT, Severity.CRITICAL, "Old GC 과다",
-            observed="old GC 부담이 큰 노드: %s" % ", ".join(crit),
-            impact="old GC 는 대부분 stop-the-world 를 동반합니다. 누적 시간이 uptime 의 수 % 를 넘으면 "
-                   "요청 타임아웃, 마스터 연결 끊김(node left), 클러스터 불안정으로 직결됩니다.",
-            recommend="heap 압박 원인을 제거합니다. 샤드 수 축소, fielddata/전역 서수 사용 축소, "
-                      "대형 aggregation 의 partition 처리, bulk 크기 축소 순으로 확인합니다. "
-                      "local 모드 진단이면 gc.log 에서 실제 STW 시간을 함께 확인합니다.",
+            "JVM-005", CAT, Severity.CRITICAL, T("rules.nodes.r_gc.08"),
+            observed=T("rules.nodes.r_gc.09") % ", ".join(crit),
+            impact=T("rules.nodes.r_gc.10"),
+            recommend=T("rules.nodes.r_gc.11"),
             evidence=ev, affected=crit, source="nodes_stats.json")]
     if warn:
         return [Finding(
-            "JVM-005", CAT, Severity.WARNING, "GC 부담 관찰됨",
-            observed="GC 비중이 기준을 넘는 노드: %s" % ", ".join(warn),
-            impact="응답시간 꼬리(p99)가 길어지는 원인이 됩니다.",
-            recommend="heap 사용률 추이와 함께 관찰하고, 지속되면 heap 압박 원인을 제거합니다.",
+            "JVM-005", CAT, Severity.WARNING, T("rules.nodes.r_gc.12"),
+            observed=T("rules.nodes.r_gc.13") % ", ".join(warn),
+            impact=T("rules.nodes.r_gc.14"),
+            recommend=T("rules.nodes.r_gc.15"),
             evidence=ev, affected=warn, source="nodes_stats.json")]
-    return [Finding("JVM-005", CAT, Severity.OK, "GC 부담 정상 범위",
-                    observed="old GC 누적 시간이 uptime 대비 %.1f%% 미만입니다."
+    return [Finding("JVM-005", CAT, Severity.OK, T("rules.nodes.r_gc.16"),
+                    observed=T("rules.nodes.r_gc.17")
                              % (ctx.t["old_gc_time_ratio_warn"] * 100),
                     evidence=ev, source="nodes_stats.json")]
 
 
 def r_os(ctx):
-    """load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주의(OS-001, 두 구간의 노드를 모두 표시). swap_total > 0 이고 mlockall 이 true 가 아님 → 주의(OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → 치명, >= warn → 주의(OS-003). open_fd / max_fd >= fd_used_pct_warn → 주의(OS-004). mlockall=false 이고 swap 없음 → 참고(OS-005). uptime < uptime_short_hours → 주의(OS-006)."""
+    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006)."""
     out = []
     rows, load_warn, load_crit, swap_on, throttle = [], [], [], [], []
     swap_used = []
@@ -168,13 +160,13 @@ def r_os(ctx):
                 load_crit.append(n.name)
             elif per >= ctx.t["load_per_cpu_warn"]:
                 load_warn.append(n.name)
-        # 공식 문서의 swap 대책은 (1) swap 비활성 (2) swappiness=1 (3) memory_lock 중 하나.
-        # memory_lock 이 적용되어 있으면 heap 은 swap 대상이 아니므로 경고하지 않는다.
+        # The official swap remedies are one of: (1) disable swap, (2) swappiness=1, (3) memory_lock.
+        # With memory_lock applied the heap is never swapped, so do not warn.
         if n.swap_total and n.mlockall is not True:
             swap_on.append(n.name)
             su = num(n.stats, "os", "swap", "used_in_bytes")
             if su:
-                swap_used.append("%s(사용 %s / %s)" % (n.name, fmt_bytes(su), fmt_bytes(n.swap_total)))
+                swap_used.append(T("rules.nodes.r_os.01") % (n.name, fmt_bytes(su), fmt_bytes(n.swap_total)))
         elapsed = dig(n.stats, "os", "cgroup", "cpu", "stat", "number_of_elapsed_periods")
         thr = dig(n.stats, "os", "cgroup", "cpu", "stat", "number_of_times_throttled")
         if elapsed and thr:
@@ -182,45 +174,42 @@ def r_os(ctx):
             if ratio >= ctx.t["cgroup_throttle_ratio_warn"]:
                 throttle.append((n.name, ratio,
                                  dig(n.stats, "os", "cgroup", "cpu", "stat", "time_throttled_nanos")))
-    ev = table(["node", "tier/역할", "cpu수", "cpu%", "load1m", "load5m", "load15m", "load/cpu", "swap"], rows)
+    ev = table(["node", T("rules.nodes.r_os.02"), T("rules.nodes.r_os.03"), "cpu%", "load1m", "load5m", "load15m", "load/cpu", "swap"], rows)
     if load_crit or load_warn:
         parts = []
         if load_crit:
-            parts.append("위험(>= %.1f): %s" % (ctx.t["load_per_cpu_crit"], ", ".join(load_crit)))
+            parts.append(T("rules.nodes.r_os.04") % (ctx.t["load_per_cpu_crit"], ", ".join(load_crit)))
         if load_warn:
-            parts.append("주의(>= %.1f): %s" % (ctx.t["load_per_cpu_warn"], ", ".join(load_warn)))
+            parts.append(T("rules.nodes.r_os.05") % (ctx.t["load_per_cpu_warn"], ", ".join(load_warn)))
         out.append(Finding(
             "OS-001", CAT, Severity.CRITICAL if load_crit else Severity.WARNING,
-            "CPU load 높음",
-            observed="load15m/CPU 가 기준을 넘는 노드 — " + " / ".join(parts),
-            impact="CPU 포화는 검색 큐 적체와 rejection, 색인 지연으로 이어집니다.",
-            recommend="hot threads 결과(아래 항목)와 대조해 무엇이 CPU 를 쓰는지 확정합니다. "
-                      "merge/검색/스크립트/GC 중 어느 쪽인지에 따라 조치가 다릅니다.",
+            T("rules.nodes.r_os.06"),
+            observed=T("rules.nodes.r_os.07") + " / ".join(parts),
+            impact=T("rules.nodes.r_os.08"),
+            recommend=T("rules.nodes.r_os.09"),
             evidence=ev, affected=load_crit + load_warn, source="nodes_stats.json"))
     if swap_on:
         out.append(Finding(
-            "OS-002", CAT, Severity.WARNING, "Swap 활성화",
-            observed="swap 이 설정된 노드: %s" % ", ".join(swap_on)
-                     + (" / swap 사용 중: %s" % ", ".join(swap_used) if swap_used else ""),
-            impact="JVM heap 일부가 디스크로 내려가면 GC 시간이 수십 배로 늘어 노드가 사실상 멈춥니다.",
-            recommend="swap 비활성화, vm.swappiness=1, bootstrap.memory_lock=true 중 하나를 적용합니다. "
-                      "(vm.swappiness 값은 local/remote 모드의 syscalls/sysctl 에 있으나 이 도구는 아직 읽지 않습니다. 서버에서 확인합니다.)",
+            "OS-002", CAT, Severity.WARNING, T("rules.nodes.r_os.10"),
+            observed=T("rules.nodes.r_os.11") % ", ".join(swap_on)
+                     + (T("rules.nodes.r_os.12") % ", ".join(swap_used) if swap_used else ""),
+            impact=T("rules.nodes.r_os.13"),
+            recommend=T("rules.nodes.r_os.14"),
             evidence=ev, affected=swap_on, source="nodes_stats.json"))
     if throttle:
         out.append(Finding(
             "OS-003", CAT,
             Severity.CRITICAL if any(r >= ctx.t["cgroup_throttle_ratio_crit"] for _, r, _ in throttle)
             else Severity.WARNING,
-            "컨테이너 CPU throttling 발생",
-            observed="cgroup CPU 제한에 걸린 노드: %s"
+            T("rules.nodes.r_os.15"),
+            observed=T("rules.nodes.r_os.16")
                      % ", ".join("%s(%.1f%%)" % (n, r * 100) for n, r, _ in throttle),
-            impact="컨테이너/k8s CPU limit 때문에 실제로 쓸 수 있는 CPU 가 주기적으로 차단됩니다. "
-                   "평균 CPU 사용률은 낮아 보이는데 지연만 튀는 전형적인 원인입니다.",
-            recommend="CPU limit 을 request 와 동일하게 올리거나 limit 을 제거합니다.",
-            evidence=table(["node", "throttled 비율", "throttled 누적(ns)"],
+            impact=T("rules.nodes.r_os.17"),
+            recommend=T("rules.nodes.r_os.18"),
+            evidence=table(["node", T("rules.nodes.r_os.19"), T("rules.nodes.r_os.20")],
                            [[n, "%.2f%%" % (r * 100), fmt_num(t)] for n, r, t in throttle]),
             source="nodes_stats.json"))
-    # 파일 디스크립터
+    # File descriptors
     fd_rows, fd_bad = [], []
     for n in ctx.nodes:
         o, m = n.open_fd, n.max_fd
@@ -232,37 +221,36 @@ def r_os(ctx):
             fd_bad.append(n.name)
     if fd_bad:
         out.append(Finding(
-            "OS-004", CAT, Severity.WARNING, "파일 디스크립터 사용률 높음",
-            observed="대상 노드: %s" % ", ".join(fd_bad),
-            impact="한계에 도달하면 세그먼트 파일/소켓을 열지 못해 색인·검색이 실패합니다.",
-            recommend="nofile 한도를 65535 이상으로 올리고, 세그먼트 수(샤드/인덱스 과다)도 함께 줄입니다.",
-            evidence=table(["node", "open", "max", "사용률"], fd_rows),
+            "OS-004", CAT, Severity.WARNING, T("rules.nodes.r_os.21"),
+            observed=T("rules.nodes.r_os.22") % ", ".join(fd_bad),
+            impact=T("rules.nodes.r_os.23"),
+            recommend=T("rules.nodes.r_os.24"),
+            evidence=table(["node", "open", "max", T("rules.nodes.r_os.25")], fd_rows),
             affected=fd_bad, source="nodes_stats.json"))
     # mlockall
     unlocked = [n.name for n in ctx.nodes if n.mlockall is False]
     if unlocked and not swap_on:
         out.append(Finding(
-            "OS-005", CAT, Severity.INFO, "bootstrap.memory_lock 미적용",
-            observed="memory lock 이 적용되지 않은 노드: %s" % ", ".join(unlocked),
-            impact="현재 swap 이 꺼져 있어 즉시 위험은 아니지만, 설정 변경 시 heap 이 swap 될 수 있습니다.",
-            recommend="bootstrap.memory_lock=true 와 OS 의 memlock 한도(unlimited)를 함께 설정합니다.",
+            "OS-005", CAT, Severity.INFO, T("rules.nodes.r_os.26"),
+            observed=T("rules.nodes.r_os.27") % ", ".join(unlocked),
+            impact=T("rules.nodes.r_os.28"),
+            recommend=T("rules.nodes.r_os.29"),
             source="nodes.json"))
-    # 최근 재기동
+    # Recent restart
     short = [(n.name, n.uptime_ms) for n in ctx.nodes
              if n.uptime_ms and n.uptime_ms < ctx.t["uptime_short_hours"] * 3600000]
     if short:
         out.append(Finding(
-            "OS-006", CAT, Severity.WARNING, "최근 재기동된 노드 존재",
+            "OS-006", CAT, Severity.WARNING, T("rules.nodes.r_os.30"),
             observed=", ".join("%s(uptime %s)" % (n, fmt_ms(u)) for n, u in short),
-            impact="의도한 재기동이 아니라면 OOM kill, 하드웨어 이슈, 컨테이너 재스케줄을 의심해야 합니다. "
-                   "또한 캐시가 비어 있어 당분간 검색 지연이 큽니다.",
-            recommend="계획된 작업 여부를 확인하고, 아니라면 커널 로그와 heap dump 경로를 점검합니다.",
+            impact=T("rules.nodes.r_os.31"),
+            recommend=T("rules.nodes.r_os.32"),
             source="nodes_stats.json"))
     return out
 
 
 def r_disk(ctx):
-    """데이터 노드 사용률 = 1 − available / total. 실효 워터마크(max_headroom 반영, context.watermark_used_pct) 대비 flood 이상 → 치명(DISK-001), high 이상 → 치명(DISK-002), low 이상 → 주의(DISK-003), low − disk_low_margin_pct 이상 → 주의(DISK-004, 앞 세 항목이 없을 때만). 노드 간 사용률 최대−최소 >= disk_imbalance_pct_warn → 주의(DISK-005). 해당 없음 → 정상."""
+    """Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001), at or above high → Critical (DISK-002), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK."""
     rows, over_low, over_high, over_flood, warn = [], [], [], [], []
     by_tier = {}
     for n in ctx.data_nodes or ctx.nodes:
@@ -272,11 +260,11 @@ def r_disk(ctx):
             continue
         tier = ctx.tier_of(n) or "-"
         if tier == "frozen":
-            # frozen 전용 노드: 디스크 대부분을 shared cache 가 미리 점유(기본 90%)하므로 사용률이 높은 것이 정상.
-            # 공식 동작상 low/high 워터마크는 적용되지 않고 flood_stage.frozen 만 적용된다.
+            # Frozen-only node: the shared cache reserves most of the disk up front (90% by default), so high usage is normal.
+            # Per the official behavior, the low/high watermarks do not apply; only flood_stage.frozen does.
             fflood = ctx.watermark_used_pct("flood_stage.frozen", total)
             rows.append([n.name, tier, "%.1f%%" % up, fmt_bytes(total), fmt_bytes(avail),
-                         "해당 없음", "해당 없음", ("%.2f%% (frozen)" % fflood) if fflood else "-"])
+                         T("rules.nodes.r_disk.01"), T("rules.nodes.r_disk.01"), ("%.2f%% (frozen)" % fflood) if fflood else "-"])
             if fflood and up >= fflood:
                 over_flood.append(n.name)
             continue
@@ -297,53 +285,50 @@ def r_disk(ctx):
             warn.append(n.name)
     if not rows:
         return []
-    ev = table(["node", "tier", "사용률", "총 용량", "가용", "실효 low", "실효 high", "실효 flood"], rows)
+    ev = table(["node", "tier", T("rules.nodes.r_disk.02"), T("rules.nodes.r_disk.03"), T("rules.nodes.r_disk.04"), T("rules.nodes.r_disk.05"), T("rules.nodes.r_disk.06"), T("rules.nodes.r_disk.07")], rows)
     out = []
     if over_flood:
         out.append(Finding(
-            "DISK-001", CAT, Severity.CRITICAL, "디스크 flood stage 초과",
-            observed="대상 노드: %s" % ", ".join(over_flood),
-            impact="해당 노드의 인덱스에 read-only-allow-delete 블록이 걸려 색인이 중단됩니다.",
-            recommend="즉시 공간을 확보(오래된 인덱스 삭제/이동)한 뒤 "
-                      "index.blocks.read_only_allow_delete 를 null 로 해제합니다.",
+            "DISK-001", CAT, Severity.CRITICAL, T("rules.nodes.r_disk.08"),
+            observed=T("rules.nodes.r_disk.09") % ", ".join(over_flood),
+            impact=T("rules.nodes.r_disk.10"),
+            recommend=T("rules.nodes.r_disk.11"),
             evidence=ev, affected=over_flood, refs=[DOC_DISK], source="nodes_stats.json"))
     if over_high:
         out.append(Finding(
-            "DISK-002", CAT, Severity.CRITICAL, "디스크 high watermark 초과",
-            observed="대상 노드: %s" % ", ".join(over_high),
-            impact="해당 노드에서 샤드가 다른 노드로 강제 이동합니다. 이동 자체가 I/O·네트워크 부하를 만들고, "
-                   "받을 노드가 없으면 미할당으로 남습니다.",
-            recommend="용량 증설 또는 데이터 정리. ILM 으로 warm/cold 이동, 오래된 인덱스 삭제를 검토합니다.",
+            "DISK-002", CAT, Severity.CRITICAL, T("rules.nodes.r_disk.12"),
+            observed=T("rules.nodes.r_disk.09") % ", ".join(over_high),
+            impact=T("rules.nodes.r_disk.13"),
+            recommend=T("rules.nodes.r_disk.14"),
             evidence=ev, affected=over_high, refs=[DOC_DISK], source="nodes_stats.json"))
     if over_low:
         out.append(Finding(
-            "DISK-003", CAT, Severity.WARNING, "디스크 low watermark 초과",
-            observed="대상 노드: %s" % ", ".join(over_low),
-            impact="신규 샤드가 해당 노드에 배치되지 않습니다. 롤오버 시 샤드가 일부 노드로 몰립니다.",
-            recommend="용량 계획을 재점검합니다.",
+            "DISK-003", CAT, Severity.WARNING, T("rules.nodes.r_disk.15"),
+            observed=T("rules.nodes.r_disk.09") % ", ".join(over_low),
+            impact=T("rules.nodes.r_disk.16"),
+            recommend=T("rules.nodes.r_disk.17"),
             evidence=ev, affected=over_low, refs=[DOC_DISK], source="nodes_stats.json"))
     if warn and not (over_flood or over_high or over_low):
         out.append(Finding(
-            "DISK-004", CAT, Severity.WARNING, "디스크 사용률 상승",
-            observed="실효 low 워터마크까지 %d%%p 이내인 노드: %s"
+            "DISK-004", CAT, Severity.WARNING, T("rules.nodes.r_disk.18"),
+            observed=T("rules.nodes.r_disk.19")
                      % (ctx.t["disk_low_margin_pct"], ", ".join(warn)),
-            impact="워터마크 도달까지 여유가 크지 않습니다.",
-            recommend="증가 추세와 보존 정책을 확인합니다.",
+            impact=T("rules.nodes.r_disk.20"),
+            recommend=T("rules.nodes.r_disk.21"),
             evidence=ev, affected=warn, source="nodes_stats.json"))
     gaps = [(t, max(v), min(v)) for t, v in by_tier.items()
             if len(v) >= 2 and max(v) - min(v) >= ctx.t["disk_imbalance_pct_warn"]]
     if gaps:
         out.append(Finding(
-            "DISK-005", CAT, Severity.WARNING, "같은 tier 노드 간 디스크 사용률 편차",
-            observed=" / ".join("%s tier 최대 %.1f%% · 최소 %.1f%% (편차 %.1f%%p)" % (t, mx, mn, mx - mn)
+            "DISK-005", CAT, Severity.WARNING, T("rules.nodes.r_disk.22"),
+            observed=" / ".join(T("rules.nodes.r_disk.23") % (t, mx, mn, mx - mn)
                                 for t, mx, mn in gaps),
-            impact="특정 노드만 먼저 워터마크에 도달해 전체 쓰기 용량이 제한됩니다. "
-                   "샤드 크기 편차나 allocation filter 가 흔한 원인입니다.",
-            recommend="대형 인덱스의 샤드 분포와 allocation 설정(exclude/require/tier)을 확인합니다.",
+            impact=T("rules.nodes.r_disk.24"),
+            recommend=T("rules.nodes.r_disk.25"),
             evidence=ev, source="nodes_stats.json"))
     if not out:
-        out.append(Finding("DISK-001", CAT, Severity.OK, "디스크 여유 정상",
-                           observed="모든 데이터 노드가 워터마크 이하입니다.",
+        out.append(Finding("DISK-001", CAT, Severity.OK, T("rules.nodes.r_disk.26"),
+                           observed=T("rules.nodes.r_disk.27"),
                            evidence=ev, source="nodes_stats.json"))
     return out
 
@@ -355,7 +340,7 @@ IMPORTANT_POOLS = ("write", "search", "search_worker", "get", "bulk", "index",
 
 
 def r_thread_pools(ctx):
-    """모든 스레드풀의 누적 rejected. 합계 > 0 → 주의, 합계 >= rejected_crit 이고 수집 시점에 rejection 이 난 풀의 queue > 0 → 치명(누적값만으로는 치명으로 올리지 않는다), 0 → 정상(TP-001). 주요 풀(write/search/get 등)의 queue > 0 → 참고(TP-002)."""
+    """Cumulative rejected count across all thread pools. Sum > 0 → Warning; sum >= rejected_crit and the queue > 0 on a pool that was rejecting at collection time → Critical (cumulative values alone never raise it to Critical); 0 → OK (TP-001). Queue > 0 on a main pool (write/search/get, etc.) → Info (TP-002)."""
     rejected_rows, queue_rows = [], []
     total_rej = 0
     live_queue = False
@@ -378,26 +363,23 @@ def r_thread_pools(ctx):
                else Severity.WARNING)
         pools = sorted(set(r[1] for r in rejected_rows))
         out.append(Finding(
-            "TP-001", CAT, sev, "스레드풀 rejection 발생",
-            observed="누적 rejection %s건, 대상 풀: %s" % (fmt_num(total_rej), ", ".join(pools)),
-            impact="rejection 은 클라이언트에 429 로 반환되어 데이터 유실(재시도 없는 경우)이나 "
-                   "수집 지연으로 이어집니다. 누적값이므로 최근 발생 여부는 별도 확인이 필요합니다.",
-            recommend="write 풀이면 bulk 크기 축소·동시성 조절·노드 증설, search 풀이면 "
-                      "무거운 쿼리 튜닝과 샤드 수 축소가 우선입니다. 큐 크기를 키우는 것은 "
-                      "지연을 뒤로 미룰 뿐 해결책이 아닙니다.",
+            "TP-001", CAT, sev, T("rules.nodes.r_thread_pools.01"),
+            observed=T("rules.nodes.r_thread_pools.02") % (fmt_num(total_rej), ", ".join(pools)),
+            impact=T("rules.nodes.r_thread_pools.03"),
+            recommend=T("rules.nodes.r_thread_pools.04"),
             evidence=table(["node", "pool", "rejected", "completed", "active", "queue", "largest"],
                            rejected_rows[: ctx.t["top_n"]]),
             refs=[DOC_TP], source="nodes_stats.json"))
     else:
-        out.append(Finding("TP-001", CAT, Severity.OK, "스레드풀 rejection 없음",
-                           observed="모든 노드/풀의 누적 rejection 이 0입니다.",
+        out.append(Finding("TP-001", CAT, Severity.OK, T("rules.nodes.r_thread_pools.05"),
+                           observed=T("rules.nodes.r_thread_pools.06"),
                            source="nodes_stats.json"))
     if queue_rows:
         out.append(Finding(
-            "TP-002", CAT, Severity.INFO, "수집 시점 큐 적체",
-            observed="큐에 대기 중인 작업이 있는 풀 %d건." % len(queue_rows),
-            impact="순간값이지만 반복 관측되면 해당 풀이 병목입니다.",
-            recommend="동일 풀에서 rejection 이 함께 보이면 우선 조치 대상입니다.",
+            "TP-002", CAT, Severity.INFO, T("rules.nodes.r_thread_pools.07"),
+            observed=T("rules.nodes.r_thread_pools.08") % len(queue_rows),
+            impact=T("rules.nodes.r_thread_pools.09"),
+            recommend=T("rules.nodes.r_thread_pools.10"),
             evidence=table(["node", "pool", "queue", "active", "threads"],
                            queue_rows[: ctx.t["top_n"]]),
             source="nodes_stats.json"))
@@ -405,7 +387,7 @@ def r_thread_pools(ctx):
 
 
 def r_breakers(ctx):
-    """breaker.tripped >= breaker_tripped_warn → 주의, 수집 시점 사용률도 70% 이상이면 치명(BRK-001, 누적 발동 이력만으로는 치명으로 올리지 않는다). 발동 이력은 없고 estimated / limit >= 70% → 주의(BRK-002)."""
+    """breaker.tripped >= breaker_tripped_warn → Warning; Critical if usage at collection time is also 70% or more (BRK-001; the cumulative trip history alone never raises it to Critical). No trip history and estimated / limit >= 70% → Warning (BRK-002)."""
     rows, tripped = [], []
     tripped_live = False
     for n in ctx.nodes:
@@ -425,27 +407,25 @@ def r_breakers(ctx):
     if tripped:
         out.append(Finding(
             "BRK-001", CAT, Severity.CRITICAL if tripped_live else Severity.WARNING,
-            "Circuit breaker 발동 이력",
-            observed="발동 이력이 있는 브레이커 %d건." % len(tripped),
-            impact="요청이 거부되며(429/CircuitBreakingException) 해당 쿼리·bulk 는 실패합니다. "
-                   "parent 브레이커가 발동했다면 heap 압박이 실재한다는 강한 신호입니다.",
-            recommend="fielddata 브레이커면 text 필드 정렬/집계를 keyword 로 전환, "
-                      "request 면 대형 집계 분할, inflight_requests 면 bulk/요청 크기 축소가 기본 조치입니다.",
-            evidence=table(["node", "breaker", "tripped", "estimated", "limit", "사용률"], tripped),
+            T("rules.nodes.r_breakers.01"),
+            observed=T("rules.nodes.r_breakers.02") % len(tripped),
+            impact=T("rules.nodes.r_breakers.03"),
+            recommend=T("rules.nodes.r_breakers.04"),
+            evidence=table(["node", "breaker", "tripped", "estimated", "limit", T("rules.nodes.r_breakers.05")], tripped),
             source="nodes_stats.json"))
     if rows:
         out.append(Finding(
-            "BRK-002", CAT, Severity.WARNING, "Circuit breaker 사용률 높음",
-            observed="한도의 70%% 이상을 사용 중인 브레이커 %d건." % len(rows),
-            impact="조금만 더 큰 요청이 들어오면 거부됩니다.",
-            recommend="해당 브레이커 유형에 맞춰 요청 크기와 메모리 사용 패턴을 조정합니다.",
-            evidence=table(["node", "breaker", "tripped", "estimated", "limit", "사용률"], rows),
+            "BRK-002", CAT, Severity.WARNING, T("rules.nodes.r_breakers.06"),
+            observed=T("rules.nodes.r_breakers.07") % len(rows),
+            impact=T("rules.nodes.r_breakers.08"),
+            recommend=T("rules.nodes.r_breakers.09"),
+            evidence=table(["node", "breaker", "tripped", "estimated", "limit", T("rules.nodes.r_breakers.05")], rows),
             source="nodes_stats.json"))
     return out
 
 
 def r_indexing_pressure(ctx):
-    """indexing_pressure.memory.total 의 *_rejections(coordinating/primary/replica) 중 하나라도 > 0 → 주의."""
+    """Warning if any of the *_rejections (coordinating/primary/replica) under indexing_pressure.memory.total is > 0."""
     rows = []
     for n in ctx.nodes:
         mem = dig(n.stats, "indexing_pressure", "memory", default={}) or {}
@@ -459,16 +439,15 @@ def r_indexing_pressure(ctx):
         return []
     return [Finding(
         "IP-001", CAT, Severity.WARNING, "Indexing pressure rejection",
-        observed="색인 메모리 한도 초과로 거부된 요청이 있는 노드 %d대." % len(rows),
-        impact="coordinating/primary/replica 단계에서 bulk 요청이 거부됩니다. "
-               "클라이언트가 재시도하지 않으면 데이터 유실입니다.",
-        recommend="bulk 요청 크기(5~15MB 권장)와 동시 전송 수를 줄이고, 필요 시 색인 노드를 증설합니다.",
+        observed=T("rules.nodes.r_indexing_pressure.01") % len(rows),
+        impact=T("rules.nodes.r_indexing_pressure.02"),
+        recommend=T("rules.nodes.r_indexing_pressure.03"),
         evidence=table(["node", "rejections", "current", "limit"], rows),
         source="nodes_stats.json")]
 
 
 def r_fielddata(ctx):
-    """노드 fielddata 메모리 / heap_max >= fielddata_heap_pct_warn → 주의(FD-001). fielddata.json 에서 가장 큰 필드가 64MB 초과 → 참고(FD-002)."""
+    """Node fielddata memory / heap_max >= fielddata_heap_pct_warn → Warning (FD-001). Largest field in fielddata.json above 64MB → Info (FD-002)."""
     rows = []
     for n in ctx.nodes:
         fd = dig(n.stats, "indices", "fielddata", default={}) or {}
@@ -481,16 +460,14 @@ def r_fielddata(ctx):
     out = []
     if rows:
         out.append(Finding(
-            "FD-001", CAT, Severity.WARNING, "fielddata 가 heap 을 과점",
-            observed="heap 대비 %d%% 이상 fielddata 를 사용하는 노드 %d대."
+            "FD-001", CAT, Severity.WARNING, T("rules.nodes.r_fielddata.01"),
+            observed=T("rules.nodes.r_fielddata.02")
                      % (ctx.t["fielddata_heap_pct_warn"], len(rows)),
-            impact="fielddata 는 heap 에 상주합니다. text 필드 집계/정렬이 원인인 경우가 대부분이며, "
-                   "해제되지 않으면 만성적 heap 압박을 만듭니다.",
-            recommend="text 필드 대신 keyword 하위 필드로 집계/정렬하도록 쿼리를 수정합니다. "
-                      "불가피하면 indices.fielddata.cache.size 로 상한을 둡니다.",
-            evidence=table(["node", "fielddata", "heap 대비", "evictions"], rows),
+            impact=T("rules.nodes.r_fielddata.03"),
+            recommend=T("rules.nodes.r_fielddata.04"),
+            evidence=table(["node", "fielddata", T("rules.nodes.r_fielddata.05"), "evictions"], rows),
             source="nodes_stats.json"))
-    # 필드별 상위 소비자
+    # Top consumers per field
     top = []
     for r in dicts(ctx.fielddata_cat):
         from ..util import parse_bytes
@@ -501,17 +478,17 @@ def r_fielddata(ctx):
         top.sort(key=lambda r: -r[3])
         if top[0][3] > 64 * 1024 * 1024:
             out.append(Finding(
-                "FD-002", CAT, Severity.INFO, "fielddata 상위 소비 필드",
-                observed="가장 큰 fielddata 필드: %s (%s)" % (top[0][1], top[0][2]),
-                impact="해당 필드에 대한 집계/정렬이 heap 사용의 직접 원인입니다.",
-                recommend="필드 타입과 쿼리 사용처를 확인합니다.",
+                "FD-002", CAT, Severity.INFO, T("rules.nodes.r_fielddata.06"),
+                observed=T("rules.nodes.r_fielddata.07") % (top[0][1], top[0][2]),
+                impact=T("rules.nodes.r_fielddata.08"),
+                recommend=T("rules.nodes.r_fielddata.09"),
                 evidence=table(["node", "field", "size"], [r[:3] for r in top[: ctx.t["top_n"]]]),
                 source="fielddata.json"))
     return out
 
 
 def r_ingest_failures(ctx):
-    """ingest.total.failed >= ingest_failed_warn 인 노드가 있으면 주의. 실패 파이프라인별 건수를 근거로 제시."""
+    """Warning if any node has ingest.total.failed >= ingest_failed_warn. The count per failing pipeline is shown as evidence."""
     rows = []
     for n in ctx.nodes:
         tot = dig(n.stats, "ingest", "total", default={}) or {}
@@ -528,21 +505,20 @@ def r_ingest_failures(ctx):
         return []
     pipe_rows.sort(key=lambda r: -int(str(r[2]).replace(",", "")))
     return [Finding(
-        "ING-001", CAT, Severity.WARNING, "Ingest 파이프라인 처리 실패",
-        observed="실패 건수가 있는 노드 %d대, 실패 파이프라인 %d개." % (len(rows), len(pipe_rows)),
-        impact="파이프라인 실패는 문서 누락 또는 원본 그대로 저장되는 결과를 낳아, "
-               "필드 파싱이 필요한 대시보드/탐지룰이 조용히 오동작합니다.",
-        recommend="실패 파이프라인의 on_failure 처리와 입력 데이터 형식을 확인합니다.",
+        "ING-001", CAT, Severity.WARNING, T("rules.nodes.r_ingest_failures.01"),
+        observed=T("rules.nodes.r_ingest_failures.02") % (len(rows), len(pipe_rows)),
+        impact=T("rules.nodes.r_ingest_failures.03"),
+        recommend=T("rules.nodes.r_ingest_failures.04"),
         evidence=table(["node", "pipeline", "failed", "count"], pipe_rows[: ctx.t["top_n"]])
         if pipe_rows else table(["node", "failed", "count", "time"], rows),
         source="nodes_stats.json")]
 
 
 def r_node_heterogeneity(ctx):
-    """같은 tier(데이터 역할 조합) 안에서 heap 또는 CPU 수가 다르면 주의(NODE-001/002).
+    """Different heap or CPU count within the same tier (data role combination) → Warning (NODE-001).
 
-    tier 가 다르면 스펙이 다른 것이 정상 설계이므로 tier 간 차이는 판정하지 않고, tier 별 스펙 표만 참고로 보고한다
-    (NODE-003). 같은 tier 에서는 샤드가 균등 분배되므로 작은 노드가 먼저 포화되어 그 tier 의 처리 한계가 된다.
+    Different specs across tiers are normal design, so differences between tiers are not rated; only a spec table per tier is reported as Info
+    (NODE-003). Within a tier, shards are spread evenly, so the smaller node saturates first and sets the processing limit of that tier.
     """
     tiers = ctx.data_tiers()
     if not tiers:
@@ -551,29 +527,27 @@ def r_node_heterogeneity(ctx):
     for tier, nodes in tiers.items():
         heaps = collections.Counter(fmt_bytes(n.heap_max) for n in nodes if n.heap_max)
         cpus = collections.Counter(n.processors for n in nodes if n.processors)
-        rows_all.append([tier, len(nodes), ", ".join("%s(%d대)" % kv for kv in heaps.items()),
-                         ", ".join("%s코어(%d대)" % kv for kv in cpus.items())])
+        rows_all.append([tier, len(nodes), ", ".join(T("rules.nodes.r_node_heterogeneity.01") % kv for kv in heaps.items()),
+                         ", ".join(T("rules.nodes.r_node_heterogeneity.02") % kv for kv in cpus.items())])
         if len(heaps) > 1 or len(cpus) > 1:
             for n in nodes:
                 rows_in.append([tier, n.name, fmt_bytes(n.heap_max), n.processors, fmt_bytes(n.ram_total)])
     if rows_in:
         out.append(Finding(
-            "NODE-001", CAT, Severity.WARNING, "같은 tier 안에서 노드 스펙 불균일",
-            observed="heap 또는 CPU 수가 노드마다 다른 tier: %s"
+            "NODE-001", CAT, Severity.WARNING, T("rules.nodes.r_node_heterogeneity.03"),
+            observed=T("rules.nodes.r_node_heterogeneity.04")
                      % ", ".join(sorted(set(r[0] for r in rows_in))),
-            impact="같은 tier 안에서는 샤드가 거의 균등하게 배치됩니다. 작은 노드가 먼저 heap·CPU 한계에 도달해 "
-                   "그 tier 전체의 처리 상한이 됩니다.",
-            recommend="같은 tier 의 노드는 동일 스펙으로 맞춥니다. 증설·교체 중이라면 완료 후 다시 확인합니다.",
+            impact=T("rules.nodes.r_node_heterogeneity.05"),
+            recommend=T("rules.nodes.r_node_heterogeneity.06"),
             evidence=table(["tier", "node", "heap", "cpu", "RAM"], rows_in),
             source="nodes.json / nodes_stats.json"))
     if len(tiers) > 1:
         out.append(Finding(
-            "NODE-003", CAT, Severity.INFO, "tier 별 노드 스펙",
-            observed="데이터 tier %d개: %s" % (len(tiers), ", ".join("%s %d대" % (t, len(v)) for t, v in tiers.items())),
-            impact="tier 마다 스펙이 다른 것은 정상 설계입니다(hot 은 CPU·빠른 디스크, cold/frozen 은 용량 위주). "
-                   "tier 간 샤드 수·디스크 사용률·부하 차이도 이 전제로 해석해야 합니다.",
-            recommend="tier 별 역할에 맞는 스펙인지(예: hot 에 색인 부하 대비 충분한 CPU) 확인합니다.",
-            evidence=table(["tier", "노드 수", "heap 분포", "CPU 분포"], rows_all),
+            "NODE-003", CAT, Severity.INFO, T("rules.nodes.r_node_heterogeneity.07"),
+            observed=T("rules.nodes.r_node_heterogeneity.08") % (len(tiers), ", ".join(T("rules.nodes.r_node_heterogeneity.09") % (t, len(v)) for t, v in tiers.items())),
+            impact=T("rules.nodes.r_node_heterogeneity.10"),
+            recommend=T("rules.nodes.r_node_heterogeneity.11"),
+            evidence=table(["tier", T("rules.nodes.r_node_heterogeneity.12"), T("rules.nodes.r_node_heterogeneity.13"), T("rules.nodes.r_node_heterogeneity.14")], rows_all),
             source="nodes.json"))
     return out
 

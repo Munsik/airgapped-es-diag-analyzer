@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""단일 파일 HTML 리포트. 외부 CSS/JS/폰트/이미지를 전혀 참조하지 않는다(폐쇄망 전제).
+"""Single-file HTML report. It references no external CSS, JS, fonts or images (air-gapped use).
 
-시각화는 CSS 막대로만 구성한다. 차트 라이브러리를 쓰지 않으므로 파일 하나로 어떤 브라우저에서도 열린다.
+Charts are plain CSS bars. No chart library is used, so one file opens in any browser.
 """
 
 import html as _h
+import json
 
-from ..model import Severity
+from ..i18n import T, get_lang
+from ..model import Severity, category_label
 from ..util import truncate
 
 CSS = """
@@ -119,7 +121,7 @@ JS = """
     });
     lb.forEach(function(b){b.setAttribute('aria-pressed', b.dataset.level===level);});
     cb.forEach(function(b){b.setAttribute('aria-pressed', b.dataset.cat===cat);});
-    var fc=document.getElementById('fcount'); if(fc){fc.textContent='표시 '+shown+'건';}
+    var fc=document.getElementById('fcount'); if(fc){fc.textContent=_T.shown.replace('%d',shown);}
   }
   lb.forEach(function(b){b.addEventListener('click',function(){level=b.dataset.level;apply();});});
   cb.forEach(function(b){b.addEventListener('click',function(){cat=b.dataset.cat;apply();
@@ -149,7 +151,7 @@ def _cat_id(cat):
 
 
 def _bar(value, warn, crit, suffix="%", scale=100.0, label=None):
-    """수치를 막대 셀로 변환. scale 은 막대 100% 에 해당하는 값."""
+    """Render a number as a bar cell. scale is the value that maps to a 100% bar."""
     if value is None:
         return "<td>-</td>"
     try:
@@ -168,22 +170,22 @@ def render(result):
     f = result.facts()
     c = result.counts
     o = []
-    o.append("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>")
+    o.append("<!DOCTYPE html><html lang='%s'><head><meta charset='utf-8'>" % get_lang())
     o.append("<meta name='viewport' content='width=device-width,initial-scale=1'>")
-    o.append("<title>ES 진단 분석 - %s</title>" % e(f["cluster_name"]))
+    o.append(T("report.html.render.01") % e(f["cluster_name"]))
     o.append("<style>%s</style></head><body><div class='wrap'>" % CSS)
 
     # ---------- header ----------
     o.append("<header>")
-    o.append("<h1>Elasticsearch 진단 번들 분석 결과</h1>")
+    o.append(T("report.html.render.02"))
     o.append("<p class='cluster'>%s</p>" % e(f["cluster_name"]))
-    o.append("<p class='sub'>버전 %s · 배포 형태 %s · 수집 %s · 수집 모드 %s · 서버 로그 %s</p>"
+    o.append(T("report.html.render.03")
              % (e(f["version"]), e(f.get("deployment")), e(f.get("collected_display") or f["collected_at"]),
-                e(f["diag_type"]), "포함" if f["has_logs"] else "미포함"))
-    o.append("<p class='sub'>분석 도구 esdiag v%s · 판정 기준 %s</p>"
+                e(f["diag_type"]), T("report.html.render.04") if f["has_logs"] else T("report.html.render.05")))
+    o.append(T("report.html.render.06")
              % (e(f.get("tool_version")), e(f.get("baseline"))))
     total = max(1, sum(c.values()))
-    o.append("<div class='verdict'><div><div class='grade' style='font-size:24px'>종합 판정: %s</div>"
+    o.append(T("report.html.render.07")
              % e(result.grade))
     o.append("<div class='sevbar'>")
     for key, cls in ((Severity.CRITICAL, "c"), (Severity.WARNING, "w"),
@@ -191,71 +193,63 @@ def render(result):
         if c[key]:
             o.append("<i class='%s' style='width:%.1f%%'></i>" % (cls, c[key] / float(total) * 100))
     o.append("</div><div class='pills'>")
-    o.append("<span class='pill c'>치명 <b>%d</b></span>" % c[Severity.CRITICAL])
-    o.append("<span class='pill w'>주의 <b>%d</b></span>" % c[Severity.WARNING])
-    o.append("<span class='pill i'>참고 <b>%d</b></span>" % c[Severity.INFO])
-    o.append("<span class='pill o'>정상 <b>%d</b></span>" % c[Severity.OK])
+    o.append(T("report.html.render.08") % c[Severity.CRITICAL])
+    o.append(T("report.html.render.09") % c[Severity.WARNING])
+    o.append(T("report.html.render.10") % c[Severity.INFO])
+    o.append(T("report.html.render.11") % c[Severity.OK])
     o.append("</div></div></div>")
     o.append("<div class='facts'>")
     for label, val in [
-        ("클러스터 상태", f["status"]), ("노드", "%s대" % f["nodes_total"]),
-        ("데이터 노드", "%s대" % f["data_nodes"]), ("마스터 후보", "%s대" % f["master_nodes"]),
-        ("인덱스", f["indices"]), ("샤드", f["shards"]),
-        ("문서", "{:,}".format(f["docs"]) if isinstance(f["docs"], int) else f["docs"]),
-        ("저장 용량", f["store"]), ("라이선스", f["license"]),
+        (T("report.html.render.12"), f["status"]), (T("report.html.render.13"), T("report.html.render.14") % f["nodes_total"]),
+        (T("report.html.render.15"), T("report.html.render.14") % f["data_nodes"]), (T("report.html.render.16"), T("report.html.render.14") % f["master_nodes"]),
+        (T("report.html.render.17"), f["indices"]), (T("report.html.render.18"), f["shards"]),
+        (T("report.html.render.19"), "{:,}".format(f["docs"]) if isinstance(f["docs"], int) else f["docs"]),
+        (T("report.html.render.20"), f["store"]), (T("report.html.render.21"), f["license"]),
     ]:
         o.append("<div><span>%s</span><strong>%s</strong></div>" % (e(label), e(val)))
     o.append("</div></header>")
 
-    # ---------- 조치 우선순위 ----------
+    # ---------- Action priority ----------
     act = result.priority()
     if act:
         n_all = len(result.actionable())
-        sub = ("치명·주의 %d건" % n_all) if n_all == len(act) else \
-              ("치명·주의 %d건, 같은 원인을 묶어 %d개 항목" % (n_all, len(act)))
-        o.append("<h2>조치 우선순위<small>%s</small></h2><ol class='prio'>" % sub)
+        sub = (T("report.html.render.22") % n_all) if n_all == len(act) else \
+              (T("report.html.render.23") % (n_all, len(act)))
+        o.append(T("report.html.render.24") % sub)
         for fd, rel in act:
             relh = ""
             if rel:
-                relh = "<div class='rel'>관련 판정: %s</div>" % " · ".join(
+                relh = T("report.html.render.25") % " · ".join(
                     "<a href='#%s' data-jump='%s'>%s</a>" % (e(r.id), e(r.id), e(r.title)) for r in rel)
-            o.append("<li><span class='tag %s'>%s</span><a href='#%s' data-jump='%s'>%s</a> — %s%s</li>"
-                     % (_CLS[fd.severity], Severity.LABEL_KO[fd.severity], e(fd.id), e(fd.id),
+            o.append(T("report.html.prio") % (_CLS[fd.severity], Severity.label(fd.severity), e(fd.id), e(fd.id),
                         e(fd.title), e(truncate(fd.observed, 220)), relh))
         o.append("</ol>")
 
-    # ---------- 영역별 점검 결과 ----------
-    o.append("<h2>영역별 점검 결과<small>헬스 체크 영역별 상태</small></h2><div class='scroll'><table><thead><tr>"
-             "<th>영역</th><th>상태</th><th>치명</th><th>주의</th><th>참고</th><th>정상</th><th>포함 분류</th>"
-             "</tr></thead><tbody>")
-    _st = {"조치 필요": "c", "점검 권고": "w", "양호": "o", "판정 없음": "i"}
+    # ---------- Results by area ----------
+    o.append(T("report.html.render.26"))
+    _st = {"action": "c", "review": "w", "good": "o", "none": "i"}
     for a in result.area_summary():
         o.append("<tr><td class='n'>%s</td><td><span class='tag %s'>%s</span></td><td>%d</td><td>%d</td>"
                  "<td>%d</td><td>%d</td><td>%s</td></tr>"
-                 % (e(a["area"]), _st[a["status"]], e(a["status"]), a["critical"], a["warning"], a["info"], a["ok"],
+                 % (e(a["area"]), _st[a["status_id"]], e(a["status"]), a["critical"], a["warning"], a["info"], a["ok"],
                     e(" · ".join(a["categories"]))))
     o.append("</tbody></table></div>")
 
-    # ---------- 변화 요약(diff) ----------
+    # ---------- Change summary (diff) ----------
     ds = getattr(result, "diff_summary", None)
     if ds:
         hrs = ds.get("hours")
-        o.append("<h2>이전 번들 대비 변화<small>%s</small></h2>"
-                 % (("%.1f시간 간격" % hrs) if hrs else "수집 간격 산출 불가"))
+        o.append(T("report.html.render.27")
+                 % ((T("report.html.render.28") % hrs) if hrs else T("report.html.render.29")))
         o.append("<div class='scroll'>")
         o.append(_table({"columns": ds["columns"], "rows": ds["rows"]}))
         o.append("</div>")
-        o.append("<p class='legend'>누적 카운터(rejection·GC·circuit breaker)는 '변화 추세' "
-                 "카테고리에서 증가분으로 판정합니다. 증가가 없으면 과거 이력일 뿐 현재 문제가 "
-                 "아닙니다.</p>")
+        o.append(T("report.html.render.30"))
 
-    # ---------- 노드 상태 매트릭스 ----------
+    # ---------- Node status matrix ----------
     if f["nodes"]:
-        o.append("<h2>노드 상태 한눈에 보기<small>자원 편중(hot spotting) 확인용</small></h2>")
-        o.append("<div class='scroll'><table class='matrix'><thead><tr>"
-                 "<th>노드</th><th>역할</th><th>heap 사용률</th><th>CPU</th><th>load15/코어</th>"
-                 "<th>디스크 사용률</th><th>샤드 수</th><th>heap</th><th>RAM</th><th>zone</th>"
-                 "</tr></thead><tbody>")
+        o.append(T("report.html.render.31"))
+        o.append(T("report.html.render.32"))
         counts = [n.get("shard_count") or 0 for n in f["nodes"]]
         max_shards = max(counts or [1]) or 1
         avg_shards = (sum(counts) / float(len(counts))) if counts else 1
@@ -271,22 +265,19 @@ def render(result):
             o.append(_bar(n.get("cpu_pct_num"), 70, 90))
             o.append(_bar(n.get("load_per_cpu"), 1.0, 1.5, suffix="", scale=2.0))
             o.append(_bar(n.get("disk_pct_num"), 75, 85))
-            # 샤드 수는 평균 대비 편차로 색을 준다(전체가 균등하면 모두 초록)
+            # Shard count is colored by deviation from the average (all green when evenly distributed)
             o.append(_bar(n.get("shard_count"), avg_shards * 1.3, avg_shards * 1.6,
                           suffix="", scale=max_shards))
             o.append("<td>%s</td><td>%s</td><td>%s</td></tr>"
                      % (e(n["heap_max"]), e(n["ram"]), e(n["zone"])))
         o.append("</tbody></table></div>")
-        o.append("<p class='legend'>초록=정상, 주황=주의 기준 초과, 빨강=위험 기준 초과. "
-                 "load15/코어는 2.0, 샤드 수는 노드 최대값을 100% 로 정규화했습니다. "
-                 "막대 길이가 노드마다 크게 다르면 hot spotting 을 의심합니다.</p>")
+        o.append(T("report.html.render.33"))
 
-    # ---------- 상위 인덱스 ----------
+    # ---------- Top indices ----------
     tops = [t for t in (f.get("top_indices") or []) if t.get("size")]
     if tops:
-        o.append("<h2>저장 용량 상위 인덱스<small>상위 %d개</small></h2>" % len(tops))
-        o.append("<div class='scroll'><table><thead><tr><th>인덱스</th><th>크기</th>"
-                 "<th>문서 수</th><th>샤드</th><th>평균 검색 지연</th></tr></thead><tbody>")
+        o.append(T("report.html.render.34") % len(tops))
+        o.append(T("report.html.render.35"))
         mx = float(tops[0]["size"]) or 1.0
         for t in tops:
             lat = t.get("latency")
@@ -300,53 +291,45 @@ def render(result):
                         ("<span class='tag %s'>%.0fms</span>" % (latcls, lat)) if lat else "-"))
         o.append("</tbody></table></div>")
 
-    # ---------- 필터 + 카테고리 이동 ----------
+    # ---------- Filter + category navigation ----------
     cats = []
     for fd in result.by_severity():
         if fd.category not in cats:
             cats.append(fd.category)
-    o.append("<div class='nav'><span style='color:var(--muted);font-size:13px'>심각도</span>"
-             "<button data-level='all'>전체</button>"
-             "<button data-level='act'>조치 대상</button>"
-             "<button data-level='CRITICAL'>치명</button>"
-             "<button data-level='WARNING'>주의</button>"
-             "<button data-level='INFO'>참고</button>"
-             "<button data-level='OK'>정상</button><span class='sep'></span>"
-             "<span style='color:var(--muted);font-size:13px'>영역</span>"
-             "<button data-cat='all'>전체</button>")
+    o.append(T("report.html.render.36"))
     for cat in cats:
-        o.append("<button data-cat='%s'>%s</button>" % (e(cat), e(cat)))
+        o.append("<button data-cat='%s'>%s</button>" % (e(category_label(cat)), e(category_label(cat))))
     o.append("<span id='fcount' style='color:var(--muted);font-size:12px;margin-left:auto'></span></div>")
 
-    # ---------- 판정 결과 ----------
+    # ---------- Findings ----------
     cur = None
     for fd in result.by_severity():
         if fd.category != cur:
             cur = fd.category
             n_cat = len([x for x in result.findings if x.category == cur])
-            o.append("<h2 data-cat='%s' id='%s'>%s<small>%d건</small></h2>"
-                     % (e(cur), _cat_id(cur), e(cur), n_cat))
+            o.append(T("report.html.render.37")
+                     % (e(category_label(cur)), _cat_id(category_label(cur)), e(category_label(cur)), n_cat))
         cls = _CLS[fd.severity]
-        o.append("<div class='f %s' data-sev='%s' data-cat='%s' id='%s'>" % (cls, fd.severity, e(fd.category), e(fd.id)))
+        o.append("<div class='f %s' data-sev='%s' data-cat='%s' id='%s'>" % (cls, fd.severity, e(category_label(fd.category)), e(fd.id)))
         o.append("<h3><span class='tag %s'>%s</span>%s<span class='rid'>%s · %s</span></h3>"
-                 % (cls, Severity.LABEL_KO[fd.severity], e(fd.title), e(fd.basis or ""), e(fd.id)))
+                 % (cls, Severity.label(fd.severity), e(fd.title), e(fd.basis or ""), e(fd.id)))
         o.append("<dl>")
         if fd.observed:
-            o.append("<dt>관측</dt><dd>%s</dd>" % e(fd.observed))
+            o.append(T("report.html.render.38") % e(fd.observed))
         if fd.impact:
-            o.append("<dt>영향</dt><dd>%s</dd>" % e(fd.impact))
+            o.append(T("report.html.render.39") % e(fd.impact))
         if fd.recommend:
-            o.append("<dt>권고</dt><dd>%s</dd>" % e(fd.recommend))
+            o.append(T("report.html.render.40") % e(fd.recommend))
         if fd.affected:
-            o.append("<dt>대상</dt><dd>%s</dd>" % e(", ".join(fd.affected[:30])))
+            o.append(T("report.html.render.41") % e(", ".join(fd.affected[:30])))
         o.append("</dl>")
         if fd.evidence and fd.evidence.get("rows"):
             opened = " open" if fd.severity == Severity.CRITICAL else ""
-            o.append("<details%s><summary>근거 데이터 %d행</summary><div class='scroll'>"
+            o.append(T("report.html.render.42")
                      % (opened, len(fd.evidence["rows"])))
             o.append(_table(fd.evidence))
             o.append("</div></details>")
-        src = "출처: %s" % e(fd.source) if fd.source else ""
+        src = T("report.html.render.43") % e(fd.source) if fd.source else ""
         refs = " · ".join("<a href='%s'>%s</a>" % (e(u), e(t)) for t, u in fd.refs)
         if src or refs:
             o.append("<p class='src'>%s%s</p>" % (src, (" · " + refs) if refs else ""))
@@ -354,38 +337,27 @@ def render(result):
 
     skipped = getattr(result.ctx, "skipped_rules", [])
     if skipped:
-        o.append("<h2>입력 미수집으로 판정하지 않은 항목<small>%d개 룰</small></h2>" % len(skipped))
-        o.append("<p class='legend'>번들에 해당 파일이 없어 판정하지 않았습니다. '문제 없음' 이 아니라 "
-                 "'확인하지 못함' 입니다. 수집 모드·계정 권한·support-diagnostics 버전을 확인하십시오.</p>")
+        o.append(T("report.html.render.44") % len(skipped))
+        o.append(T("report.html.render.45"))
         o.append("<div class='scroll'>")
-        o.append(_table({"columns": ["룰", "필요한 파일"],
+        o.append(_table({"columns": [T("report.html.render.46"), T("report.html.render.47")],
                          "rows": [[x["rule"], " / ".join(x["missing"])] for x in skipped]}))
         o.append("</div>")
 
     if result.errors:
-        o.append("<h2>도구 오류로 판정하지 못한 항목<small>%d개 룰</small></h2>" % len(result.errors))
-        o.append("<p class='legend'>클러스터 문제가 아니라, 이 도구가 해당 번들의 데이터 형식을 처리하지 못한 것입니다. "
-                 "해당 룰은 '확인하지 못함' 이며 나머지 판정에는 영향이 없습니다. 상세 추적 정보는 개발자 확인용입니다.</p>")
-        o.append("<details><summary>상세 추적 정보(개발자용)</summary><div class='scroll'>")
-        o.append(_table({"columns": ["룰", "오류"],
+        o.append(T("report.html.render.48") % len(result.errors))
+        o.append(T("report.html.render.49"))
+        o.append(T("report.html.render.50"))
+        o.append(_table({"columns": [T("report.html.render.46"), T("report.html.render.51")],
                          "rows": [[x["rule"], ([ln for ln in x["error"].strip().splitlines() if ln.strip()][-1:]
                                                or [""])[0]] for x in result.errors]}))
         o.append("<pre style='white-space:pre-wrap;font-size:12px'>%s</pre>"
                  % e("\n\n".join("%s\n%s" % (x["rule"], x["error"]) for x in result.errors)))
         o.append("</div></details>")
 
-    o.append("<h2>판정 근거 구분</h2><div class='scroll'><table><thead><tr><th>구분</th><th>의미</th>"
-             "</tr></thead><tbody>"
-             "<tr><td>공식 기준</td><td>판정 기준이 Elastic 공식 문서에 명시된 항목</td></tr>"
-             "<tr><td>사실 보고</td><td>Elasticsearch 가 보고한 상태·오류·설정값을 그대로 전달(임계값 없음)</td></tr>"
-             "<tr><td>도구 판단</td><td>공식 수치 기준이 없어 이 도구의 임계값으로 판단한 항목. "
-             "thresholds.py 에서 조정 가능</td></tr>"
-             "<tr><td>비교 계산</td><td>두 번들 간 증가분·증가율·선형 외삽 결과</td></tr>"
-             "</tbody></table></div>")
-    o.append("<footer>이 리포트는 support-diagnostics 산출물만을 근거로 오프라인에서 생성되었습니다. "
-             "수집 시점의 스냅샷 값(누적 카운터 포함)에 기반하므로, 시계열 추세가 필요한 항목은 "
-             "모니터링 데이터와 교차 확인하십시오.</footer>")
-    o.append("</div><script>%s</script></body></html>" % JS)
+    o.append(T("report.html.render.52"))
+    o.append(T("report.html.render.53"))
+    o.append("</div><script>var _T={shown:%s};%s</script></body></html>" % (json.dumps(T("html.shown"), ensure_ascii=False), JS))
     return "\n".join(o)
 
 

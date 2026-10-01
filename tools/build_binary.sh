@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
-# Python 이 없는 서버용 단독 실행 파일(esdiag) 빌드 — 선택 사항
+# Build a standalone executable (esdiag) for servers without Python. Optional.
 #
-# 빌드 머신에만 PyInstaller 가 필요합니다(인터넷 가능한 환경). 결과물은 Python 없이 실행됩니다.
+# Only the build machine needs PyInstaller (an internet-connected environment). The result runs without Python.
 #
-# 중요: Linux 바이너리는 '빌드한 OS 의 glibc 버전 이상' 에서만 실행됩니다.
-#       대상 서버와 같거나 더 오래된 OS(예: 대상이 RHEL 8 이면 RHEL 8) 에서 빌드하십시오.
-#       Windows 용은 Windows 에서 빌드해야 합니다(크로스 빌드 불가).
+# Important: a Linux binary runs only on the glibc version of the build OS or newer.
+#            Build on the same OS as the target server, or an older one (for a RHEL 8 target, build on RHEL 8).
+#            A Windows build must be made on Windows (no cross build). On Windows, write the --add-data
+#            separator as ';' instead of ':'.
 #
-#   bash tools/build_binary.sh          # dist/esdiag 생성
-#   ./dist/esdiag 번들.zip --html report.html
+#   bash tools/build_binary.sh          # writes dist/esdiag
+#   ./dist/esdiag bundle.zip --html report.html
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# 시스템 Python 을 건드리지 않도록 빌드 전용 가상환경 사용(PEP 668 환경 대응)
+# Use a build-only virtual environment so the system Python is left alone (PEP 668 environments).
 python3 -m venv build/venv
 build/venv/bin/python -m pip install --quiet --upgrade pip pyinstaller
+# The message catalogs are data files, not modules: they must be added explicitly or the binary cannot print text.
 build/venv/bin/python -m PyInstaller --onefile --clean --name esdiag \
   --distpath dist --workpath build/pyinstaller --specpath build \
-  --collect-submodules esdiag analyze.py
-echo "생성: dist/esdiag"
-echo "빌드 환경 glibc: $(ldd --version 2>/dev/null | head -1 || echo 확인 불가)"
+  --collect-submodules esdiag \
+  --add-data "$PWD/esdiag/i18n/ko.txt:esdiag/i18n" \
+  --add-data "$PWD/esdiag/i18n/en.txt:esdiag/i18n" \
+  analyze.py
+echo "wrote dist/esdiag"
+echo "Build environment glibc: $(ldd --version 2>/dev/null | head -1 || echo unknown)"

@@ -1,27 +1,28 @@
 # -*- coding: utf-8 -*-
-"""OS 설정 분석: local/remote 모드 번들의 syscalls/ 디렉터리.
+"""OS settings analysis: the syscalls/ directory of a local/remote mode bundle.
 
-local 모드는 진단을 실행한 호스트 한 대의 값만 담는다. 클러스터의 다른 노드에는 적용되지 않는다.
+Local mode holds values for the one host where diagnostics ran. They do not apply to other nodes in the cluster.
 """
 
 import re
 
+from ..i18n import T, N_, tr
 from ..model import Finding, Severity, table
 
-CAT = "OS 설정"
+CAT = "os"
 
-_MIN_MAP_COUNT = 262144      # [공식] bootstrap check(maximum map count check) 최소값
-_REC_MAP_COUNT = 1048576     # [공식] 설정 권고값(기본값이 이보다 낮으면 1048576 으로 설정)
-_MIN_NOFILE = 65535          # [공식] max file descriptors 최소값
-_MIN_NPROC = 4096            # [공식] 스레드 생성 한도 최소값
+_MIN_MAP_COUNT = 262144      # [Official] minimum for the bootstrap check (maximum map count check)
+_REC_MAP_COUNT = 1048576     # [Official] recommended value (if the default is lower, set it to 1048576)
+_MIN_NOFILE = 65535          # [Official] minimum for max file descriptors
+_MIN_NPROC = 4096            # [Official] minimum for the thread creation limit
 _OOM_RE = re.compile(r"out of memory: kill(?:ed)? process \d+ \(([^)]*)\)|oom-kill:|invoked oom-killer", re.I)
 _BASE = "https://www.elastic.co/docs/deploy-manage/deploy/self-managed/"
-REF_MAP = ("vm.max_map_count 설정", _BASE + "vm-max-map-count")
-REF_SWAP = ("Swap 비활성화", _BASE + "setup-configuration-memory")
-REF_FD = ("File descriptors 설정", _BASE + "file-descriptors")
-REF_THR = ("스레드 수 한도 설정", _BASE + "max-number-of-threads")
+REF_MAP = (N_("rules.syscalls._.01"), _BASE + "vm-max-map-count")
+REF_SWAP = (N_("rules.syscalls._.02"), _BASE + "setup-configuration-memory")
+REF_FD = (N_("rules.syscalls._.03"), _BASE + "file-descriptors")
+REF_THR = (N_("rules.syscalls._.04"), _BASE + "max-number-of-threads")
 REF_BOOT = ("Bootstrap checks", _BASE + "bootstrap-checks")
-_SCOPE = "이 값은 진단을 실행한 호스트 한 대의 것입니다(local 모드). 다른 노드는 각자 확인해야 합니다."
+_SCOPE = N_("rules.syscalls._.05")
 
 
 def _sysctl(ctx):
@@ -52,7 +53,7 @@ def _int(v):
 
 
 def r_os_config(ctx):
-    """syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) 미만 → 치명, 1048576(공식 권고값) 미만 → 참고, 이상 → 정상(SYS-001). sysctl 의 vm.swappiness 가 1 초과이고 swap_total > 0 이며 mlockall 이 true 가 아님 → 참고(SYS-002). syscalls/proc-limit.txt 의 Max open files 가 65535 미만 또는 Max processes 가 4096 미만(soft 기준) → 치명(SYS-003), 충족 → 정상. syscalls/dmesg.txt 에 OOM killer 기록이 있고 대상 프로세스가 java/elasticsearch → 치명, 그 외 프로세스 → 주의(SYS-004), 기록 없음 → 정상."""
+    """vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: target process is java/elasticsearch → Critical, any other process → Warning (SYS-004); no entry → OK."""
     out = []
     sc = _sysctl(ctx)
     pl = _proc_limits(ctx)
@@ -63,22 +64,22 @@ def r_os_config(ctx):
     if mmc is not None:
         if mmc < _MIN_MAP_COUNT:
             out.append(Finding(
-                "SYS-001", CAT, Severity.CRITICAL, "vm.max_map_count 가 bootstrap check 최소값 미달",
-                observed="vm.max_map_count = %d (최소 %d). %s" % (mmc, _MIN_MAP_COUNT, _SCOPE),
-                impact="production 모드에서 bootstrap check 가 실패해 노드가 기동하지 않거나, mmap 실패로 샤드가 깨질 수 있습니다.",
-                recommend="sysctl -w vm.max_map_count=1048576 으로 즉시 적용하고, /etc/sysctl.conf 에 같은 값을 넣어 영구 반영합니다.",
+                "SYS-001", CAT, Severity.CRITICAL, T("rules.syscalls.r_os_config.01"),
+                observed=T("rules.syscalls.r_os_config.02") % (mmc, _MIN_MAP_COUNT, tr(_SCOPE)),
+                impact=T("rules.syscalls.r_os_config.03"),
+                recommend=T("rules.syscalls.r_os_config.04"),
                 refs=[REF_MAP, REF_BOOT], source="syscalls/sysctl.txt"))
         elif mmc < _REC_MAP_COUNT:
             out.append(Finding(
-                "SYS-001", CAT, Severity.INFO, "vm.max_map_count 가 공식 권고값보다 낮음",
-                observed="vm.max_map_count = %d. bootstrap check 최소값(%d)은 충족하지만 공식 권고값은 %d 입니다. %s"
-                         % (mmc, _MIN_MAP_COUNT, _REC_MAP_COUNT, _SCOPE),
-                impact="샤드·세그먼트가 많아지면 mmap 영역이 부족해질 수 있습니다. 당장 기동에는 문제가 없습니다.",
-                recommend="다음 정기 작업 때 /etc/sysctl.conf 에 vm.max_map_count=1048576 을 넣고 sysctl --system 으로 반영합니다.",
+                "SYS-001", CAT, Severity.INFO, T("rules.syscalls.r_os_config.05"),
+                observed=T("rules.syscalls.r_os_config.06")
+                         % (mmc, _MIN_MAP_COUNT, _REC_MAP_COUNT, tr(_SCOPE)),
+                impact=T("rules.syscalls.r_os_config.07"),
+                recommend=T("rules.syscalls.r_os_config.08"),
                 refs=[REF_MAP], source="syscalls/sysctl.txt"))
         else:
-            out.append(Finding("SYS-001", CAT, Severity.OK, "vm.max_map_count 충족",
-                               observed="vm.max_map_count = %d (권고 %d 이상)" % (mmc, _REC_MAP_COUNT),
+            out.append(Finding("SYS-001", CAT, Severity.OK, T("rules.syscalls.r_os_config.09"),
+                               observed=T("rules.syscalls.r_os_config.10") % (mmc, _REC_MAP_COUNT),
                                refs=[REF_MAP], source="syscalls/sysctl.txt"))
 
     sw = _int(sc.get("vm.swappiness"))
@@ -86,10 +87,10 @@ def r_os_config(ctx):
         swap_nodes = [n for n in ctx.nodes if n.swap_total and n.mlockall is not True]
         if swap_nodes:
             out.append(Finding(
-                "SYS-002", CAT, Severity.INFO, "swap 이 있는데 vm.swappiness 가 높음",
-                observed="vm.swappiness = %d, swap 설정 노드: %s. %s" % (sw, ", ".join(n.name for n in swap_nodes), _SCOPE),
-                impact="swap 을 완전히 끌 수 없다면 공식 권고는 vm.swappiness=1 입니다. 값이 크면 JVM heap 이 swap out 될 여지가 커집니다.",
-                recommend="swap 비활성화가 가장 안전합니다. 어렵다면 vm.swappiness=1 또는 bootstrap.memory_lock: true 를 적용합니다(OS-002 참조).",
+                "SYS-002", CAT, Severity.INFO, T("rules.syscalls.r_os_config.11"),
+                observed=T("rules.syscalls.r_os_config.12") % (sw, ", ".join(n.name for n in swap_nodes), tr(_SCOPE)),
+                impact=T("rules.syscalls.r_os_config.13"),
+                recommend=T("rules.syscalls.r_os_config.14"),
                 refs=[REF_SWAP], source="syscalls/sysctl.txt"))
 
     if pl:
@@ -99,21 +100,21 @@ def r_os_config(ctx):
         for label, val, need in (("Max open files", nf, _MIN_NOFILE), ("Max processes", np_, _MIN_NPROC)):
             if val is None:
                 continue
-            rows.append([label, val, need, "미달" if val < need else "충족"])
+            rows.append([label, val, need, T("rules.syscalls.r_os_config.15") if val < need else T("rules.syscalls.r_os_config.16")])
             if val < need:
-                bad.append("%s %d (최소 %d)" % (label, val, need))
+                bad.append(T("rules.syscalls.r_os_config.17") % (label, val, need))
         if bad:
             out.append(Finding(
-                "SYS-003", CAT, Severity.CRITICAL, "Elasticsearch 프로세스 한도가 최소 요건 미달",
-                observed="; ".join(bad) + ". " + _SCOPE,
-                impact="열린 파일 한도가 낮으면 샤드·세그먼트 파일 오픈 실패와 bootstrap check 실패가, 프로세스 한도가 낮으면 스레드 생성 실패가 발생합니다.",
-                recommend="systemd 서비스는 LimitNOFILE / LimitNPROC 로, 그 외에는 limits.conf(nofile, nproc)로 올립니다. 재기동 후 다시 수집해 확인합니다.",
-                evidence=table(["항목", "soft 한도", "최소", "판정"], rows),
+                "SYS-003", CAT, Severity.CRITICAL, T("rules.syscalls.r_os_config.18"),
+                observed="; ".join(bad) + ". " + tr(_SCOPE),
+                impact=T("rules.syscalls.r_os_config.19"),
+                recommend=T("rules.syscalls.r_os_config.20"),
+                evidence=table([T("rules.syscalls.r_os_config.21"), T("rules.syscalls.r_os_config.22"), T("rules.syscalls.r_os_config.23"), T("rules.syscalls.r_os_config.24")], rows),
                 refs=[REF_FD, REF_THR], source="syscalls/proc-limit.txt"))
         elif rows:
-            out.append(Finding("SYS-003", CAT, Severity.OK, "프로세스 한도 충족",
+            out.append(Finding("SYS-003", CAT, Severity.OK, T("rules.syscalls.r_os_config.25"),
                                observed=", ".join("%s %s" % (r[0], r[1]) for r in rows),
-                               evidence=table(["항목", "soft 한도", "최소", "판정"], rows),
+                               evidence=table([T("rules.syscalls.r_os_config.21"), T("rules.syscalls.r_os_config.22"), T("rules.syscalls.r_os_config.23"), T("rules.syscalls.r_os_config.24")], rows),
                                source="syscalls/proc-limit.txt"))
 
     dm = ctx.b.text("syscalls/dmesg.txt")
@@ -122,15 +123,15 @@ def r_os_config(ctx):
         if hits:
             java = [h for h in hits if re.search(r"java|elasticsearch", h, re.I)]
             out.append(Finding(
-                "SYS-004", CAT, Severity.CRITICAL if java else Severity.WARNING, "커널 OOM killer 기록",
-                observed="dmesg 에서 OOM killer 기록 %d건. 종료된 프로세스: %s. %s"
-                         % (len(hits), ", ".join(sorted(set(h for h in hits if h))) or "확인 불가", _SCOPE),
-                impact="호스트 메모리가 부족해 커널이 프로세스를 강제 종료했습니다. Elasticsearch 가 대상이면 노드가 예고 없이 이탈합니다.",
-                recommend="heap 이 물리 메모리의 50% 이하인지, 같은 호스트의 다른 프로세스와 off-heap 사용량을 함께 점검합니다.",
+                "SYS-004", CAT, Severity.CRITICAL if java else Severity.WARNING, T("rules.syscalls.r_os_config.26"),
+                observed=T("rules.syscalls.r_os_config.27")
+                         % (len(hits), ", ".join(sorted(set(h for h in hits if h))) or T("rules.syscalls.r_os_config.28"), tr(_SCOPE)),
+                impact=T("rules.syscalls.r_os_config.29"),
+                recommend=T("rules.syscalls.r_os_config.30"),
                 source="syscalls/dmesg.txt"))
         else:
-            out.append(Finding("SYS-004", CAT, Severity.OK, "커널 OOM killer 기록 없음",
-                               observed="dmesg 에 OOM killer 기록이 없습니다.", source="syscalls/dmesg.txt"))
+            out.append(Finding("SYS-004", CAT, Severity.OK, T("rules.syscalls.r_os_config.31"),
+                               observed=T("rules.syscalls.r_os_config.32"), source="syscalls/dmesg.txt"))
     return out
 
 

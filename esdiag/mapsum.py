@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""인덱스 매핑 요약. mapping.json 은 수백 MB 가 될 수 있어, 읽는 즉시 판정에 필요한 요약만 남긴다."""
+"""Index mapping summary. mapping.json can reach hundreds of MB, so only what the findings need is kept as it is read."""
 
 from .util import items
 
 
 def count_fields(props):
-    """공식 total_fields.limit 산정: 필드·object 매핑, multi-field 모두 1개씩.
+    """Counts fields the way total_fields.limit does: field and object mappings and multi-fields, one each.
 
-    반환: (필드 수, nested 수, fielddata 활성 text 필드 목록, [(dense_vector 필드, {dims, element_type, index_options.type})])
+    Returns: (field count, nested count, fielddata-enabled text fields, [(dense_vector field, {dims, element_type, index_options.type})])
     """
     total, nested = 0, 0
     fielddata, vectors = [], []
@@ -39,7 +39,7 @@ def count_fields(props):
 
 
 def summarize(pairs):
-    """(index, body) 반복자를 받아 {index: {total, nested, fielddata, vectors, runtime}} 요약을 만든다."""
+    """Takes an (index, body) iterator and builds {index: {total, nested, fielddata, vectors, runtime}}."""
     out = {}
     for name, body in pairs:
         m = body.get("mappings") if isinstance(body, dict) else None

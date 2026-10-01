@@ -1,4 +1,4 @@
-"""단위 파싱/포매팅 유틸리티. 외부 의존성 없음."""
+"""Unit parsing and formatting helpers. No external dependencies."""
 
 import re
 
@@ -25,7 +25,7 @@ _TIME_UNITS = {
 
 
 def parse_bytes(value, default=None):
-    """'1.5tb', '512mb', '1024', 1024 -> bytes(int). 실패 시 default."""
+    """'1.5tb', '512mb', '1024', 1024 -> bytes (int). Returns default on failure."""
     if value is None:
         return default
     if isinstance(value, (int, float)):
@@ -71,7 +71,7 @@ def parse_time_ms(value, default=None):
 
 
 def fmt_bytes(num):
-    """bytes -> 사람이 읽는 문자열."""
+    """bytes -> human-readable string."""
     if num is None:
         return "-"
     try:
@@ -89,7 +89,7 @@ def fmt_bytes(num):
 
 
 def fmt_ms(ms):
-    """milliseconds -> 사람이 읽는 문자열."""
+    """milliseconds -> human-readable string."""
     if ms is None:
         return "-"
     try:
@@ -120,7 +120,7 @@ def fmt_num(n):
 
 
 def pct(part, whole):
-    """백분율. whole이 0/None이면 None."""
+    """Percentage. Returns None if whole is 0 or None."""
     try:
         if not whole:
             return None
@@ -130,7 +130,7 @@ def pct(part, whole):
 
 
 def dig(obj, *path, **kw):
-    """중첩 dict/list 안전 접근. dig(d, 'a', 'b', 0, default=None)"""
+    """Safe access into nested dict/list. dig(d, 'a', 'b', 0, default=None)"""
     default = kw.get("default")
     cur = obj
     for key in path:
@@ -149,9 +149,9 @@ def dig(obj, *path, **kw):
 
 
 def num(obj, *path, **kw):
-    """숫자 필드 접근자. 없거나 null·비숫자면 default(기본 0). 숫자 문자열("123", "1.5")은 숫자로 변환.
+    """Numeric field accessor. Returns default (0 unless given) if missing, null or non-numeric. Numeric strings ("123", "1.5") are converted.
 
-    버전·수집 조건에 따라 숫자가 문자열로 오거나 빠지는 경우에도 계산이 멈추지 않게 한다.
+    Depending on version and collection mode a number may arrive as a string or be absent; this keeps the calculation going.
     """
     default = kw.get("default", 0)
     v = dig(obj, *path) if path else obj
@@ -167,25 +167,25 @@ def num(obj, *path, **kw):
 
 
 def items(x):
-    """dict 의 (key, value) 목록. dict 가 아니면 빈 목록."""
+    """(key, value) list of a dict. Empty list if not a dict."""
     return list(x.items()) if isinstance(x, dict) else []
 
 
 def strs(x):
-    """문자열 원소만 남긴 리스트(패턴·이름 목록용)."""
+    """List with only the string elements (for pattern and name lists)."""
     return [i for i in x if isinstance(i, str)] if isinstance(x, list) else []
 
 
 def dicts(x):
-    """dict 원소만 남긴 리스트(형식이 다른 원소는 버림)."""
+    """List with only the dict elements (elements of another type are dropped)."""
     return [i for i in x if isinstance(i, dict)] if isinstance(x, list) else []
 
 
 def parse_cat_table(text):
-    """support-diagnostics의 cat_*.txt(공백 정렬 테이블)를 dict 리스트로 변환.
+    """Converts support-diagnostics cat_*.txt (whitespace-aligned table) into a list of dicts.
 
-    첫 줄을 헤더로 보고, 헤더 컬럼의 시작 오프셋 기준으로 고정폭 분해를 시도한다.
-    컬럼 수가 맞지 않으면 단순 split으로 폴백한다.
+    Treats the first line as the header and tries a fixed-width split using the header column start offsets.
+    Falls back to a plain split if the column count does not match.
     """
     if not text:
         return []
@@ -202,7 +202,7 @@ def parse_cat_table(text):
         if len(parts) == len(cols):
             rows.append(dict(zip([c[0] for c in cols], parts)))
         else:
-            # 값에 공백이 포함된 경우: 헤더 오프셋 기준 슬라이스
+            # value contains spaces: slice by header offsets
             rec = {}
             for i, (name, start) in enumerate(cols):
                 end = cols[i + 1][1] if i + 1 < len(cols) else len(ln)

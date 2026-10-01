@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""룰 실행 엔진과 결과 집계."""
+"""Rule execution engine and result aggregation."""
 
 import collections
 import traceback
 
 from . import diff as diff_mod
 from . import ES_BASELINE, DOCS_CHECKED, SUPPORTED_MIN, __version__
-from .basis import basis_of
+from .basis import basis_of, label as basis_label
 from .context import Context
+from .i18n import T
 from .loader import Bundle
-from .model import Severity
+from .model import Severity, category_label
 from .rules import all_rules, missing_inputs
 from .thresholds import merge
 from .util import dig, fmt_bytes, num, items
@@ -19,43 +20,48 @@ class Result(object):
     def __init__(self, ctx, findings, errors, diff_summary=None, hidden_ok=None):
         self.ctx = ctx
         self.findings = findings
-        # --no-ok 로 숨긴 정상 판정. 표시만 하지 않고 건수·영역 요약에는 포함한다.
+        # OK findings hidden by --no-ok. They are not shown but still count in the totals and area summary.
         self.hidden_ok = hidden_ok or []
         self.errors = errors
         self.diff_summary = diff_summary
         for f in self.findings:
-            f.basis = basis_of(f.id)
+            f.basis_id = basis_of(f.id)
+            f.basis = basis_label(f.basis_id)
         self.counts = {s: 0 for s in (Severity.CRITICAL, Severity.WARNING,
                                       Severity.INFO, Severity.OK)}
         for f in list(findings) + self.hidden_ok:
             self.counts[f.severity] = self.counts.get(f.severity, 0) + 1
-        self.grade = self._grade()
+        self.grade_id = self._grade()
+        self.grade = T("grade." + self.grade_id)
 
     def _grade(self):
-        """치명·주의 건수로만 정하는 단계. 가중치 점수는 쓰지 않는다(공식 기준이 없는 임의 산식이므로)."""
+        """Grade id, decided only by the number of critical and warning findings. No weighted score is used
+        (such a formula would be arbitrary, with no official basis)."""
         if self.counts[Severity.CRITICAL] > 0:
-            return "조치 필요"
+            return "action"
         if self.counts[Severity.WARNING] >= 5:
-            return "점검 권고"
+            return "review"
         if self.counts[Severity.WARNING] > 0:
-            return "양호(개선 여지)"
-        return "양호"
+            return "fair"
+        return "good"
 
-    # 헬스 체크 영역: 보고서를 읽는 순서(가용성 → 자원 → 데이터 구조 → 성능 → 데이터 보호 → 보안 → 구성)
+    # Health check areas, in reading order of the report
+    # (availability, capacity, data structure, performance, data protection, security, configuration).
+    # Area and category ids are language-neutral; labels come from the catalog (area.<id>, cat.<id>).
     AREAS = [
-        ("가용성", ["클러스터"]),
-        ("자원·용량", ["노드", "핫스팟·밸런싱"]),
-        ("데이터 구조", ["샤드·인덱스", "벡터 검색"]),
-        ("성능", ["성능 기준", "런타임"]),
-        ("데이터 보호·운영", ["운영"]),
-        ("보안", ["보안·인증"]),
-        ("구성", ["설정 기준", "설정 변경", "OS 설정"]),
-        ("변화 추세", ["변화 추세"]),
+        ("availability", ["cluster"]),
+        ("capacity", ["node", "hotspot"]),
+        ("structure", ["shard", "vector"]),
+        ("performance", ["perf", "runtime"]),
+        ("protection", ["ops"]),
+        ("security", ["security"]),
+        ("config", ["config", "settings", "os"]),
+        ("trend", ["trend"]),
     ]
     CATEGORY_ORDER = [c for _a, cats in AREAS for c in cats]
 
     def by_severity(self):
-        """카테고리 순 -> 심각도 순으로 정렬(리포트 본문 순서)."""
+        """Sort by category, then severity (the order of the report body)."""
         def key(f):
             try:
                 c = self.CATEGORY_ORDER.index(f.category)
@@ -65,22 +71,24 @@ class Result(object):
         return sorted(self.findings, key=key)
 
     def area_summary(self):
-        """헬스 체크 영역별 판정 건수와 상태. 판정이 하나도 없는 영역은 '판정 없음' 으로 표시한다."""
+        """Finding counts and status per health check area. An area with no findings shows status "none"."""
         rows = []
         for area, cats in self.AREAS:
             fs = [f for f in list(self.findings) + self.hidden_ok if f.category in cats]
-            if area == "변화 추세" and not fs:
+            if area == "trend" and not fs:
                 continue
             c = collections.Counter(f.severity for f in fs)
             if c[Severity.CRITICAL]:
-                status = "조치 필요"
+                status = "action"
             elif c[Severity.WARNING]:
-                status = "점검 권고"
+                status = "review"
             elif fs:
-                status = "양호"
+                status = "good"
             else:
-                status = "판정 없음"
-            rows.append({"area": area, "categories": cats, "status": status,
+                status = "none"
+            rows.append({"area": T("area." + area), "area_id": area,
+                         "categories": [category_label(x) for x in cats], "category_ids": cats,
+                         "status": T("status." + status), "status_id": status,
                          "critical": c[Severity.CRITICAL], "warning": c[Severity.WARNING],
                          "info": c[Severity.INFO], "ok": c[Severity.OK]})
         return rows
@@ -99,15 +107,15 @@ class Result(object):
     def actionable(self):
         return self.actionable_sorted()
 
-    # 원인이 같은 판정 묶음. 목록의 첫 판정(존재하는 것 중)이 대표가 되고 나머지는 '관련 판정' 으로 붙는다.
-    # 본문 판정은 그대로 두고, 조치 우선순위 목록에서만 중복을 줄인다.
+    # Findings that share a root cause. The first one present in a group leads and the rest are attached
+    # as related findings. The body keeps every finding; only the action priority list drops the duplicates.
     ROOT_GROUPS = [
-        ["CLU-001", "CLU-002", "CLU-003", "CLU-004.shards_availability", "IDX-002"],   # 샤드 미할당
-        ["DISK-001", "DISK-002", "DISK-003", "CLU-004.disk"],                          # 디스크 워터마크
+        ["CLU-001", "CLU-002", "CLU-003", "CLU-004.shards_availability", "IDX-002"],   # unassigned shards
+        ["DISK-001", "DISK-002", "DISK-003", "CLU-004.disk"],                          # disk watermarks
     ]
 
     def priority(self):
-        """조치 우선순위. [(대표 판정, [관련 판정...]), ...] — 같은 원인 묶음은 1개 항목으로 합친다."""
+        """Action priority: [(leading finding, [related findings...]), ...]. A root-cause group becomes one entry."""
         act = self.actionable_sorted()
         by_id = dict((f.id, f) for f in act)
         absorbed, related = set(), {}
@@ -115,7 +123,7 @@ class Result(object):
             present = [i for i in grp if i in by_id]
             if len(present) < 2:
                 continue
-            # 가장 심각한 판정이 대표. 같으면 묶음 정의 순서(증상 → 세부 원인)
+            # The most severe finding leads. On a tie, group order decides (symptom, then detailed cause).
             lead = min(present, key=lambda i: (Severity.ORDER.get(by_id[i].severity, 9), grp.index(i)))
             related[lead] = [by_id[i] for i in present if i != lead]
             absorbed.update(i for i in present if i != lead)
@@ -167,7 +175,7 @@ class Result(object):
             })
         return {
             "tool_version": __version__,
-            "baseline": "Elasticsearch %d.%d (공식 문서 %s 대조)" % (ES_BASELINE + (DOCS_CHECKED,)),
+            "baseline": "Elasticsearch %d.%d (%s)" % (ES_BASELINE + (T("engine.docs_checked") % DOCS_CHECKED,)),
             "cluster_name": ctx.cluster_name,
             "cluster_uuid": ctx.version_doc.get("cluster_uuid"),
             "version": ctx.version,
@@ -193,6 +201,7 @@ class Result(object):
         return {
             "summary": {
                 "grade": self.grade,
+                "grade_id": self.grade_id,
                 "counts": self.counts,
             },
             "facts": self.facts(),
@@ -207,7 +216,7 @@ class Result(object):
 
 
 def _fmt_collected(t):
-    """리포트 표시용 수집 시각: UTC 와 한국 시간(UTC+9, 서머타임 없음)을 함께 표기."""
+    """Collection time for the report: UTC, plus Korea time (UTC+9, no daylight saving) in the Korean report."""
     if not t:
         return "-"
     try:
@@ -216,7 +225,7 @@ def _fmt_collected(t):
             t = t.replace(tzinfo=_dt.timezone.utc)
         u = t.astimezone(_dt.timezone.utc)
         k = u + _dt.timedelta(hours=9)
-        return "%s UTC (한국 시간 %s)" % (u.strftime("%Y-%m-%d %H:%M:%S"), k.strftime("%Y-%m-%d %H:%M"))
+        return T("engine._fmt_collected.01") % (u.strftime("%Y-%m-%d %H:%M:%S"), k.strftime("%Y-%m-%d %H:%M"))
     except Exception:
         return str(t)
 
@@ -249,47 +258,60 @@ def _run_rules(ctx, only=None, skip_ok=False):
 
 
 def _version_findings(ctx):
-    """분석 대상 버전이 도구의 기준점과 다르면 알린다."""
+    """Warns when the analyzed version differs from the tool baseline."""
     from .model import Finding
     v = ctx.version_tuple
     if not v or v == (0, 0, 0):
-        return [Finding("VER-001", "클러스터", Severity.INFO, "클러스터 버전 확인 불가",
-                        observed="version.json 에서 버전을 읽지 못했습니다.",
-                        impact="버전에 따라 갈리는 판정(8.3 / 8.5 / 8.14 / 9.2 기준)이 최신 버전 기준으로 동작합니다.",
-                        recommend="번들에 version.json 이 포함되었는지 확인합니다.", source="version.json")]
+        return [Finding("VER-001", "cluster", Severity.INFO, T("engine._version_findings.01"),
+                        observed=T("engine._version_findings.02"),
+                        impact=T("engine._version_findings.03"),
+                        recommend=T("engine._version_findings.04"), source="version.json")]
     base = "%d.%d" % ES_BASELINE
     if v[:2] > ES_BASELINE:
-        return [Finding("VER-001", "클러스터", Severity.INFO,
-                        "도구 기준 버전보다 새로운 클러스터",
-                        observed="클러스터 %s / 도구 기준 %s (공식 문서 %s 대조)." % (ctx.version, base, DOCS_CHECKED),
-                        impact="기준 이후 버전에서 기본값이나 동작이 바뀐 항목은 판정이 맞지 않을 수 있습니다.",
-                        recommend="해당 버전의 릴리스 노트에서 기본값 변경(워터마크, 벡터, 샤드 한도 등)을 확인하고, "
-                                  "필요하면 도구의 기준 버전을 갱신합니다.", source="version.json")]
+        return [Finding("VER-001", "cluster", Severity.INFO,
+                        T("engine._version_findings.05"),
+                        observed=T("engine._version_findings.06") % (ctx.version, base, DOCS_CHECKED),
+                        impact=T("engine._version_findings.07"),
+                        recommend=T("engine._version_findings.08"), source="version.json")]
     if v[:2] < SUPPORTED_MIN:
-        return [Finding("VER-001", "클러스터", Severity.INFO,
-                        "도구 지원 최소 버전보다 오래된 클러스터",
-                        observed="클러스터 %s / 지원 최소 %d.%d." % ((ctx.version,) + SUPPORTED_MIN),
-                        impact="Health API·desired balance·벡터 통계 등 해당 버전에 없는 API 기반 룰은 "
-                               "입력 미수집으로 건너뜁니다. 버전별 기준(예: heap 1GB당 샤드 20개)은 해당 버전 값으로 적용됩니다.",
-                        recommend="건너뛴 룰 목록을 확인하고, 필요한 항목은 수동으로 점검합니다.", source="version.json")]
+        return [Finding("VER-001", "cluster", Severity.INFO,
+                        T("engine._version_findings.09"),
+                        observed=T("engine._version_findings.10") % ((ctx.version,) + SUPPORTED_MIN),
+                        impact=T("engine._version_findings.11"),
+                        recommend=T("engine._version_findings.12"), source="version.json")]
     return []
 
 
-def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None):
-    """baseline 을 주면 두 번들을 비교해 '변화 추세' 판정을 추가한다."""
+def _open_bundle(path, bundles):
+    """Open a bundle, reusing one already opened by an earlier language pass."""
+    if bundles is not None and path in bundles:
+        return bundles[path]
+    b = Bundle(path)
+    if bundles is not None:
+        bundles[path] = b
+    return b
+
+
+def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None, bundles=None):
+    """Run every rule against a bundle.
+
+    With baseline, the two bundles are compared and trend findings are added.
+    bundles is an optional dict that caches opened Bundle objects by path, so a second pass in
+    another language does not parse the same files again.
+    """
     t = merge(thresholds or {})
-    bundle = Bundle(path)
+    bundle = _open_bundle(path, bundles)
     if not any(bundle.exists(f) for f in CORE_FILES):
-        raise ValueError("support-diagnostics 번들로 인식할 수 없습니다. 핵심 파일(%s)이 없습니다: %s"
+        raise ValueError(T("engine.analyze.01")
                          % (", ".join(CORE_FILES), path))
     ctx = Context(bundle, t)
     findings, errors = _run_rules(ctx, only, False)
 
     diff_summary = None
     if baseline:
-        bb = Bundle(baseline)
+        bb = _open_bundle(baseline, bundles)
         if not any(bb.exists(f) for f in CORE_FILES):
-            raise ValueError("baseline 을 진단 번들로 인식할 수 없습니다: %s" % baseline)
+            raise ValueError(T("engine.analyze.02") % baseline)
         base_ctx = Context(bb, t)
         base_findings, _ = _run_rules(base_ctx, only, True)
         try:

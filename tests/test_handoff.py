@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Elastic 공식 Support 팀 요약(--support-summary)과 마스킹 검증. 외부 번들 불필요(합성 데이터).
+"""Checks for the Elastic Support summary (--support-summary) and masking. No external bundle needed (synthetic data).
 
-카나리 식별자를 번들 곳곳(클러스터명, 노드명, 호스트, IP, 경로, 인증서, 라이선스, 저장소, 인덱스, 로그, hot threads)에
-심고, 요약 어디에도 남지 않는지 단계별로 확인한다.
+Canary identifiers are planted across the bundle (cluster name, node names, hosts, IPs, paths, certificate,
+license, repository, index, log, hot threads). Every check confirms that none survives in the summary.
+All checks run in both languages (ko and en). The CLI part also checks the --lang output file names.
 
     python3 tests/test_handoff.py
 """
@@ -18,11 +19,15 @@ import tempfile
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
+import re  # noqa: E402
+
 from esdiag.engine import analyze  # noqa: E402
+from esdiag.i18n import T, set_lang  # noqa: E402
 from esdiag.mask import Masker  # noqa: E402
 from esdiag.report import handoff  # noqa: E402
 
 FAILS, N = [], [0]
+HANGUL = re.compile(u"[\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]")
 
 CLUSTER = "zetacorp-prod-cluster"
 NODES = ["zetadata-node-01", "zetadata-node-02"]
@@ -42,7 +47,7 @@ CANARY_RAW = ["zetalogtoken", "zetahotstack"]
 def check(name, cond, detail=""):
     N[0] += 1
     if not cond:
-        FAILS.append(name + (" — " + str(detail) if detail else ""))
+        FAILS.append(name + (" - " + str(detail) if detail else ""))
 
 
 def w(root, rel, data):
@@ -99,88 +104,148 @@ def render(res, level):
     return m, handoff.render(res, m, level, "test")
 
 
+def run_lang(lang, tmp):
+    """Masking and round-trip checks for one output language."""
+    set_lang(lang)
+    root = os.path.join(tmp, "b-" + lang)
+    build(root)
+    res = analyze(root)
+    pre = "[%s] " % lang
+    check(pre + "synthetic bundle yields critical/warning findings", len(res.priority()) > 0)
+
+    # 1) Canary leak check per masking level
+    for level in ("basic", "strict"):
+        m, out = render(res, level)
+        low = out.lower()
+        for c in CANARY_ALWAYS + CANARY_RAW:
+            check("%s%s: canary absent %s" % (pre, level, c), c.lower() not in low)
+        if level == "strict":
+            for c in CANARY_STRICT_ONLY:
+                check(pre + "strict: index name absent", c.lower() not in low)
+        check("%s%s: alias is used" % (pre, level), "node-001" in out)
+        if lang == "en":
+            check("%s%s: English summary has no Hangul" % (pre, level), not HANGUL.search(out),
+                  HANGUL.findall(out)[:10])
+    # basic keeps index names as they are (confirms the two levels differ)
+    _m, out_b = render(res, "basic")
+    check(pre + "basic: index name kept (only strict masks it)", "index-001" not in out_b)
+
+    # 2) none does not mask
+    m, out_n = render(res, "none")
+    check(pre + "none: cluster name unchanged", CLUSTER in out_n)
+    check(pre + "none: raw columns (samples, stacks) still excluded",
+          "zetalogtoken" not in out_n and "zetahotstack" not in out_n)
+    if lang == "en":
+        check(pre + "none: English summary has no Hangul", not HANGUL.search(out_n), HANGUL.findall(out_n)[:10])
+
+    # 3) Mapping round trip: every alias in the summary is in the map, and restoring gives the original names
+    m, out = render(res, "strict")
+    mp = m.mapping()
+    check(pre + "mapping has the original node name", any(v["original"] == NODES[0] for v in mp.values()))
+    restored = out
+    for alias in sorted(mp, key=len, reverse=True):
+        restored = restored.replace(alias, mp[alias]["original"])
+    check(pre + "restore brings back the cluster name", CLUSTER in restored)
+    check(pre + "restore brings back the node name", NODES[0] in restored)
+    # the same value always gets the same alias
+    check(pre + "consistency: same input, same alias", m.text(NODES[0]) == m.text(NODES[0]) != NODES[0])
+
+    # 4) Fail closed: if masking fails, no summary is produced
+    class Broken(Masker):
+        def text(self, s):
+            return s
+    bm = Broken(res.ctx, level="basic")
+    raised = False
+    try:
+        handoff.render(res, bm, "basic", "test")
+    except handoff.MaskLeak as exc:
+        raised = bool(exc.leaks)
+    check(pre + "MaskLeak when masking fails", raised)
+
+
+def run(cli, *extra, **kw):
+    return subprocess.run(cli + list(extra), stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kw)
+
+
+def cli_checks(tmp, root):
+    cli = [sys.executable, os.path.join(ROOT, "analyze.py"), root, "--quiet"]
+
+    # --lang both (the default): <name>.ko.md and <name>.en.md
+    out_md = os.path.join(tmp, "sum.md")
+    ko_md, en_md = os.path.join(tmp, "sum.ko.md"), os.path.join(tmp, "sum.en.md")
+    p = run(cli, "--support-summary", out_md)
+    check("CLI: default run exits 0", p.returncode == 0, p.stderr.decode("utf-8", "replace")[-300:])
+    check("CLI: --lang both writes sum.ko.md", os.path.isfile(ko_md))
+    check("CLI: --lang both writes sum.en.md", os.path.isfile(en_md))
+    check("CLI: --lang both does not write the bare name", not os.path.exists(out_md))
+    mp_path = out_md + ".mask-map.json"
+    check("CLI: mapping file written", os.path.isfile(mp_path))
+    if os.path.isfile(mp_path) and os.name == "posix":
+        check("CLI: mapping file mode is 0600", stat.S_IMODE(os.stat(mp_path).st_mode) == 0o600)
+    for lang, path in (("ko", ko_md), ("en", en_md)):
+        if not os.path.isfile(path):
+            continue
+        raw = io.open(path, encoding="utf-8").read()
+        set_lang(lang)
+        check("CLI [%s]: no canary in summary" % lang,
+              not any(c.lower() in raw.lower() for c in CANARY_ALWAYS + CANARY_RAW))
+        check("CLI [%s]: Elastic Support heading present" % lang, T("report.handoff.render.01") in raw)
+        check("CLI [%s]: alias used" % lang, "node-001" in raw)
+        if lang == "en":
+            check("CLI [en]: English summary has no Hangul", not HANGUL.search(raw), HANGUL.findall(raw)[:10])
+        else:
+            check("CLI [ko]: Korean summary has Hangul", bool(HANGUL.search(raw)))
+    set_lang("ko")
+
+    # --lang en / --lang ko write the exact path
+    for lang in ("en", "ko"):
+        exact = os.path.join(tmp, "only-%s.md" % lang)
+        p = run(cli, "--support-summary", exact, "--lang", lang)
+        check("CLI: --lang %s exits 0" % lang, p.returncode == 0, p.stderr.decode("utf-8", "replace")[-300:])
+        check("CLI: --lang %s writes the exact path" % lang, os.path.isfile(exact))
+        stem = os.path.join(tmp, "only-%s" % lang)
+        check("CLI: --lang %s writes no language-suffixed file" % lang,
+              not os.path.exists(stem + ".ko.md") and not os.path.exists(stem + ".en.md"))
+        if os.path.isfile(exact):
+            raw = io.open(exact, encoding="utf-8").read()
+            check("CLI: --lang %s summary has no canary" % lang,
+                  not any(c.lower() in raw.lower() for c in CANARY_ALWAYS + CANARY_RAW))
+            if lang == "en":
+                check("CLI: --lang en summary has no Hangul", not HANGUL.search(raw), HANGUL.findall(raw)[:10])
+    # --lang en with --mask strict also keeps the index name out
+    exact = os.path.join(tmp, "strict-en.md")
+    run(cli, "--support-summary", exact, "--lang", "en", "--mask", "strict")
+    if os.path.isfile(exact):
+        raw = io.open(exact, encoding="utf-8").read().lower()
+        check("CLI: --lang en --mask strict hides the index name", INDEX.lower() not in raw)
+    else:
+        check("CLI: --lang en --mask strict writes a summary", False)
+
+    out2 = os.path.join(tmp, "n.md")
+    p = run(cli, "--support-summary", out2, "--mask", "none")
+    check("CLI: --mask none writes no mapping file",
+          p.returncode == 0 and not os.path.exists(out2 + ".mask-map.json"))
+
+    p = run(cli, "--mask", "strict")
+    check("CLI: --mask alone is an error", p.returncode == 2, p.returncode)
+    clean = os.path.join(tmp, "clean")
+    os.makedirs(clean)
+    p = run(cli, cwd=clean)
+    check("CLI: no summary or mapping file without options", p.returncode == 0 and not os.listdir(clean))
+
+
 def main():
     tmp = tempfile.mkdtemp()
     try:
-        root = os.path.join(tmp, "b")
-        build(root)
-        res = analyze(root)
-        check("합성 번들에서 치명·주의 판정이 나옴", len(res.priority()) > 0)
-
-        # 1) 단계별 카나리 누출 검사
-        for level in ("basic", "strict"):
-            m, out = render(res, level)
-            low = out.lower()
-            for c in CANARY_ALWAYS + CANARY_RAW:
-                check("%s: 카나리 미검출 %s" % (level, c), c.lower() not in low)
-            if level == "strict":
-                for c in CANARY_STRICT_ONLY:
-                    check("strict: 인덱스명 미검출", c.lower() not in low)
-            check("%s: 별칭이 사용됨" % level, "node-001" in out)
-        # basic 은 인덱스명을 그대로 둔다(단계 구분 확인)
-        _m, out_b = render(res, "basic")
-        check("basic: 인덱스명은 유지(strict 에서만 가림)", "index-001" not in out_b)
-
-        # 2) none 은 마스킹하지 않는다
-        m, out_n = render(res, "none")
-        check("none: 클러스터명 그대로", CLUSTER in out_n)
-        check("none: 원문 열(샘플·스택)은 여전히 제외", "zetalogtoken" not in out_n and "zetahotstack" not in out_n)
-
-        # 3) 매핑 왕복: 요약의 모든 별칭이 매핑에 있고, 복원하면 원래 이름이 나온다
-        m, out = render(res, "strict")
-        mp = m.mapping()
-        check("매핑에 원본 노드명", any(v["original"] == NODES[0] for v in mp.values()))
-        restored = out
-        for alias in sorted(mp, key=len, reverse=True):
-            restored = restored.replace(alias, mp[alias]["original"])
-        check("복원 시 클러스터명 나타남", CLUSTER in restored)
-        check("복원 시 노드명 나타남", NODES[0] in restored)
-        # 같은 값은 항상 같은 별칭
-        check("일관성: 같은 입력은 같은 별칭", m.text(NODES[0]) == m.text(NODES[0]) != NODES[0])
-
-        # 4) fail closed: 마스킹이 실패하면 요약을 만들지 않는다
-        class Broken(Masker):
-            def text(self, s):
-                return s
-        bm = Broken(res.ctx, level="basic")
-        raised = False
-        try:
-            handoff.render(res, bm, "basic", "test")
-        except handoff.MaskLeak as exc:
-            raised = bool(exc.leaks)
-        check("마스킹 실패 시 MaskLeak", raised)
-
-        # 5) CLI
-        cli = [sys.executable, os.path.join(ROOT, "analyze.py"), root, "--quiet"]
-        out_md = os.path.join(tmp, "sum.md")
-        p = subprocess.run(cli + ["--support-summary", out_md], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        check("CLI: 기본 실행 종료코드 0", p.returncode == 0, p.stderr.decode("utf-8", "replace")[-300:])
-        check("CLI: 요약 생성", os.path.isfile(out_md))
-        mp_path = out_md + ".mask-map.json"
-        check("CLI: 매핑 파일 생성", os.path.isfile(mp_path))
-        if os.path.isfile(mp_path) and os.name == "posix":
-            check("CLI: 매핑 파일 권한 0600", stat.S_IMODE(os.stat(mp_path).st_mode) == 0o600)
-        if os.path.isfile(out_md):
-            raw = io.open(out_md, encoding="utf-8").read()
-            check("CLI: 요약에 카나리 없음", not any(c.lower() in raw.lower() for c in CANARY_ALWAYS + CANARY_RAW))
-            check("CLI: 공식 Support 팀 문구", "Elastic 공식 Support 팀" in raw)
-
-        out2 = os.path.join(tmp, "n.md")
-        p = subprocess.run(cli + ["--support-summary", out2, "--mask", "none"], stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-        check("CLI: --mask none 은 매핑 파일을 만들지 않음", p.returncode == 0 and not os.path.exists(out2 + ".mask-map.json"))
-
-        p = subprocess.run(cli + ["--mask", "strict"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        check("CLI: --mask 단독 사용은 오류", p.returncode == 2, p.returncode)
-        clean = os.path.join(tmp, "clean")
-        os.makedirs(clean)
-        p = subprocess.run(cli, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=clean)
-        check("CLI: 옵션 없이는 요약·매핑 파일이 생기지 않음", p.returncode == 0 and not os.listdir(clean))
+        for lang in ("ko", "en"):
+            run_lang(lang, tmp)
+        cli_checks(tmp, os.path.join(tmp, "b-ko"))
     finally:
+        set_lang("ko")
         shutil.rmtree(tmp, ignore_errors=True)
-    print("handoff 검증: %d건 중 실패 %d건" % (N[0], len(FAILS)))
+    print("handoff checks: %d run, %d failed" % (N[0], len(FAILS)))
     for f in FAILS:
-        print("  실패:", f)
+        print("  FAIL:", f)
     return 1 if FAILS else 0
 
 
