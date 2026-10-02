@@ -88,6 +88,18 @@ class B(object):
         self.put("nodes.json", ni)
         self.put("nodes_stats.json", ns)
 
+    def data_node_name(self):
+        """Name of the first data node (the first node can be a dedicated master on large bundles)."""
+        nodes = self.get("nodes.json")["nodes"]
+        for nid in nodes:
+            roles = nodes[nid].get("roles") or []
+            if any(r == "data" or r in ("data_hot", "data_content") for r in roles):
+                return nodes[nid]["name"]
+        return nodes[self.node_ids()[0]]["name"]
+
+    def shards_on(self, node):
+        return len([s for s in self.get("indices.json") if s.get("node") == node])
+
     def user_index(self):
         st = self.get("settings.json")
         return [n for n in st if not n.startswith(".")][0]
@@ -107,7 +119,7 @@ class B(object):
                 cur = cur.setdefault(k2, {})
             cur[keys[-1]] = val
         ist["indices"][name] = tmpl
-        node = node or self.get("nodes.json")["nodes"][self.node_ids()[0]]["name"]
+        node = node or self.data_node_name()
         for s in range(pri):
             sh.append({"index": name, "shard": str(s), "prirep": "p", "state": "STARTED",
                        "docs": str(docs // pri), "store": str(size // pri), "node": node})
@@ -117,21 +129,34 @@ class B(object):
 
 
 def _set_disk(b, used):
+    """Disk usage of the first nodes. Disks are set to 100GB so that max_headroom (200GB/150GB/100GB on 8.5+)
+    does not hide the percentage watermarks on bundles with large disks."""
+    b.clone_nodes(len(used))
+
     def f(i, s):
         if i < len(used):
-            t = s["fs"]["total"]["total_in_bytes"]
+            t = 100 * GB
+            s["fs"]["total"]["total_in_bytes"] = t
             s["fs"]["total"]["available_in_bytes"] = int(t * (1 - used[i]))
+            s["fs"]["total"]["free_in_bytes"] = int(t * (1 - used[i]))
     b.each_node(fn_stats=f)
 
 
 def _roles(b, roles):
-    def fi(i, n):
+    """Roles of the first len(roles) nodes. Any other node loses the master role, so the master count is exact
+    on bundles with more nodes."""
+    b.clone_nodes(len(roles))
+
+    def pick(i, n):
         if i < len(roles):
-            n["roles"] = roles[i]
+            return list(roles[i])
+        return [r for r in (n.get("roles") or []) if r != "master"] or ["data_hot"]
+
+    def fi(i, n):
+        n["roles"] = pick(i, n)
 
     def fs(i, n):
-        if i < len(roles):
-            n["roles"] = roles[i]
+        n["roles"] = pick(i, n)
     b.each_node(fi, fs)
 
 
@@ -155,9 +180,12 @@ SCENARIOS = [
         b.clone_nodes(7), _roles(b, [["master", "data_hot"]] * 4 + [["data_hot"]] * 3)), ["CLU-007"]),
     ("old version 7.17, heap 1GB", lambda b: (
         b.edit("version.json", lambda v: v["version"].update(number="7.17.0")),
+        b.add_index("many-shards", pri=40),
         b.each_node(fn_stats=lambda i, s: s["jvm"]["mem"].update(heap_max_in_bytes=GB))),
      ["CLU-009!WARNING", "SHD-001!CRITICAL", "VER-001!INFO"]),
-    ("old version 7.17, enough heap", lambda b: b.edit("version.json", lambda v: v["version"].update(number="7.17.0")),
+    ("old version 7.17, enough heap", lambda b: (
+        b.edit("version.json", lambda v: v["version"].update(number="7.17.0")),
+        b.each_node(fn_stats=lambda i, s: s["jvm"]["mem"].update(heap_max_in_bytes=1024 * GB))),
      ["SHD-001!OK"]),
     ("mixed JVM versions", lambda b: b.each_node(fn_info=lambda i, n: n["jvm"].update(version="21.0.%d" % i)), ["CLU-010"]),
     ("shard limit, dangling, long task, recovery", lambda b: (
@@ -201,7 +229,10 @@ SCENARIOS = [
     ("disk near low", lambda b: _set_disk(b, [0.79, 0.78, 0.77]), ["DISK-004!WARNING"]),
     ("uneven heap in the same tier", lambda b: b.each_node(
         fn_stats=lambda i, s: s["jvm"]["mem"].update(heap_max_in_bytes=(8 + i * 4) * GB)), ["NODE-001"]),
-    ("uneven shards in the same tier", lambda b: [b.add_index("skew-%d" % k, pri=5) for k in range(4)], ["SHD-006"]),
+    ("uneven shards in the same tier", lambda b: (
+        b.clone_nodes(3),
+        [b.add_index("skew-%d" % k, pri=50) for k in range(max(1, b.shards_on(b.data_node_name()) // 50 + 1))]),
+     ["SHD-006"]),
     ("license expired", lambda b: b.edit("licenses.json", lambda l: l["license"].update(status="expired")), ["LIC-001!CRITICAL"]),
     ("license 60 days", lambda b: b.edit("licenses.json", lambda l: l["license"].update(
         status="active", expiry_date="2026-10-13T00:00:00.000Z")), ["LIC-001!WARNING"]),
@@ -254,7 +285,7 @@ SCENARIOS = [
              "read_exceptions": [{"exception": "x"}]}]}]}})),
      ["OPS-001", "OPS-002"]),
     ("index: excess replicas, total fields, explicit refresh, lone block, delayed allocation", lambda b: (
-        b.add_index("over-replica", {"number_of_replicas": "5"}),
+        b.add_index("over-replica", {"number_of_replicas": "500"}),
         b.edit("cluster_stats.json", lambda c: c["indices"].setdefault("mappings", {}).update(total_field_count=200000)),
         b.add_index("heavy-refresh", {"refresh_interval": "1s"}, extra_stats={"total.indexing.index_total": 20000000}),
         b.add_index("archive-blocked", {"blocks": {"write": "true"}}),
@@ -342,7 +373,8 @@ SCENARIOS = [
             "reads": 900, "bytes_read_in_bytes": 10 ** 9, "evictions": 5000, "num_regions": 100,
             "size_in_bytes": 1600 * 1024 ** 2}}}}),
         b.each_node(fn_stats=lambda i, s: (s["script"].update(compilation_limit_triggered=12),
-                                           s["discovery"]["cluster_state_update"].setdefault("failure", {}).update(count=3)))),
+                                           s.setdefault("discovery", {}).setdefault("cluster_state_update", {})
+                                           .setdefault("failure", {}).update(count=3)))),
      ["FRZ-001!WARNING", "PERF-010!WARNING", "CLU-024!WARNING"]),
     ("plugin mismatch, model deployment failure", lambda b: (
         b.each_node(fn_info=lambda i, n: n.update(plugins=[{"name": "analysis-nori", "version": "9.4.4"}] if i == 0 else [])),
@@ -379,6 +411,12 @@ def main():
     with zipfile.ZipFile(src) as z:
         z.extractall(base)
     root_name = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))][0]
+    # Scenario dates (certificates, license, snapshots) are written against 2026-08-14, the collection date of the
+    # bundle the scenarios were built on. Pin the collection date so they mean the same on any bundle, and give
+    # single-node bundles three nodes so the multi-node scenarios have something to work with.
+    pin = B(os.path.join(base, root_name))
+    pin.edit("manifest.json", lambda m: m.update(collectionDate="2026-08-14T04:51:34.007Z"), default={})
+    pin.clone_nodes(3)
     fails, passed = [], 0
     for name, mut, expect in SCENARIOS:
         d = os.path.join(work, "s")
