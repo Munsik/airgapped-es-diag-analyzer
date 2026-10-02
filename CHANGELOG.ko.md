@@ -16,18 +16,19 @@
 - OS-007(주의, 도구 판단): 노드의 절반 이상이 6시간 안에 재시작. 누적 카운터 기반 판정이 짧은 기간만 반영한다고 알림
 - DIF-013(주의): 비교 모드에서 두 번들의 cluster_uuid 가 다르거나(uuid 가 없으면 이름이 다르고 노드가 절반 미만 겹침) 다른 클러스터로 보이면 경고
 - `tests/test_write_path.py`: 새 판정의 분기를 합성 데이터로 두 언어 모두 검증(외부 번들 불필요)
-- 임계값 15개
+- 임계값 16개
 
 ### 변경
 
 - CLU-017: 5분 이상 task 를 모두 주의로 표시 → action 별로 묶어 task 수와 가장 긴 실행 시간을 표시. 1시간 이상이면 주의, 5분 이상이면 참고. 모니터링·내부 task(`cluster:monitor/*`, `indices:monitor/*`, `internal:*`)는 24시간을 넘을 때만 보고. 쓰기 경로(bulk, reindex, update/delete by query, forcemerge, shrink/split/clone)를 구분해 표시. 실행 시간 정렬이 문자열 순으로 되던 문제도 수정
 - MAP-004: ignore_dynamic_beyond_limit 가 없어 색인이 실패할 수 있는 인덱스를 표 앞에 표시(같은 사용률이면 integration 인덱스가 15행을 채워 가려지던 것), data stream template 관리 주체(`fleet:<package>` / `elastic`) 열 추가
 - 14노드 9.5.3 실번들에서 확인한 오탐 정리
-  - PERF-012: 쓰기 대상이 없는 warm 노드의 merge 평균(26~41초)이 Warning 으로 나오던 것 → 쓰기 대상 shard 가 있는 노드만 판정. 쓰기가 없는 노드의 merge 는 force merge(ILM forcemerge, cold·frozen 의 searchable_snapshot 이 기본으로 앞 단계 tier 에서 하는 force merge, 수동 _forcemerge)나 rollover 직후 마무리 merge 라서 큰 segment 를 합치며, 평균이 긴 것이 스토리지가 느리다는 뜻이 아님. warm tier 라고 자동으로 force merge 를 하는 것은 아님
+  - PERF-012: 쓰기 대상이 없는 warm 노드의 merge 평균(26~41초)이 Warning 으로 나오던 것 → 실제로 색인하는 노드만 판정(노드 index_total 이 가장 많이 색인한 노드의 10% 이상). 처음에는 data stream write index 보유 여부로 골랐지만, 이 번들의 warm 노드에 1월 이후 쓰기가 거의 없는 write index(`logs-gitlab.audit`, `logs-gitlab.pages`)가 있어 실제 색인량으로 바꿈. 쓰기가 없는 노드의 merge 는 force merge(ILM forcemerge, cold·frozen 의 searchable_snapshot 이 기본으로 앞 단계 tier 에서 하는 force merge, 수동 _forcemerge)나 rollover 직후 마무리 merge 라서 큰 segment 를 합치며, 평균이 긴 것이 스토리지가 느리다는 뜻이 아님. warm tier 라고 자동으로 force merge 를 하는 것은 아님
   - OS-001: ECH master 노드처럼 CPU 사용률 0% 인데 load average 가 높은 컨테이너 노드를 치명으로 판정하던 것 → 컨테이너 안의 load 는 호스트 값일 수 있으므로 cpu% 20% 미만이면 참고로만 표시
   - MAP-001·MAP-004: 읽기 전용인 searchable snapshot mount 가 표 앞을 차지하던 것 → 제외
   - PERF-001: 스냅샷 저장소에서 읽는 partial mount(frozen) 인덱스의 검색 지연을 판정하던 것 → 제외(FRZ-001 에서 다룸)
   - IDX-006: 실패 비율 열을 추가하고 비율 순으로 정렬
+  - SHD-016: 쓰기 대상 중 indexing.index_total 이 0 인(오래 쓰기가 없는) write index 는 제외
 - 단일 번들 판정 룰 114개, 두 번들 비교 룰 10개(판정 ID 176개 + 비교 DIF-001~013)
 
 ### 검토했지만 넣지 않은 것

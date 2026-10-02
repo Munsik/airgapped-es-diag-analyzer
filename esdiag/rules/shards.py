@@ -646,12 +646,13 @@ def _write_targets_now(ctx):
 def r_write_hotspot(ctx):
     """Write-target shards per node within a tier (SHD-016).
 
-    Write targets are data stream write indices, alias write indices and indices indexing at collection time; replicas count
-    because they index too. Per tier (frozen skipped, tiers with fewer than 2 nodes skipped):
+    Write targets are data stream write indices, alias write indices and indices indexing at collection time, limited to those with
+    indexing.index_total > 0 (a low-volume stream can keep an idle write index for months); replicas count because they index too. Per tier (frozen skipped, tiers with fewer than 2 nodes skipped):
     (max - min) / average >= write_shard_skew_warn and max - min >= write_shard_skew_min → Warning. SHD-006 compares all shards;
     this one compares only shards that take writes, which is where indexing load lands.
     """
-    writes = _write_targets_now(ctx)
+    writes = set(i for i in _write_targets_now(ctx)
+                 if num(ctx.indices_stats, i, "total", "indexing", "index_total") > 0)
     if not writes:
         return []
     counts = collections.Counter(s.get("node") for s in ctx.shards

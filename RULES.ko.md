@@ -533,15 +533,17 @@ tier 가 다르면 스펙이 다른 것이 정상 설계이므로 tier 간 차�
 | 함수 | `nodes.r_write_latency` |
 | 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의, 참고 |
-| 임계값 | `flush_avg_ms_info` = 800 — [도구] 현장 기준: flush 1회 평균 시간<br>`flush_avg_ms_warn` = 1,200 — [도구] 현장 기준<br>`merge_avg_ms_info` = 20,000 — [도구] 현장 기준: merge 1회 평균 시간<br>`merge_avg_ms_warn` = 40,000 — [도구] 현장 기준<br>`refresh_avg_ms_info` = 40 — [도구] 현장 기준: refresh 1회 평균 시간<br>`refresh_avg_ms_warn` = 70 — [도구] 현장 기준<br>`write_latency_min_ops` = 100 — [도구] 노드 평균을 판정하기 위한 최소 flush/refresh/merge 횟수 |
+| 임계값 | `flush_avg_ms_info` = 800 — [도구] 현장 기준: flush 1회 평균 시간<br>`flush_avg_ms_warn` = 1,200 — [도구] 현장 기준<br>`merge_avg_ms_info` = 20,000 — [도구] 현장 기준: merge 1회 평균 시간<br>`merge_avg_ms_warn` = 40,000 — [도구] 현장 기준<br>`refresh_avg_ms_info` = 40 — [도구] 현장 기준: refresh 1회 평균 시간<br>`refresh_avg_ms_warn` = 70 — [도구] 현장 기준<br>`write_latency_min_ops` = 100 — [도구] 노드 평균을 판정하기 위한 최소 flush/refresh/merge 횟수<br>`write_node_index_share_min` = 0.1 — [도구] 노드의 index_total 이 가장 많이 색인한 노드 대비 이 비율 이상이면 색인 노드로 봄 |
 | 근거 파일 | nodes_stats.json (indices.flush / refresh / merges) |
 
 **판정 로직**
 
 노드별 flush, refresh, merge 평균 시간(nodes_stats indices.flush/refresh/merges 의 total_time / total).
 
-쓰기 대상 shard 가 있는 노드만 판정한다. 쓰기 대상이 없는 노드의 merge 는 force merge(ILM forcemerge,
-searchable_snapshot 이 기본으로 앞 단계에서 하는 force merge, 수동 _forcemerge)이거나 rollover 직후 마무리 merge 다.
+실제로 색인하는 노드만 판정한다: 노드의 indices.indexing.index_total 이 가장 많이 색인한 data 노드의 write_node_index_share_min
+이상. data stream write index 를 가졌다는 것만으로는 부족하다. 수집량이 적은 stream 은 몇 달씩 쓰기가 거의 없는 write index 를
+유지할 수 있기 때문이다. 색인하지 않는 노드의 merge 는 force merge(ILM forcemerge, searchable_snapshot 이 기본으로
+앞 단계에서 하는 force merge, 수동 _forcemerge)이거나 rollover 직후 마무리 merge 다.
 큰 segment 를 합치므로 평균이 긴 것이 스토리지가 느리다는 뜻은 아니다.
 작업 수가 write_latency_min_ops 미만인 항목은 제외한다.
 평균 >= *_avg_ms_warn → 주의, >= *_avg_ms_info → 참고(PERF-012). 공식 수치가 아닌 현장 기준값이며,
@@ -858,7 +860,7 @@ ILM 의 readonly·shrink·forcemerge·searchable_snapshot 단계는 롤오버 �
 
 tier 안 노드별 쓰기 대상 shard 수(SHD-016).
 
-쓰기 대상은 data stream write index, alias write index, 수집 시점에 색인 중인 index 다. replica 도 색인하므로 포함한다.
+쓰기 대상은 data stream write index, alias write index, 수집 시점에 색인 중인 index 중 indexing.index_total > 0 인 것이다(수집량 적은 stream 은 몇 달씩 쓰기가 없는 write index 를 유지할 수 있다). replica 도 색인하므로 포함한다.
 tier 별로(frozen 과 노드 2대 미만 tier 제외) (최대 - 최소) / 평균 >= write_shard_skew_warn 이고
 최대 - 최소 >= write_shard_skew_min → 주의. SHD-006 은 전체 shard 를 비교하고,
 이 판정은 색인 부하가 실제로 걸리는 쓰기 대상 shard 만 비교한다.
@@ -2352,6 +2354,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `merge_avg_ms_warn` | 40,000 | [도구] 현장 기준 |
 | `write_latency_min_ops` | 100 | [도구] 노드 평균을 판정하기 위한 최소 flush/refresh/merge 횟수 |
 | `load_host_cpu_pct_max` | 20 | [도구] 이 cpu% 미만인 컨테이너 노드는 load average 로 판정하지 않음 |
+| `write_node_index_share_min` | 0.1 | [도구] 노드의 index_total 이 가장 많이 색인한 노드 대비 이 비율 이상이면 색인 노드로 봄 |
 | `write_shard_skew_warn` | 0.5 | [도구] tier 안 노드별 쓰기 대상 shard 의 (최대 - 최소) / 평균 |
 | `write_shard_skew_min` | 3 | [도구] 보고할 최소 쓰기 대상 shard 차이 |
 | `restart_share_warn` | 0.5 | [도구] uptime_short_hours 안에 재시작한 노드 비율 |

@@ -18,18 +18,19 @@ Write path and operations checks that were missing, found by comparing with the 
 - OS-007 (Warning, tool threshold): half or more of the nodes restarted within 6 hours. Flags that findings based on cumulative counters cover only a short window
 - DIF-013 (Warning): in comparison mode, the two bundles look like different clusters (cluster_uuid differs, or without a uuid the names differ and fewer than half of the nodes overlap)
 - `tests/test_write_path.py`: every branch of the new findings on synthetic data, in both languages (no external bundle needed)
-- 15 thresholds
+- 16 thresholds
 
 ### Changed
 
 - CLU-017: every task over 5 minutes was a Warning → grouped by action with the task count and the longest run. 1 hour or more → Warning, 5 minutes or more → Info. Monitoring and internal tasks (`cluster:monitor/*`, `indices:monitor/*`, `internal:*`) are reported only past 24 hours. Write-path actions (bulk, reindex, update/delete by query, forcemerge, shrink/split/clone) are marked. Also fixes sorting by running time, which sorted as text
 - MAP-004: indices without ignore_dynamic_beyond_limit, which can fail indexing, are listed first (at equal usage, integration indices used to fill the 15 rows and hide them), and a column shows who manages the data stream template (`fleet:<package>` / `elastic`)
 - False positives found on a real 14-node 9.5.3 bundle
-  - PERF-012: warm nodes without write targets showed 26 to 41 s average merges as a Warning → only nodes holding write-target shards are rated. Merges on a node without writes come from a force merge (ILM forcemerge, the force merge that searchable_snapshot in cold or frozen runs in the preceding tier by default, or a manual _forcemerge) or from merges finishing after rollover. They merge large segments, so a long average is not a sign of slow storage. A warm tier does not force merge on its own
+  - PERF-012: warm nodes without write targets showed 26 to 41 s average merges as a Warning → only nodes that actually index are rated (node index_total at least 10% of the busiest node). The first version used "holds a data stream write index", but warm nodes in this bundle held write indices with almost no writes since January (`logs-gitlab.audit`, `logs-gitlab.pages`), so it now uses the actual indexing volume. Merges on a node without writes come from a force merge (ILM forcemerge, the force merge that searchable_snapshot in cold or frozen runs in the preceding tier by default, or a manual _forcemerge) or from merges finishing after rollover. They merge large segments, so a long average is not a sign of slow storage. A warm tier does not force merge on its own
   - OS-001: container nodes with 0% CPU but a high load average (such as ECH master nodes) were Critical → the load inside a container can be the host's, so nodes under 20% CPU are listed as Info only
   - MAP-001, MAP-004: read-only searchable snapshot mounts filled the top of the table → skipped
   - PERF-001: partially mounted (frozen) indices, which read from the snapshot repository, were rated for search latency → skipped (FRZ-001 covers them)
   - IDX-006: failure ratio column added and rows sorted by it
+  - SHD-016: write indices with indexing.index_total of 0 (idle for a long time) are left out
 - 114 single-bundle rules and 10 bundle-comparison rules (176 finding IDs plus comparison DIF-001~013)
 
 ### Reviewed but not added

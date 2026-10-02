@@ -533,16 +533,18 @@ Different specs across tiers are normal design, so differences between tiers are
 | Function | `nodes.r_write_latency` |
 | Evidence basis | Tool threshold |
 | Possible severities | Warning, Info |
-| Thresholds | `flush_avg_ms_info` = 800 ([Tool] Field baseline: average flush time per flush)<br>`flush_avg_ms_warn` = 1,200 ([Tool] Field baseline)<br>`merge_avg_ms_info` = 20,000 ([Tool] Field baseline: average merge time per merge)<br>`merge_avg_ms_warn` = 40,000 ([Tool] Field baseline)<br>`refresh_avg_ms_info` = 40 ([Tool] Field baseline: average refresh time per refresh)<br>`refresh_avg_ms_warn` = 70 ([Tool] Field baseline)<br>`write_latency_min_ops` = 100 ([Tool] Minimum flushes/refreshes/merges before a node average is rated) |
+| Thresholds | `flush_avg_ms_info` = 800 ([Tool] Field baseline: average flush time per flush)<br>`flush_avg_ms_warn` = 1,200 ([Tool] Field baseline)<br>`merge_avg_ms_info` = 20,000 ([Tool] Field baseline: average merge time per merge)<br>`merge_avg_ms_warn` = 40,000 ([Tool] Field baseline)<br>`refresh_avg_ms_info` = 40 ([Tool] Field baseline: average refresh time per refresh)<br>`refresh_avg_ms_warn` = 70 ([Tool] Field baseline)<br>`write_latency_min_ops` = 100 ([Tool] Minimum flushes/refreshes/merges before a node average is rated)<br>`write_node_index_share_min` = 0.1 ([Tool] A node indexes if its index_total is this share of the busiest node) |
 | Source files | nodes_stats.json (indices.flush / refresh / merges) |
 
 **Decision logic**
 
 Average flush, refresh and merge time per node (nodes_stats indices.flush/refresh/merges total_time / total).
 
-Only nodes that hold write-target shards are rated. On a node without them, merges come from a force merge (ILM forcemerge,
-the force merge that searchable_snapshot runs in the preceding phase by default, or a manual _forcemerge) or from merges
-finishing after rollover. Those merge large segments, so a long average there does not mean slow storage.
+Only nodes that actually index are rated: indices.indexing.index_total of the node >= write_node_index_share_min of the
+busiest data node. Holding a data stream write index is not enough, because a low-volume stream can keep an idle write index
+for months. On a node that does not index, merges come from a force merge (ILM forcemerge, the force merge that
+searchable_snapshot runs in the preceding phase by default, or a manual _forcemerge) or from merges finishing after rollover.
+Those merge large segments, so a long average there does not mean slow storage.
 Any metric with fewer than write_latency_min_ops operations is skipped.
 Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
 and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;
@@ -858,8 +860,8 @@ Average size per shard (store / shards) < 200MB, shards >= 300, and total store 
 
 Write-target shards per node within a tier (SHD-016).
 
-Write targets are data stream write indices, alias write indices and indices indexing at collection time; replicas count
-because they index too. Per tier (frozen skipped, tiers with fewer than 2 nodes skipped):
+Write targets are data stream write indices, alias write indices and indices indexing at collection time, limited to those with
+indexing.index_total > 0 (a low-volume stream can keep an idle write index for months); replicas count because they index too. Per tier (frozen skipped, tiers with fewer than 2 nodes skipped):
 (max - min) / average >= write_shard_skew_warn and max - min >= write_shard_skew_min → Warning. SHD-006 compares all shards;
 this one compares only shards that take writes, which is where indexing load lands.
 
@@ -2352,6 +2354,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `merge_avg_ms_warn` | 40,000 | [Tool] Field baseline |
 | `write_latency_min_ops` | 100 | [Tool] Minimum flushes/refreshes/merges before a node average is rated |
 | `load_host_cpu_pct_max` | 20 | [Tool] Container nodes below this CPU percentage are not rated on load average |
+| `write_node_index_share_min` | 0.1 | [Tool] A node indexes if its index_total is this share of the busiest node |
 | `write_shard_skew_warn` | 0.5 | [Tool] (max - min) / average of write-target shards per node in a tier |
 | `write_shard_skew_min` | 3 | [Tool] Minimum difference in write-target shards before it is reported |
 | `restart_share_warn` | 0.5 | [Tool] Share of nodes restarted within uptime_short_hours |

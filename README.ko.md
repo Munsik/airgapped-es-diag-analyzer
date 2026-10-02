@@ -394,7 +394,7 @@ python3 analyze.py --print-thresholds > my.json   # 기본값 추출
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 121개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
+임계값 122개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
 
 ---
 

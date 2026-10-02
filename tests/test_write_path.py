@@ -59,6 +59,7 @@ def build(root, version="9.4.4", uuid="uuid-A", name="c1", restart=False):
     b.index("tlog-big", GB, M, node="hot-2")
     b.index("tlog-custom", GB, M, node="hot-2")
     b.settings["tlog-custom"]["settings"]["index"]["translog"] = {"flush_threshold_size": "1gb"}
+    b.stats[ds[1]]["total"]["indexing"] = {"index_total": 10 ** 6}
     b.stats["throttled-now"]["total"]["indexing"] = {"is_throttled": True, "throttle_time_in_millis": 5000}
     b.stats["throttled-past"]["total"]["indexing"] = {"is_throttled": False, "throttle_time_in_millis": 9000}
     b.stats["throttled-past"]["total"]["merges"] = {"total_throttled_time_in_millis": 70000}
@@ -78,7 +79,8 @@ def build(root, version="9.4.4", uuid="uuid-A", name="c1", restart=False):
                          "refresh": {"total": 1000, "total_time_in_millis": 1000 * (50 if slow else 5)},
                          "merges": {"total": 1000, "total_time_in_millis": 1000 * 1000}}
         st["jvm"]["uptime_in_millis"] = 3600 * 1000 if restart else 10 ** 10
-        if st["name"] == "warm-1":       # ILM force merges: long merges, no write targets
+        st["indices"]["indexing"] = {"index_total": 10 ** 7 if st["name"].startswith("hot") else 1000}
+        if st["name"] == "warm-1":       # force merges and an idle write index: long merges, almost no indexing
             st["indices"]["merges"]["total_time_in_millis"] = 1000 * 60000
         if st["name"] == "frozen-1":     # container with host load but idle CPU
             st["os"] = {"cpu": {"percent": 1, "load_average": {"1m": 4.0, "5m": 4.0, "15m": 4.0}},
