@@ -48,7 +48,8 @@ REQUIRES = {
     "r_large_result_sets": [_SET], "r_large_documents": [_NODES, _IDX],
     "r_cluster_name": [["cluster_health.json"]], "r_path_settings": [_NODES],
     "r_discovery": [_NODES], "r_jvm_diag_settings": [_NODES],
-    "r_docs_per_shard": [_SH, _IDX], "r_master_heap_per_index": [_NODES, ["cluster_stats.json"]],
+    "r_docs_per_shard": [_SH, _IDX], "r_logsdb_shard_size": [_SH, _SET + ["data_stream.json"]],
+    "r_logsdb_adoption": [["data_stream.json"]], "r_master_heap_per_index": [_NODES, ["cluster_stats.json"]],
     "r_mapping_heap_overhead": [_STATS, ["cluster_stats.json"]], "r_empty_indices": [_IDX],
     "r_total_shards_per_node": [_SET, _IDX], "r_index_buffer": [_NODES, _SH],
     "r_open_contexts": [_STATS], "r_search_timeout": [_CS], "r_replica_throughput": [_SET, _IDX, _SH],
@@ -77,7 +78,7 @@ REQUIRES = {
     "r_index_setting_changes": [_SET],
     # deep (files that were not read before)
     "r_search_usage": [["cluster_stats.json"]], "r_disk_io_utilization": [_STATS], "r_mapping_limits_actual": [["mapping.json"]], "r_vector_mapping_actual": [["mapping.json"]],
-    "r_ilm_policies": [["ilm_policies.json"]], "r_voting_exclusions": [["cluster_state.json"]],
+    "r_ilm_policies": [["ilm_policies.json"]], "r_forcemerge": [["ilm_policies.json", "ilm_explain.json"], _STATS], "r_voting_exclusions": [["cluster_state.json"]],
     "r_node_shutdown": [["nodes_shutdown_status.json"]], "r_shard_store_errors": [["shard_stores.json"]],
     "r_remote_clusters": [["remote_cluster_info.json"]],
     "r_frozen_cache": [["searchable_snapshots_cache_stats.json"]], "r_script_limit": [_STATS],

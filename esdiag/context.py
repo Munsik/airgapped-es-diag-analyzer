@@ -4,7 +4,7 @@ import collections
 import datetime
 import re
 
-from .util import dig, parse_bytes, parse_cat_table, num
+from .util import dicts, dig, parse_bytes, parse_cat_table, num
 
 
 def _parse_iso(ts):
@@ -426,8 +426,8 @@ class Context(object):
         if getattr(self, "_write_targets", None) is not None:
             return self._write_targets
         out = set()
-        for ds in self.data_streams or []:
-            idxs = ds.get("indices") or []
+        for ds in dicts(self.data_streams):
+            idxs = dicts(ds.get("indices"))
             if idxs:
                 out.add(idxs[-1].get("index_name"))
         by_alias = {}
@@ -443,14 +443,54 @@ class Context(object):
         self._write_targets = out
         return out
 
+    def data_stream_of(self, name):
+        """Data stream dict that has this backing index, or None."""
+        if getattr(self, "_ds_of", None) is None:
+            self._ds_of = {}
+            for ds in dicts(self.data_streams):
+                for i in dicts(ds.get("indices")):
+                    if i.get("index_name"):
+                        self._ds_of[i["index_name"]] = ds
+        return self._ds_of.get(name)
+
+    def index_mode(self, name):
+        """index.mode of an index: standard, logsdb, time_series, lookup ...
+
+        Read from settings.json first. GET _data_stream also reports index_mode per backing index and per
+        data stream (8.15+), which covers bundles where the setting is not in settings.json.
+        Returns "standard" when nothing says otherwise.
+        """
+        v = self.index_setting(name, "index.mode")
+        if not v:
+            ds = self.data_stream_of(name)
+            if ds:
+                for i in dicts(ds.get("indices")):
+                    if i.get("index_name") == name and i.get("index_mode"):
+                        v = i.get("index_mode")
+                        break
+                v = v or ds.get("index_mode")
+        return str(v or "standard").lower()
+
+    def ilm_policy_of(self, name):
+        """ILM policy name managing the index, or None."""
+        ex = (self.ilm_explain or {}).get(name)
+        if isinstance(ex, dict) and ex.get("managed") and ex.get("policy"):
+            return ex.get("policy")
+        return self.index_setting(name, "index.lifecycle.name") or None
+
+    def rollover_conditions(self, policy):
+        """Rollover action of the hot phase of an ILM policy as a dict ({} when there is none)."""
+        ro = dig(self.ilm_policies, policy, "policy", "phases", "hot", "actions", "rollover") if policy else None
+        return ro if isinstance(ro, dict) else {}
+
     def rolled_over(self, name):
         """Whether the index is rolled over (no longer written): past backing index of a data stream, indexing_complete, or a member of an alias that is not the write target."""
         if name in self.write_targets():
             return False
         if str(self.index_setting(name, "index.lifecycle.indexing_complete") or "").lower() == "true":
             return True
-        for ds in self.data_streams or []:
-            if any(i.get("index_name") == name for i in (ds.get("indices") or [])[:-1]):
+        for ds in dicts(self.data_streams):
+            if any(i.get("index_name") == name for i in dicts(ds.get("indices"))[:-1]):
                 return True
         body = (self.aliases or {}).get(name) or {}
         return bool(body.get("aliases"))

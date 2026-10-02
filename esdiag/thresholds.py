@@ -83,6 +83,7 @@ DEFAULTS = {
 
     # --- Official guidance (production guidance) ---
     "docs_per_shard_warn": 200000000,                # [Official] Fewer than 200 million documents per shard recommended
+    "docs_rollover_overshoot_pct": 5,                # [Tool] Allowed overshoot of a rolled-over shard past 200M docs (ILM checks every poll_interval)
     "docs_per_shard_crit": 1500000000,               # [Tool] Alert when approaching the Lucene limit (2,147,483,519)
     "indices_per_gb_master_heap": 3000,              # [Official] 3000 indices per 1GB of master heap
     "mapping_heap_pct_warn": 50,                     # [Tool] Estimated mapping overhead / heap
@@ -120,10 +121,16 @@ DEFAULTS = {
     "oversharding_min_data_gb": 100,                # [Tool] Small clusters are not rated on distribution
     "ds_min_backing_indices": 5,                    # [Tool] Minimum backing index count for the data stream rating
     "ds_small_backing_shard_gb": 1,                 # [Tool] Median backing shard size threshold
+    "logsdb_shard_gb_high": 30,                     # [Tool] Upper end of the logsdb shard range (official upper bound is 50GB)
+    "logsdb_shard_gb_low": 10,                      # [Official] Lower end of the 10-50GB shard range
+    "logsdb_rows_max": 100,                         # [Tool] Maximum indices listed in the logsdb shard size table
 
     # --- Mapping / ILM policy ---
     "mapping_fields_near_limit_pct": 90,            # [Tool] Field count against total_fields.limit
     "ilm_rollover_max_shard_gb": 50,                # [Official] Recommended upper bound for shard size at rollover
+    "ilm_implicit_max_shard_docs": 200000000,       # [Official] Rollover always runs at 200M docs per shard; higher values have no effect
+    "forcemerge_free_space_factor": 3,              # [Official] max_num_segments=1 may need free space up to 3x the shard size
+    "forcemerge_stuck_hours": 24,                   # [Tool] Time in the forcemerge action before it is reported
     "disk_io_busy_pct_warn": 60,                    # [Tool] Average disk utilization since startup
     "search_expensive_share_warn": 10,              # [Tool] Share of expensive query types in all searches (%)
 

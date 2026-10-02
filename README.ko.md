@@ -2,7 +2,7 @@
 
 [English](README.md) · 한국어
 
-**버전 0.11.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.12.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -39,7 +39,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 
 - **폐쇄망 전제** — 외부 통신·CDN·폰트·패키지 설치 없음. 저장소를 그대로 반입해 실행
 - **의존성 없음** — Python 3.8 이상 표준 라이브러리만 사용
-- **116개 판정 룰** — 단일 번들 107개 + 두 번들 비교 9개
+- **119개 판정 룰** — 단일 번들 110개 + 두 번들 비교 9개
 - **원인 단위 조치 우선순위** — 같은 원인에서 나온 판정(예: yellow·미할당 샤드·allocation explain·replica 초과)은 대표 1건으로 묶고 나머지는 관련 판정으로 표시
 - **판정 근거 구분** — 모든 판정에 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산 표기
 - **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 94종 지식 베이스)
@@ -191,6 +191,7 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 | 8.5 | DISK-\* | 디스크 워터마크에 max\_headroom(low 200GB / high 150GB / flood 100GB) 반영 |
 | 8.14 | VEC-002 | dense\_vector index\_options 미지정 시 int8\_hnsw 기본 |
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq\_hnsw 기본 |
+| 9.0 | IDX-013 | 새 `logs-*-*` data stream 에 logsdb 자동 적용. 8.x 에서 업그레이드하기 전부터 있던 data stream 은 그대로 |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` 기본 적용 |
 
 ---
@@ -210,9 +211,9 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 
 | 구분 | 의미 | 판정 ID 수 |
 | --- | --- | --- |
-| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 64 |
+| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 68 |
 | 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 56 |
-| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 44 |
+| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 47 |
 | 비교 계산 | 두 번들 간 증가분·증가율·선형 외삽 | DIF-001~012 |
 
 고객에게 전달할 때 "공식 기준·사실 보고" 는 근거로, "도구 판단" 은 권고로 제시하십시오.
@@ -280,6 +281,23 @@ frozen 전용 노드는 shared cache 가 디스크 대부분을 미리 점유하
 | OVS-003 | 사용자 primary 샤드 크기 분포(<1GB / 1~10GB / 10~50GB / 50GB+), 10GB 미만이 80% 이상이면 전반적 과다 샤딩 |
 
 데이터 스트림의 현재 write index 는 채워지는 중이라 크기 판정에서 제외합니다.
+
+### 문서 수 한도와 logsdb
+
+rollover 는 샤드 문서 수가 2억건에 닿으면 조건과 관계없이 항상 실행됩니다. `max_primary_shard_docs` 를 2억건보다 크게 줘도 효과가 없습니다(공식). ILM 은 `indices.lifecycle.poll_interval`(기본 10m)마다 조건을 확인하므로, 롤오버가 끝난 인덱스는 보통 2억건을 조금 넘습니다.
+
+| 판정 | 기준 |
+| --- | --- |
+| SHD-008 | write index 나 rollover 를 쓰지 않는 인덱스의 샤드가 2억건 이상(공식) |
+| SHD-013 | 롤오버가 끝난 인덱스의 샤드가 2억건을 5% 넘게 초과: rollover 지연(도구 판단) |
+| SHD-014 | logsdb 인덱스의 최대 primary shard 가 30GB 이상 50GB 미만(도구 판단, 참고) |
+| SHD-015 | logsdb 인덱스가 10GB 미만, 2억건 미만에서 롤오버됨(공식 하한, 참고) |
+| IDX-013 | 9.0 이상에서 write index 가 logsdb 가 아닌 `logs-*-*` data stream(참고) |
+| ILM-007 | `max_primary_shard_docs` 가 2억건 초과(효과 없음, 공식) |
+| ILM-008 | 1 segment force merge 를 하는 tier 의 여유 디스크가 가장 큰 primary shard 의 3배 미만(공식) |
+| ILM-009 | force merge 단계에 24시간 이상 머문 인덱스(도구 판단, 참고) |
+
+logsdb 는 공간 효율이 좋아 대개 50GB 보다 2억건에 먼저 닿습니다. 공식 범위는 10~50GB 그대로 두고, logsdb 에만 30GB 를 도구 기준 상한으로 둡니다. 이유는 index sorting 의 merge 비용, 1 segment force merge 의 여유 공간(최대 3배), 복구 시간입니다(각각 공식 문서 근거). 30GB 자체는 공식 수치가 아니라 Elastic 내부 논의를 따른 값이며, 판정 표에 인덱스별 최대 shard 크기, 문서 수, 문서당 크기, 추정 rollover 조건을 보여 줍니다. partial mount(frozen) 인덱스는 크기가 캐시 크기라 제외합니다.
 
 ### 비교 모드
 
@@ -353,7 +371,7 @@ python3 analyze.py diagnostic.zip --support-summary support-summary.md --mask st
 
 | 문서 | 내용 |
 | --- | --- |
-| [RULES.ko.md](RULES.ko.md) ([English](RULES.md)) | 116개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
+| [RULES.ko.md](RULES.ko.md) ([English](RULES.md)) | 119개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
 | [COVERAGE.ko.md](COVERAGE.ko.md) ([English](COVERAGE.md)) | Elastic 공식 문서 항목별 반영 여부와 판정할 수 없는 항목의 이유 |
 | [CHANGELOG.ko.md](CHANGELOG.ko.md) ([English](CHANGELOG.md)) | 변경 이력 — 이전 동작 → 현재 동작과 근거 |
 
@@ -374,7 +392,7 @@ python3 analyze.py --print-thresholds > my.json   # 기본값 추출
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 99개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
+임계값 106개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
 
 ---
 
@@ -416,12 +434,13 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 819개, 문제 0 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 841개, 문제 0 |
 | `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현 | 55개 통과 |
 | `tests/drive_branches.py` | 시나리오 51개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 51개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
 | `tools/gen_rules_doc.py --check` | 임계값·docstring 정합성 | 문제 0 |
 | `tests/test_local_mode.py` | local/remote 모드 전용 처리(logs/ 오탐·gz·이중 집계, syscalls/ 분기, 수집 실패 안내)를 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |
+| `tests/test_logsdb.py` | 문서 수 한도·logsdb·force merge 판정(SHD-008·013·014·015, IDX-013, ILM-007·008·009)의 모든 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
 | `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |
 
@@ -481,6 +500,7 @@ bash tests/run_all.sh diagnostic.zip
 │   ├── drive_branches.py       # 판정 분기 구동
 │   ├── fuzz_rules.py           # 입력 변형 퍼징
 │   ├── test_handoff.py         # Support 팀 요약·마스킹 검증(합성 데이터)
+│   ├── test_logsdb.py          # 문서 수 한도·logsdb·force merge 판정 검증(합성 데이터)
 │   └── make_broken_bundle.py   # 장애 주입 번들 생성
 ├── docs/STYLE.md              # 문체·용어 규칙
 ├── README.md / README.ko.md
@@ -500,7 +520,7 @@ python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <검증용 번들.zip>
 # 3) (선택) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
-git tag v0.11.0
+git tag v0.12.0
 ```
 
 검증용 진단 번들과 그 분석 리포트에는 고객 환경 정보(클러스터 이름, 인덱스 이름, 호스트)가 들어 있으므로 저장소에 올리지 않습니다.

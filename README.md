@@ -2,7 +2,7 @@
 
 English · [한국어](README.ko.md)
 
-**Version 0.11.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
+**Version 0.12.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
 
 esdiag analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
 
@@ -39,7 +39,7 @@ It makes no network calls and uses only the Python standard library.
 
 - **Built for air-gapped networks**: no external communication, CDN, fonts or package installs. Copy the repository in and run it
 - **No dependencies**: Python 3.8 or later, standard library only
-- **116 rules**: 107 for a single bundle and 9 for comparing two bundles
+- **119 rules**: 110 for a single bundle and 9 for comparing two bundles
 - **Action priority by root cause**: findings that come from the same cause (for example yellow status, unassigned shards, allocation explain and replicas above the node count) are grouped under one representative finding, and the rest are shown as related findings
 - **Evidence basis on every finding**: Official / Reported fact / Tool threshold / Computed
 - **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 94 settings)
@@ -191,6 +191,7 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 | 8.5 | DISK-\* | Disk watermarks use max\_headroom (low 200GB / high 150GB / flood 100GB) |
 | 8.14 | VEC-002 | dense\_vector defaults to int8\_hnsw when index\_options is not set |
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq\_hnsw |
+| 9.0 | IDX-013 | logsdb applies automatically to new `logs-*-*` data streams. Data streams that existed before an upgrade from 8.x stay as they are |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` applies by default |
 
 ---
@@ -210,9 +211,9 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 
 | Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
-| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 64 |
+| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 68 |
 | Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 56 |
-| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 44 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 47 |
 | Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-012 |
 
 When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
@@ -280,6 +281,23 @@ Settings judged by a dedicated rule (for example ARS, reported as CLU-014) are m
 | OVS-003 | Distribution of user primary shard sizes (<1GB / 1-10GB / 10-50GB / 50GB+). If 80% or more are below 10GB, oversharding is general |
 
 The current write index of a data stream is still filling, so it is excluded from size-based findings.
+
+### Document limit and logsdb
+
+Rollover always runs once a shard reaches 200M documents, whatever the other conditions are. Setting `max_primary_shard_docs` above 200M has no effect (official). ILM checks its conditions every `indices.lifecycle.poll_interval` (10m by default), so a rolled-over index usually ends a little above 200M.
+
+| Finding | Criterion |
+| --- | --- |
+| SHD-008 | A shard of a write index, or of an index without rollover, has 200M documents or more (official) |
+| SHD-013 | A shard of a rolled-over index is more than 5% above 200M: rollover ran late (tool threshold) |
+| SHD-014 | The largest primary shard of a logsdb index is 30GB or more and under 50GB (tool threshold, Info) |
+| SHD-015 | A logsdb index rolled over under 10GB and under 200M documents (official lower bound, Info) |
+| IDX-013 | On 9.0 or later, a `logs-*-*` data stream whose write index is not in logsdb mode (Info) |
+| ILM-007 | `max_primary_shard_docs` above 200M (no effect, official) |
+| ILM-008 | Free disk on the tier that runs a one-segment force merge is under 3 times the largest primary shard (official) |
+| ILM-009 | An index has been in force merge for 24 hours or more (tool threshold, Info) |
+
+logsdb stores data efficiently, so it usually reaches 200M documents before 50GB. The official 10-50GB range stays as it is, and logsdb alone gets 30GB as a tool upper bound. The reasons are the merge cost of index sorting, the free space for a one-segment force merge (up to 3 times), and recovery time, each backed by the official docs. 30GB itself is not an official number; it follows an Elastic internal discussion. The finding lists, per index, the largest shard, its document count, bytes per document and the estimated rollover condition. Partially mounted (frozen) indices are skipped because their size is the cache size.
 
 ### Comparison mode
 
@@ -353,7 +371,7 @@ Limits: values shorter than 6 characters can overlap ordinary words, so they are
 
 | Document | Contents |
 | --- | --- |
-| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 116 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
+| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 119 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
 | [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) | Which official doc items are covered, and why some items cannot be judged |
 | [CHANGELOG.md](CHANGELOG.md) ([한국어](CHANGELOG.ko.md)) | Change history: previous behavior → current behavior, and the reason |
 
@@ -374,7 +392,7 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 99 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 106 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
@@ -417,12 +435,13 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 819 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 841 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases | 55 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 51 scenarios and checks the severity too | 51 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
 | `tools/gen_rules_doc.py --check` | Consistency of thresholds and docstrings | 0 problems |
 | `tests/test_local_mode.py` | Local and remote mode handling (false positives from logs/, gz, double counting, syscalls/ branches, collection failure messages) on synthetic data. No external bundle needed | 0 failures |
+| `tests/test_logsdb.py` | Every branch of the document limit, logsdb and force merge findings (SHD-008, 013, 014, 015, IDX-013, ILM-007, 008, 009) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |
 
@@ -482,6 +501,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 │   ├── drive_branches.py       # drives every finding branch
 │   ├── fuzz_rules.py          # input mutation fuzzing
 │   ├── test_handoff.py         # Support summary and masking checks (synthetic data)
+│   ├── test_logsdb.py          # document limit, logsdb and force merge checks (synthetic data)
 │   └── make_broken_bundle.py   # create a bundle with injected failures
 ├── docs/STYLE.md              # style and glossary
 ├── README.md / README.ko.md
@@ -501,7 +521,7 @@ python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <bundle-for-validation.zip>
 # 3) (optional) Build the single-file distribution and attach it to GitHub Releases (do not commit it)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
-git tag v0.11.0
+git tag v0.12.0
 ```
 
 Validation diagnostic bundles and their analysis reports contain customer environment information (cluster names, index names, hosts), so do not commit them to the repository.

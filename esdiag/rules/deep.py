@@ -8,6 +8,7 @@ nodes.json plugins, ML trained model deployments, watcher, autoscaling, rollup.
 """
 
 import collections
+import datetime
 
 from ..i18n import T, N_, tr
 from ..model import Finding, Severity, table
@@ -132,8 +133,9 @@ def r_ilm_policies(ctx):
     No max_primary_shard_size (or max_size) in the hot rollover → Warning (ILM-004): the official recommendation is rollover by shard size,
     and max_age alone leaves small indices piling up depending on the ingest rate (a cause of OVS-002). max_primary_shard_size > 50GB → Warning (ILM-005).
     No delete phase → Info (ILM-006, unlimited retention). Elastic-managed policies (_meta.managed=true) are checked like the others and marked "(Elastic managed)" in the table.
+    max_primary_shard_docs above 200,000,000 → Info (ILM-007): rollover always runs at 200M documents per shard, so a higher value has no effect (official).
     """
-    no_size, too_big, no_delete = [], [], []
+    no_size, too_big, no_delete, docs_noop = [], [], [], []
     for pname, body in items(ctx.ilm_policies):
         if not isinstance(body, dict):
             continue
@@ -143,6 +145,8 @@ def r_ilm_policies(ctx):
             continue
         managed = str(dig(body, "policy", "_meta", "managed")).lower() == "true"
         phases = dig(body, "policy", "phases", default={}) or {}
+        if not isinstance(phases, dict):
+            continue
         ro = dig(phases, "hot", "actions", "rollover")
         label = pname + (T("rules.deep.r_ilm_policies.01") if managed else "")
         if isinstance(ro, dict):
@@ -153,6 +157,9 @@ def r_ilm_policies(ctx):
                 b = parse_bytes(ro.get("max_primary_shard_size"))
                 if b and b > ctx.t["ilm_rollover_max_shard_gb"] * 1024 ** 3:
                     too_big.append([label, str(ro.get("max_primary_shard_size")), len(users)])
+            mds = num(ro, "max_primary_shard_docs", default=None)
+            if mds and mds > ctx.t["ilm_implicit_max_shard_docs"]:
+                docs_noop.append([label, fmt_num(mds), len(users)])
         if "delete" not in phases:
             no_delete.append([label, ", ".join(sorted(phases.keys())), len(users)])
     out = []
@@ -171,6 +178,15 @@ def r_ilm_policies(ctx):
             impact=T("rules.deep.r_ilm_policies.11"),
             recommend=T("rules.deep.r_ilm_policies.12"),
             evidence=table([T("rules.deep.r_ilm_policies.06"), "max_primary_shard_size", T("rules.deep.r_ilm_policies.13")], too_big[: ctx.t["top_n"]]),
+            refs=[D_ILM, D_SHARDS], source="ilm_policies.json"))
+    if docs_noop:
+        out.append(Finding(
+            "ILM-007", OPS, Severity.INFO, T("rules.deep.r_ilm_policies.19"),
+            observed=T("rules.deep.r_ilm_policies.20") % (len(docs_noop), fmt_num(ctx.t["ilm_implicit_max_shard_docs"])),
+            impact=T("rules.deep.r_ilm_policies.21"),
+            recommend=T("rules.deep.r_ilm_policies.22"),
+            evidence=table([T("rules.deep.r_ilm_policies.06"), "max_primary_shard_docs", T("rules.deep.r_ilm_policies.13")],
+                           docs_noop[: ctx.t["top_n"]]),
             refs=[D_ILM, D_SHARDS], source="ilm_policies.json"))
     if no_delete:
         out.append(Finding(
@@ -549,7 +565,156 @@ def r_search_usage(ctx):
         source="cluster_stats.json (indices.search)")]
 
 
-RULES = [r_search_usage, r_disk_io_utilization, r_mapping_limits_actual, r_vector_mapping_actual, r_ilm_policies, r_voting_exclusions,
+
+# ------------------------------------------------------------------ force merge
+D_FORCEMERGE = ("Force merge API",
+                "https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge")
+D_ILM_FM = ("Force merge (ILM)",
+            "https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-forcemerge")
+_PHASE_TIER = {"hot": "hot", "warm": "warm", "cold": "cold"}
+
+
+def _policy_indices(ctx, body):
+    names = [i for i in strs(dig(body, "in_use_by", "indices")) if not ctx.is_system_index(i)]
+    for ds_name in strs(dig(body, "in_use_by", "data_streams")):
+        if ds_name.startswith("."):
+            continue
+        for ds in dicts(ctx.data_streams):
+            if ds.get("name") == ds_name:
+                names += [i.get("index_name") for i in dicts(ds.get("indices")) if i.get("index_name")]
+    return set(names)
+
+
+def _merge_points(phases):
+    """(phase whose tier runs the merge, label) for every merge down to one segment in an ILM policy.
+
+    forcemerge with max_num_segments=1 runs in its own phase. searchable_snapshot with force_merge_index (default true)
+    merges to one segment in the tier of the preceding phase, and is a no-op if the index was already merged to one segment.
+    """
+    out, merged, prev = [], False, None
+    if not isinstance(phases, dict):
+        return out
+    for phase in ("hot", "warm", "cold", "frozen"):
+        body = phases.get(phase)
+        if not isinstance(body, dict):
+            continue
+        acts = body.get("actions")
+        if not isinstance(acts, dict):
+            continue
+        fm = acts.get("forcemerge")
+        if isinstance(fm, dict) and str(fm.get("max_num_segments")) == "1":
+            out.append((phase, "%s: forcemerge" % phase))
+            merged = True
+        ss = acts.get("searchable_snapshot")
+        if isinstance(ss, dict) and str(ss.get("force_merge_index", True)).lower() != "false" and not merged:
+            run = prev or phase
+            out.append((run, "%s: searchable_snapshot (%s)" % (run, phase)))
+            merged = True
+        prev = phase
+    return out
+
+
+def _fm_pool(n):
+    """force_merge pool size of a node: the reported size, else max(1, allocated processors / 8) (official default)."""
+    size = num(n.info, "thread_pool", "force_merge", "max", default=None) or \
+        num(n.info, "thread_pool", "force_merge", "size", default=None)
+    if size:
+        return int(size)
+    proc = num(n.info, "os", "allocated_processors", default=None) or n.processors
+    return max(1, int(proc // 8)) if proc else None
+
+
+def r_forcemerge(ctx):
+    """ILM force merge to a single segment, disk headroom and progress.
+
+    Official: force merge with max_num_segments=1 may need free space up to three times the shard size, and the force_merge
+    thread pool has max(1, allocated processors / 8) threads per node. Merges to one segment are forcemerge with max_num_segments=1
+    (run in its own phase) and searchable_snapshot with force_merge_index (default true, run in the tier of the preceding phase,
+    a no-op after an earlier one-segment merge). A policy in use with such a merge where a node of the tier that runs it
+    (hot/warm/cold; all non-frozen data nodes when the tier is not used) has less free disk
+    than forcemerge_free_space_factor x the largest primary shard of the indices using the policy → Warning (ILM-008).
+    ilm_explain entries that have been in the forcemerge action (or the forcemerge step of searchable_snapshot) for
+    forcemerge_stuck_hours or more at collection time → Info (ILM-009),
+    with the force_merge pool size and queue of the data nodes. Partially mounted indices are skipped (size is the cache size).
+    """
+    biggest = collections.Counter()
+    for s in ctx.shards:
+        if (s.get("prirep") or "").lower() == "p" and not ctx.is_partial_mount(s.get("index")):
+            b = parse_bytes(s.get("store")) or 0
+            if b > biggest[s.get("index")]:
+                biggest[s.get("index")] = b
+    tiers = ctx.data_tiers()
+    hot_like = [n for n in ctx.data_nodes if not ctx.is_frozen_only(n)]
+    factor = ctx.t["forcemerge_free_space_factor"]
+    rows = []
+    for pname, body in items(ctx.ilm_policies):
+        if not isinstance(body, dict):
+            continue
+        users = _policy_indices(ctx, body)
+        if not users:
+            continue
+        largest = max([biggest.get(i, 0) for i in users] or [0])
+        if not largest:
+            continue
+        for run_phase, label in _merge_points(dig(body, "policy", "phases", default={}) or {}):
+            tier = _PHASE_TIER.get(run_phase)
+            nodes = tiers.get(tier) if tier in tiers else hot_like
+            cand = [(n.fs_avail, n.name) for n in nodes or [] if n.fs_avail is not None]
+            if not cand:
+                continue
+            avail, nname = min(cand)
+            if avail < factor * largest:
+                rows.append([pname, label, tier if tier in tiers else T("rules.deep.r_forcemerge.01"),
+                             fmt_bytes(largest), fmt_bytes(factor * largest), nname, fmt_bytes(avail)])
+    out = []
+    if rows:
+        out.append(Finding(
+            "ILM-008", OPS, Severity.WARNING, T("rules.deep.r_forcemerge.02"),
+            observed=T("rules.deep.r_forcemerge.03") % (len(rows), factor),
+            impact=T("rules.deep.r_forcemerge.04"),
+            recommend=T("rules.deep.r_forcemerge.05"),
+            evidence=table([T("rules.deep.r_ilm_policies.06"), T("rules.deep.r_forcemerge.15"), "tier",
+                            T("rules.deep.r_forcemerge.06"), T("rules.deep.r_forcemerge.07"),
+                            T("rules.deep.r_forcemerge.08"), T("rules.deep.r_forcemerge.09")], rows[: ctx.t["top_n"]]),
+            refs=[D_FORCEMERGE, D_ILM_FM], source="ilm_policies.json / nodes_stats.json / indices.json"))
+
+    now = ctx.collection_time
+    stuck = []
+    if now is not None:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.timezone.utc)
+        now_ms = now.timestamp() * 1000
+        limit_ms = ctx.t["forcemerge_stuck_hours"] * 3600000
+        for name, ex in items(ctx.ilm_explain):
+            if not isinstance(ex, dict) or ctx.is_system_index(name):
+                continue
+            if ex.get("action") == "forcemerge":
+                since = num(ex, "action_time_millis", default=None) or num(ex, "step_time_millis", default=None)
+            elif ex.get("action") == "searchable_snapshot" and ex.get("step") == "forcemerge":
+                since = num(ex, "step_time_millis", default=None)
+            else:
+                continue
+            if since and now_ms - since >= limit_ms:
+                stuck.append([name, ex.get("phase") or "-", ex.get("step") or "-", fmt_ms(now_ms - since),
+                              ex.get("policy") or "-", fmt_bytes(biggest.get(name)) if biggest.get(name) else "-"])
+    if stuck:
+        stuck.sort(key=lambda r: r[0])
+        pools = [(n, _fm_pool(n)) for n in ctx.data_nodes if not ctx.is_frozen_only(n)]
+        single = len([1 for n, sz in pools if sz == 1])
+        queue = sum(int(num(n.stats, "thread_pool", "force_merge", "queue", default=0) or 0) for n, _ in pools)
+        active = sum(int(num(n.stats, "thread_pool", "force_merge", "active", default=0) or 0) for n, _ in pools)
+        out.append(Finding(
+            "ILM-009", OPS, Severity.INFO, T("rules.deep.r_forcemerge.10"),
+            observed=T("rules.deep.r_forcemerge.11") % (len(stuck), ctx.t["forcemerge_stuck_hours"], single, len(pools), active, queue),
+            impact=T("rules.deep.r_forcemerge.12"),
+            recommend=T("rules.deep.r_forcemerge.13"),
+            evidence=table(["index", "phase", "step", T("rules.deep.r_forcemerge.14"), "ILM policy",
+                            T("rules.deep.r_forcemerge.06")], stuck[: ctx.t["top_n"]]),
+            affected=[r[0] for r in stuck], refs=[D_FORCEMERGE, D_ILM_FM],
+            source="commercial/ilm_explain.json / nodes_stats.json"))
+    return out
+
+RULES = [r_search_usage, r_disk_io_utilization, r_mapping_limits_actual, r_vector_mapping_actual, r_ilm_policies, r_forcemerge, r_voting_exclusions,
          r_node_shutdown, r_shard_store_errors, r_remote_clusters, r_frozen_cache, r_script_limit,
          r_ingest_processors, r_cluster_state_publication, r_plugin_consistency, r_ml_deployments,
          r_watcher_autoscaling_rollup]

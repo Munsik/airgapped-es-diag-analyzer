@@ -8,7 +8,7 @@
 
 | Item | Value |
 | --- | --- |
-| Tool version | esdiag 0.11.0 |
+| Tool version | esdiag 0.12.0 |
 | Elasticsearch baseline version | 9.4 |
 | Official docs checked | 2026-09 |
 | Validated on real bundles | 9.4.4 (ECH, 3 nodes, single tier) / 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), api mode |
@@ -24,6 +24,7 @@
 | 8.3 | SHD-001 | The 20-shards-per-1-GB-heap guideline applies only below 8.3 |
 | 8.5 | DISK-* | Disk watermark max_headroom (200/150/100 GB) applies |
 | 8.14 | VEC-002 | dense_vector defaults to int8_hnsw (quantized) when index_options is not set |
+| 9.0 | IDX-013 | logsdb applies automatically to new logs-*-* data streams only |
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq_hnsw |
 | 9.2 | VEC-003 | index.mapping.exclude_source_vectors is enabled by default |
 
@@ -49,10 +50,10 @@ Each rule declares the input files it needs (`REQUIRES` in `esdiag/rules/__init_
 - [Nodes (JVM, OS, disk, thread pools)](#nodes-jvm-os-disk-thread-pools): 11 rules
 - [Shards and indices](#shards-and-indices): 18 rules
 - [Oversharding and small shards](#oversharding-and-small-shards): 3 rules
-- [Official guidance baselines (settings, shards, performance, disk, vectors)](#official-guidance-baselines-settings-shards-performance-disk-vectors): 23 rules
+- [Official guidance baselines (settings, shards, performance, disk, vectors)](#official-guidance-baselines-settings-shards-performance-disk-vectors): 25 rules
 - [Hot spots and balancing](#hot-spots-and-balancing): 7 rules
 - [Operations and security](#operations-and-security): 9 rules
-- [Mappings, ILM policies, cluster coordination, detailed stats](#mappings-ilm-policies-cluster-coordination-detailed-stats): 16 rules
+- [Mappings, ILM policies, cluster coordination, detailed stats](#mappings-ilm-policies-cluster-coordination-detailed-stats): 17 rules
 - [Runtime (hot threads, logs)](#runtime-hot-threads-logs): 2 rules
 - [OS settings (syscalls/ in local and remote mode)](#os-settings-syscalls-in-local-and-remote-mode): 1 rule
 - [Trend (--baseline comparison mode)](#trend---baseline-comparison-mode): 9 rules
@@ -982,18 +983,18 @@ Multi-node cluster without discovery.seed_hosts / seed_providers → Warning (CF
 
 Based on jvm.input_arguments. No HeapDumpOnOutOfMemoryError → Warning (CFG-007). No gc file logging option after the last -Xlog:disable → Warning (CFG-008). No ErrorFile → Info (CFG-009). On orchestrator deployments these drop to Info.
 
-### SHD-007, SHD-008: Shard document count close to the Lucene limit
+### SHD-007, SHD-008, SHD-013: Shard document count close to the Lucene limit
 
 | Item | Details |
 | --- | --- |
 | Function | `guidance.r_docs_per_shard` |
-| Findings | SHD-007 Shard document count close to the Lucene limit / SHD-008 Documents per shard above the recommended value |
-| Evidence basis | Official |
+| Findings | SHD-007 Shard document count close to the Lucene limit / SHD-008 Documents per shard above the recommended value / SHD-013 Shards that rolled over late |
+| Evidence basis | Official / Tool threshold |
 | Possible severities | Critical, Warning |
-| Thresholds | `docs_per_shard_crit` = 1,500,000,000 ([Tool] Alert when approaching the Lucene limit (2,147,483,519))<br>`docs_per_shard_warn` = 200,000,000 ([Official] Fewer than 200 million documents per shard recommended)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Thresholds | `docs_per_shard_crit` = 1,500,000,000 ([Tool] Alert when approaching the Lucene limit (2,147,483,519))<br>`docs_per_shard_warn` = 200,000,000 ([Official] Fewer than 200 million documents per shard recommended)<br>`docs_rollover_overshoot_pct` = 5 ([Tool] Allowed overshoot of a rolled-over shard past 200M docs (ILM checks every poll_interval))<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (indices.json or shards.json or cat_shards.txt) and (indices_stats.json) |
-| Source files | indices.json |
-| References | [Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
+| Source files | indices.json / indices.json / commercial/ilm_explain.json |
+| References | [Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards)<br>[Rollover (ILM): max_primary_shard_docs](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[ILM settings: indices.lifecycle.poll_interval](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-lifecycle-management-settings) |
 
 **Decision logic**
 
@@ -1001,6 +1002,57 @@ Document count per shard. Rated on per-shard values (cat shards), not the index 
 
 The Lucene limit (2,147,483,519) applies to maxDoc, which includes deleted documents. cat shards has no deleted count,
 so the index deleted count divided by the number of primaries is added (shown as an estimate).
+Rollover always runs once a shard reaches 200M documents, and ILM checks the condition every poll_interval (10m by default),
+so a rolled-over index normally ends a little above 200M. Rolled-over indices are reported only when they exceed 200M by more
+than docs_rollover_overshoot_pct (SHD-013, rollover ran late). The write index and indices without rollover keep SHD-008.
+
+### SHD-014, SHD-015: logsdb shards above the tool's recommended range
+
+| Item | Details |
+| --- | --- |
+| Function | `guidance.r_logsdb_shard_size` |
+| Findings | SHD-014 logsdb shards above the tool's recommended range / SHD-015 logsdb indices rolled over below the official shard size range |
+| Evidence basis | Official / Tool threshold |
+| Possible severities | Info |
+| Thresholds | `ilm_implicit_max_shard_docs` = 200,000,000 ([Official] Rollover always runs at 200M docs per shard; higher values have no effect)<br>`logsdb_rows_max` = 100 ([Tool] Maximum indices listed in the logsdb shard size table)<br>`logsdb_shard_gb_high` = 30 ([Tool] Upper end of the logsdb shard range (official upper bound is 50GB))<br>`logsdb_shard_gb_low` = 10 ([Official] Lower end of the 10-50GB shard range)<br>`shard_size_gb_warn` = 50 ([Official] Shards of 10-50GB) |
+| Required input | (indices.json or shards.json or cat_shards.txt) and (settings.json or data_stream.json) |
+| Source files | indices.json / settings.json / commercial/data_stream.json / indices.json / settings.json / commercial/ilm_policies.json |
+| References | [Rollover (ILM): max_primary_shard_docs](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[Configure a logs data stream](https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream-configure)<br>[Index sorting settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/sorting)<br>[Force merge API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge)<br>[Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
+
+**Decision logic**
+
+Primary shard size of logsdb indices against the 10-30GB range (tool judgment, Info).
+
+Basis: rollover always runs at 200M documents per shard (official), and the official docs note that space-efficient data
+reaches 200M documents before 50GB. logsdb sorts by host.name and @timestamp by default (official), and index sorting
+costs time at flush and merge (official). force merge to one segment needs up to 3x the shard size in free space (official),
+and large shards take longer to recover (official). The 30GB upper end is not an official number: it follows an Elastic
+internal discussion that 10-30GB suits logsdb and TSDB. The official 10-50GB range and SHD-003 (50GB and above) still apply.
+
+Partially mounted (frozen) indices are skipped because their size is the cache size. Per index, the largest primary
+shard is rated. logsdb_shard_gb_high <= largest primary < shard_size_gb_warn → SHD-014 (Info). A rolled-over index whose
+largest primary is below logsdb_shard_gb_low with fewer than 200M documents → SHD-015 (Info): it was ended by max_age
+or a small size condition, not by the document limit. The rollover condition shown is an estimate.
+
+### IDX-013: logs-*-* data streams not in logsdb mode
+
+| Item | Details |
+| --- | --- |
+| Function | `guidance.r_logsdb_adoption` |
+| Evidence basis | Official |
+| Possible severities | Info |
+| Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Required input | (data_stream.json) |
+| Source files | commercial/data_stream.json / settings.json |
+| References | [Logs data streams](https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream)<br>[Configure a logs data stream](https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream-configure) |
+
+**Decision logic**
+
+Elasticsearch 9.0+ and logs-*-* data streams whose write index is not in logsdb mode → Info (IDX-013).
+
+Official: from 9.0, logsdb is set automatically on new logs-*-* data streams. Data streams that existed before an
+upgrade from 8.x, including integration and APM streams, are not switched. Data streams set to time_series are skipped,
+and so are bundles without settings.json and data_stream.json index_mode, where the mode cannot be determined.
 
 ### SHD-009: Too many indices for the master node heap
 
@@ -1614,15 +1666,15 @@ Finds high-dimension float dense_vector fields in the actual index mappings that
 
 Below 8.14, a missing index_options is also non-quantized, so those fields are included. This backs up the template-based rule (VEC-002) with the actual indices.
 
-### ILM-004, ILM-005, ILM-006: ILM policies that roll over without a size condition
+### ILM-004, ILM-005, ILM-007, ILM-006: ILM policies that roll over without a size condition
 
 | Item | Details |
 | --- | --- |
 | Function | `deep.r_ilm_policies` |
-| Findings | ILM-004 ILM policies that roll over without a size condition / ILM-005 Rollover shard size condition above the recommended maximum / ILM-006 ILM policies without a delete phase |
+| Findings | ILM-004 ILM policies that roll over without a size condition / ILM-005 Rollover shard size condition above the recommended maximum / ILM-007 max_primary_shard_docs set above the built-in limit / ILM-006 ILM policies without a delete phase |
 | Evidence basis | Official / Reported fact |
 | Possible severities | Warning, Info |
-| Thresholds | `ilm_rollover_max_shard_gb` = 50 ([Official] Recommended upper bound for shard size at rollover)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Thresholds | `ilm_implicit_max_shard_docs` = 200,000,000 ([Official] Rollover always runs at 200M docs per shard; higher values have no effect)<br>`ilm_rollover_max_shard_gb` = 50 ([Official] Recommended upper bound for shard size at rollover)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (ilm_policies.json) |
 | Source files | ilm_policies.json |
 | References | [Rollover (ILM)](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
@@ -1634,6 +1686,34 @@ Rollover and delete configuration of the ILM policies used by user indices.
 No max_primary_shard_size (or max_size) in the hot rollover → Warning (ILM-004): the official recommendation is rollover by shard size,
 and max_age alone leaves small indices piling up depending on the ingest rate (a cause of OVS-002). max_primary_shard_size > 50GB → Warning (ILM-005).
 No delete phase → Info (ILM-006, unlimited retention). Elastic-managed policies (_meta.managed=true) are checked like the others and marked "(Elastic managed)" in the table.
+max_primary_shard_docs above 200,000,000 → Info (ILM-007): rollover always runs at 200M documents per shard, so a higher value has no effect (official).
+
+### ILM-008, ILM-009: Not enough free disk for force merge
+
+| Item | Details |
+| --- | --- |
+| Function | `deep.r_forcemerge` |
+| Findings | ILM-008 Not enough free disk for force merge / ILM-009 Long-running force merge |
+| Evidence basis | Official / Tool threshold |
+| Possible severities | Warning, Info |
+| Thresholds | `forcemerge_free_space_factor` = 3 ([Official] max_num_segments=1 may need free space up to 3x the shard size)<br>`forcemerge_stuck_hours` = 24 ([Tool] Time in the forcemerge action before it is reported)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Required input | (ilm_policies.json or ilm_explain.json) and (nodes_stats.json) |
+| Source files | commercial/ilm_explain.json / nodes_stats.json / ilm_policies.json / nodes_stats.json / indices.json |
+| References | [Force merge API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge)<br>[Force merge (ILM)](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-forcemerge) |
+
+**Decision logic**
+
+ILM force merge to a single segment, disk headroom and progress.
+
+Official: force merge with max_num_segments=1 may need free space up to three times the shard size, and the force_merge
+thread pool has max(1, allocated processors / 8) threads per node. Merges to one segment are forcemerge with max_num_segments=1
+(run in its own phase) and searchable_snapshot with force_merge_index (default true, run in the tier of the preceding phase,
+a no-op after an earlier one-segment merge). A policy in use with such a merge where a node of the tier that runs it
+(hot/warm/cold; all non-frozen data nodes when the tier is not used) has less free disk
+than forcemerge_free_space_factor x the largest primary shard of the indices using the policy → Warning (ILM-008).
+ilm_explain entries that have been in the forcemerge action (or the forcemerge step of searchable_snapshot) for
+forcemerge_stuck_hours or more at collection time → Info (ILM-009),
+with the force_merge pool size and queue of the data nodes. Partially mounted indices are skipped (size is the cache size).
 
 ### CLU-022: Leftover voting config exclusions
 
@@ -2157,6 +2237,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `hot_thread_pct_warn` | 50 | [Tool] CPU% of a single thread |
 | `log_scan_bytes` | 8MiB | [Tool] Bytes scanned per log file (from the end) |
 | `docs_per_shard_warn` | 200,000,000 | [Official] Fewer than 200 million documents per shard recommended |
+| `docs_rollover_overshoot_pct` | 5 | [Tool] Allowed overshoot of a rolled-over shard past 200M docs (ILM checks every poll_interval) |
 | `docs_per_shard_crit` | 1,500,000,000 | [Tool] Alert when approaching the Lucene limit (2,147,483,519) |
 | `indices_per_gb_master_heap` | 3,000 | [Official] 3000 indices per 1GB of master heap |
 | `mapping_heap_pct_warn` | 50 | [Tool] Estimated mapping overhead / heap |
@@ -2190,8 +2271,14 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `oversharding_min_data_gb` | 100 | [Tool] Small clusters are not rated on distribution |
 | `ds_min_backing_indices` | 5 | [Tool] Minimum backing index count for the data stream rating |
 | `ds_small_backing_shard_gb` | 1 | [Tool] Median backing shard size threshold |
+| `logsdb_shard_gb_high` | 30 | [Tool] Upper end of the logsdb shard range (official upper bound is 50GB) |
+| `logsdb_shard_gb_low` | 10 | [Official] Lower end of the 10-50GB shard range |
+| `logsdb_rows_max` | 100 | [Tool] Maximum indices listed in the logsdb shard size table |
 | `mapping_fields_near_limit_pct` | 90 | [Tool] Field count against total_fields.limit |
 | `ilm_rollover_max_shard_gb` | 50 | [Official] Recommended upper bound for shard size at rollover |
+| `ilm_implicit_max_shard_docs` | 200,000,000 | [Official] Rollover always runs at 200M docs per shard; higher values have no effect |
+| `forcemerge_free_space_factor` | 3 | [Official] max_num_segments=1 may need free space up to 3x the shard size |
+| `forcemerge_stuck_hours` | 24 | [Tool] Time in the forcemerge action before it is reported |
 | `disk_io_busy_pct_warn` | 60 | [Tool] Average disk utilization since startup |
 | `search_expensive_share_warn` | 10 | [Tool] Share of expensive query types in all searches (%) |
 | `diff_min_hours_for_projection` | 1.0 | [Tool] No extrapolation for intervals shorter than this |

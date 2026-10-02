@@ -49,7 +49,7 @@ The tool lowers their severity to Info and says so in the report.
 | Documentation item | Status | Rule |
 | --- | --- | --- |
 | Shard size 10-50 GB | Implemented | SHD-003 (over 50 GB), SHD-002 (over 200 GB, tool threshold), SHD-004 (small shards), SHD-005 (average), OVS-001 to OVS-003 (oversharding) |
-| At most 200M documents per shard | Implemented | SHD-008 |
+| At most 200M documents per shard | Implemented | SHD-008 (write index, or index without rollover), SHD-013 (rolled-over index far above 200M: rollover ran late) |
 | Lucene MAX_DOC limit (2,147,483,519) | Implemented | SHD-007 (based on docs.count + docs.deleted) |
 | Shard distribution / unbalanced cluster / hot spotting | Implemented | SHD-006 and DISK-005 (compared within the same tier), HOT-003 (desired balance has not converged) |
 | A search uses one thread per shard, so too many shards exhaust the thread pool | Implemented | TP-001, CLU-015 (SHD-001 applies only below 8.3) |
@@ -196,6 +196,21 @@ Limits of the diagnostics bundle: `cluster_settings_defaults` does not hold pure
 | Reduce primaries with shrink | Implemented | OVS-001 recommendation |
 | Delete empty indices | Implemented | SHD-011 |
 | Shard limit | Implemented | CLU-015 |
+
+### 10-1. Document limit, logsdb and force merge
+
+| Documentation item | Status | Rule |
+| --- | --- | --- |
+| Rollover always runs at 200M documents per shard; a higher `max_primary_shard_docs` has no effect (ILM rollover) | Implemented | SHD-013, ILM-007 |
+| ILM checks conditions every `indices.lifecycle.poll_interval`, 10m by default (ILM settings) | Used | Basis for the SHD-013 allowance (5%, tool threshold) |
+| From 9.0, logsdb applies to new `logs-*-*` data streams; streams that existed before an upgrade stay as they are (Logs data streams) | Implemented | IDX-013 |
+| logsdb sorts by host.name and @timestamp by default; synthetic _source needs a subscription (Configure a logs data stream) | Used | Reasons and recommendations of SHD-014 and IDX-013 |
+| Index sorting costs time at flush and merge (Index sorting) | Used | Reasons in SHD-014 and ILM-009 |
+| `max_num_segments=1` can need up to 3 times the shard size in free space; the force_merge pool is `max(1, processors/8)` (Force merge API) | Implemented | ILM-008, ILM-009 |
+| searchable_snapshot `force_merge_index` (default true) merges to one segment in the tier of the preceding phase (ILM searchable snapshot) | Implemented | ILM-008 |
+| logsdb shards of 10-30 GB | Tool threshold | SHD-014 (30 GB or more, Info), SHD-015 (rolled over under 10 GB, Info). 30 GB is not an official number; it follows an Elastic internal discussion. The official 10-50 GB range stays as it is |
+| Priority between the implicit 200M condition and `min_*` conditions | Not implemented | The official docs do not describe how they interact |
+| `logsdb_columnar` mode | Not implemented | GA status not confirmed |
 
 ---
 

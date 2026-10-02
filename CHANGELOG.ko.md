@@ -3,6 +3,28 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.12.0] - 2026-10-02
+
+### 추가
+
+- SHD-013(주의, 도구 판단): 롤오버가 끝난 인덱스의 샤드가 2억건을 5% 넘게 초과하면 rollover 지연으로 보고. 원인 후보(ILM 정지·오류, poll_interval, `min_*` 조건, lifecycle 미연결)를 권고에 표시
+- SHD-014(참고, 도구 판단): logsdb 인덱스의 최대 primary shard 가 30GB 이상 50GB 미만. 인덱스별로 data stream, 최대 shard 크기, 문서 수, 문서당 크기, 추정 rollover 조건, ILM 정책을 표로 보여 줌. 30GB 는 공식 수치가 아니라 Elastic 내부 논의를 따른 값이며, 근거(암묵 2억건 rollover, index sorting 의 merge 비용, force merge 여유 공간, 복구 시간)를 판정에 함께 표시
+- SHD-015(참고, 공식 하한): logsdb 인덱스가 10GB 미만, 2억건 미만에서 롤오버됨(max_age 등으로 끝난 인덱스)
+- IDX-013(참고): 9.0 이상에서 write index 가 logsdb 가 아닌 `logs-*-*` data stream(8.x 에서 업그레이드하기 전부터 있던 data stream)
+- ILM-007(참고): `max_primary_shard_docs` 가 2억건 초과(효과 없음)
+- ILM-008(주의): 1 segment force merge(forcemerge `max_num_segments=1`, searchable_snapshot `force_merge_index`)를 하는 tier 의 여유 디스크가 가장 큰 primary shard 의 3배 미만
+- ILM-009(참고, 도구 판단): force merge 단계에 24시간 이상 머문 인덱스와 force_merge thread pool 크기·대기 건수
+- 임계값 7개: `docs_rollover_overshoot_pct`, `logsdb_shard_gb_high`, `logsdb_shard_gb_low`, `logsdb_rows_max`, `ilm_implicit_max_shard_docs`, `forcemerge_free_space_factor`, `forcemerge_stuck_hours`
+- index mode 판별: `settings.json` 의 `index.mode`, 없으면 `data_stream.json` 의 `index_mode`
+- `tests/test_logsdb.py`: 새 판정의 모든 분기를 합성 데이터로 두 언어 모두 검증(외부 번들 불필요)
+
+### 변경
+
+- SHD-008: 2억건 이상이면 모두 주의 → write index 와 rollover 를 쓰지 않는 인덱스만 주의. 롤오버가 끝난 인덱스는 5% 이내 초과면 판정하지 않음(rollover 는 2억건에서 항상 실행되고 ILM 은 10m 마다 확인하므로 조금 넘는 것은 정상, 공식 ILM rollover 문서)
+- SHD-008 권고: "max_primary_shard_docs 를 함께 지정" → ILM 적용 시 2억건에서 자동 rollover 됨을 안내(지정하지 않아도 암묵 적용되므로)
+- ILM-004 권고: 문서 수 조건은 지정하지 않아도 2억건이 암묵 적용됨을 추가
+- 단일 번들 판정 룰 110개, 두 번들 비교 룰 9개(판정 ID 171개 + 비교 DIF-001~012)
+
 ## [0.11.0] - 2026-10-01
 
 ### 추가

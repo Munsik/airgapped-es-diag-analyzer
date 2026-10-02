@@ -47,7 +47,7 @@ ECH/ECE/ECK 배포로 감지되면 위 CFG 항목은 오케스트레이터 관�
 | 문서 항목 | 상태 | 룰 |
 | --- | --- | --- |
 | 샤드 크기 10~50GB | 구현 | SHD-003(50GB 초과), SHD-002(200GB 초과, 도구 기준), SHD-004(소형), SHD-005(평균), OVS-001~003(과다 샤딩) |
-| 샤드당 문서 200M 이하 | 구현 | SHD-008 |
+| 샤드당 문서 200M 이하 | 구현 | SHD-008(write index·rollover 미사용 인덱스), SHD-013(롤오버된 인덱스가 2억건을 크게 넘음: rollover 지연) |
 | Lucene MAX_DOC(2,147,483,519) 한계 | 구현 | SHD-007 (docs.count + docs.deleted 기준) |
 | 샤드 분포 / unbalanced cluster / hot spotting | 구현 | SHD-006·DISK-005(같은 tier 내 비교), HOT-003(desired balance 미수렴) |
 | 검색은 샤드당 1스레드 → 샤드 과다 시 스레드풀 고갈 | 구현 | TP-001, CLU-015 (SHD-001 은 8.3 미만 전용) |
@@ -194,6 +194,21 @@ ECH/ECE/ECK 배포로 감지되면 위 CFG 항목은 오케스트레이터 관�
 | shrink 로 primary 축소 | 구현 | OVS-001 권고 |
 | 빈 인덱스 삭제 | 구현 | SHD-011 |
 | 샤드 한도 | 구현 | CLU-015 |
+
+### 10-1. 문서 수 한도·logsdb·force merge
+
+| 문서 항목 | 상태 | 룰 |
+| --- | --- | --- |
+| rollover 는 샤드당 2억건에서 항상 실행, `max_primary_shard_docs` 를 더 크게 줘도 효과 없음 (ILM rollover) | 구현 | SHD-013, ILM-007 |
+| ILM 조건 확인 주기 `indices.lifecycle.poll_interval` 기본 10m (ILM settings) | 반영 | SHD-013 의 허용치(5%, 도구 판단) 근거 |
+| 9.0 부터 새 `logs-*-*` data stream 에 logsdb 자동 적용, 업그레이드 전부터 있던 data stream 은 그대로 (Logs data streams) | 구현 | IDX-013 |
+| logsdb 기본 정렬 host.name, @timestamp. synthetic _source 는 subscription 필요 (Configure a logs data stream) | 반영 | SHD-014, IDX-013 의 근거·권고 |
+| index sorting 은 flush·merge 때 비용 (Index sorting) | 반영 | SHD-014, ILM-009 의 근거 |
+| `max_num_segments=1` force merge 는 최대 3배 여유 공간, force_merge pool 은 `max(1, processors/8)` (Force merge API) | 구현 | ILM-008, ILM-009 |
+| searchable_snapshot 의 `force_merge_index`(기본 true)는 앞 단계 tier 에서 1 segment 로 merge (ILM searchable snapshot) | 구현 | ILM-008 |
+| logsdb shard 10~30GB | 도구 판단 | SHD-014(30GB 이상, 참고), SHD-015(10GB 미만 롤오버, 참고). 30GB 는 공식 수치가 아니라 Elastic 내부 논의를 따른 값이며, 공식 10~50GB 는 그대로 둠 |
+| 암묵 2억건 조건과 `min_*` 조건의 우선순위 | 미반영 | 공식 문서에 관계가 적혀 있지 않음 |
+| `logsdb_columnar` 모드 | 미반영 | GA 여부 미확인 |
 
 ---
 

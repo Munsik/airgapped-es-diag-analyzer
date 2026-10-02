@@ -8,7 +8,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdiag 0.11.0 |
+| 도구 버전 | esdiag 0.12.0 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -24,6 +24,7 @@
 | 8.3 | SHD-001 | heap 1GB당 샤드 20개 기준은 8.3 미만에만 적용 |
 | 8.5 | DISK-* | 디스크 워터마크 max_headroom(200/150/100GB) 적용 |
 | 8.14 | VEC-002 | dense_vector index_options 미지정 시 int8_hnsw 기본(양자화) |
+| 9.0 | IDX-013 | logs-*-* data stream 에 logsdb 자동 적용(새 data stream 만) |
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq_hnsw 가 기본 |
 | 9.2 | VEC-003 | index.mapping.exclude_source_vectors 기본 적용 |
 
@@ -49,10 +50,10 @@
 - [노드 (JVM · OS · 디스크 · 스레드풀)](#노드-jvm-os-디스크-스레드풀) — 11개 룰
 - [샤드 · 인덱스](#샤드-인덱스) — 18개 룰
 - [과다 샤딩 · 소형 샤드](#과다-샤딩-소형-샤드) — 3개 룰
-- [공식 가이드 기준 (설정 · 샤드 · 성능 · 디스크 · 벡터)](#공식-가이드-기준-설정-샤드-성능-디스크-벡터) — 23개 룰
+- [공식 가이드 기준 (설정 · 샤드 · 성능 · 디스크 · 벡터)](#공식-가이드-기준-설정-샤드-성능-디스크-벡터) — 25개 룰
 - [핫스팟 · 밸런싱](#핫스팟-밸런싱) — 7개 룰
 - [운영 · 보안](#운영-보안) — 9개 룰
-- [매핑 · ILM 정책 · 클러스터 조정 · 세부 통계](#매핑-ilm-정책-클러스터-조정-세부-통계) — 16개 룰
+- [매핑 · ILM 정책 · 클러스터 조정 · 세부 통계](#매핑-ilm-정책-클러스터-조정-세부-통계) — 17개 룰
 - [런타임 (hot threads · 로그)](#런타임-hot-threads-로그) — 2개 룰
 - [OS 설정 (local/remote 모드 syscalls/)](#os-설정-localremote-모드-syscalls) — 1개 룰
 - [변화 추세 (--baseline 비교 모드)](#변화-추세---baseline-비교-모드) — 9개 룰
@@ -982,18 +983,18 @@ path.data/path.logs 위치.
 
 jvm.input_arguments 기준. HeapDumpOnOutOfMemoryError 없음 → 주의(CFG-007). 마지막 -Xlog:disable 이후 gc 파일 로깅 옵션 없음 → 주의(CFG-008). ErrorFile 없음 → 참고(CFG-009). 오케스트레이터 배포면 참고로 하향.
 
-### SHD-007, SHD-008 — 샤드 문서 수가 Lucene 한계에 근접
+### SHD-007, SHD-008, SHD-013 — 샤드 문서 수가 Lucene 한계에 근접
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `guidance.r_docs_per_shard` |
-| 판정 항목 | SHD-007 샤드 문서 수가 Lucene 한계에 근접 / SHD-008 샤드당 문서 수 권장치 초과 |
-| 근거 구분 | 공식 기준 |
+| 판정 항목 | SHD-007 샤드 문서 수가 Lucene 한계에 근접 / SHD-008 샤드당 문서 수 권장치 초과 / SHD-013 늦게 롤오버된 샤드 |
+| 근거 구분 | 공식 기준 / 도구 판단 |
 | 가능 심각도 | 치명, 주의 |
-| 임계값 | `docs_per_shard_crit` = 1,500,000,000 — [도구] Lucene 한계(2,147,483,519) 접근 경보<br>`docs_per_shard_warn` = 200,000,000 — [공식] 샤드당 2억건 미만 권장<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 임계값 | `docs_per_shard_crit` = 1,500,000,000 — [도구] Lucene 한계(2,147,483,519) 접근 경보<br>`docs_per_shard_warn` = 200,000,000 — [공식] 샤드당 2억건 미만 권장<br>`docs_rollover_overshoot_pct` = 5 — [도구] 롤오버된 샤드가 2억건을 넘어도 되는 허용치(ILM 은 poll_interval 마다 확인)<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (indices.json 또는 shards.json 또는 cat_shards.txt) 그리고 (indices_stats.json) |
-| 근거 파일 | indices.json |
-| 참고 문서 | [Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
+| 근거 파일 | indices.json / indices.json / commercial/ilm_explain.json |
+| 참고 문서 | [Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards)<br>[Rollover (ILM): max_primary_shard_docs](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[ILM settings: indices.lifecycle.poll_interval](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-lifecycle-management-settings) |
 
 **판정 로직**
 
@@ -1001,6 +1002,57 @@ jvm.input_arguments 기준. HeapDumpOnOutOfMemoryError 없음 → 주의(CFG-007
 
 Lucene 한계(2,147,483,519)는 삭제 문서를 포함한 maxDoc 기준이다. cat shards 에는 삭제 수가 없어
 인덱스 삭제 수를 primary 수로 나눈 값을 더한다(추정치임을 표기).
+rollover 는 샤드 문서 수가 2억건에 닿으면 항상 실행되고, ILM 은 poll_interval(기본 10m)마다 조건을 확인하므로
+롤오버가 끝난 인덱스는 보통 2억건을 조금 넘는다. 롤오버된 인덱스는 2억건을 docs_rollover_overshoot_pct 보다 크게
+넘었을 때만 보고한다(SHD-013, rollover 지연). write index 와 rollover 를 쓰지 않는 인덱스는 SHD-008 로 판정한다.
+
+### SHD-014, SHD-015 — 도구 권장 범위보다 큰 logsdb shard
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `guidance.r_logsdb_shard_size` |
+| 판정 항목 | SHD-014 도구 권장 범위보다 큰 logsdb shard / SHD-015 공식 권장 범위보다 작게 롤오버되는 logsdb 인덱스 |
+| 근거 구분 | 공식 기준 / 도구 판단 |
+| 가능 심각도 | 참고 |
+| 임계값 | `ilm_implicit_max_shard_docs` = 200,000,000 — [공식] 샤드당 2억건이면 rollover 가 항상 실행됨. 더 큰 값은 효과 없음<br>`logsdb_rows_max` = 100 — [도구] logsdb shard 크기 표에 보여 줄 최대 인덱스 수<br>`logsdb_shard_gb_high` = 30 — [도구] logsdb shard 범위 상한(공식 상한은 50GB)<br>`logsdb_shard_gb_low` = 10 — [공식] 10~50GB 범위의 하한<br>`shard_size_gb_warn` = 50 — [공식] 샤드 10~50GB |
+| 필요 입력 | (indices.json 또는 shards.json 또는 cat_shards.txt) 그리고 (settings.json 또는 data_stream.json) |
+| 근거 파일 | indices.json / settings.json / commercial/data_stream.json / indices.json / settings.json / commercial/ilm_policies.json |
+| 참고 문서 | [Rollover (ILM): max_primary_shard_docs](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[Configure a logs data stream](https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream-configure)<br>[Index sorting settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/sorting)<br>[Force merge API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge)<br>[Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
+
+**판정 로직**
+
+logsdb 인덱스의 primary shard 크기를 10~30GB 범위와 비교한다(도구 판단, 참고).
+
+근거: rollover 는 샤드 문서 수가 2억건에 닿으면 항상 실행되고(공식), 공식 문서도 공간 효율이 좋은 데이터는 50GB 전에
+2억건에 닿는다고 설명한다. logsdb 는 기본으로 host.name, @timestamp 로 정렬하고(공식), index sorting 은 flush·merge 때
+비용이 든다(공식). 1 segment force merge 는 shard 크기의 최대 3배 여유 공간이 필요하고(공식), 큰 shard 는 복구가 오래 걸린다(공식).
+30GB 상한은 공식 수치가 아니다. logsdb·TSDB 에는 10~30GB 가 맞다는 Elastic 내부 논의를 따른다. 공식 10~50GB 범위와
+SHD-003(50GB 이상)은 그대로 적용한다.
+
+partial mount(frozen) 인덱스는 크기가 캐시 크기라 제외한다. 인덱스마다 가장 큰 primary shard 로 판정한다.
+logsdb_shard_gb_high <= 최대 primary < shard_size_gb_warn → SHD-014(참고). 롤오버가 끝났고 최대 primary 가
+logsdb_shard_gb_low 미만이며 문서가 2억건 미만 → SHD-015(참고): 문서 수 한도가 아니라 max_age 나 작은 크기 조건으로
+끝난 인덱스다. 표의 rollover 조건은 추정치다.
+
+### IDX-013 — logsdb 가 적용되지 않은 logs-*-* data stream
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `guidance.r_logsdb_adoption` |
+| 근거 구분 | 공식 기준 |
+| 가능 심각도 | 참고 |
+| 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 필요 입력 | (data_stream.json) |
+| 근거 파일 | commercial/data_stream.json / settings.json |
+| 참고 문서 | [Logs data streams](https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream)<br>[Configure a logs data stream](https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream-configure) |
+
+**판정 로직**
+
+Elasticsearch 9.0 이상에서 write index 가 logsdb 가 아닌 logs-*-* data stream → 참고(IDX-013).
+
+공식: 9.0 부터 새 logs-*-* data stream 에는 logsdb 가 자동 적용된다. 8.x 에서 업그레이드하기 전부터 있던 data stream
+(integration·APM 포함)은 바뀌지 않는다. time_series 로 설정된 data stream 은 제외하고, settings.json 과
+data_stream.json 의 index_mode 가 모두 없어 mode 를 알 수 없는 번들도 제외한다.
 
 ### SHD-009 — 마스터 노드 heap 대비 인덱스 수 과다
 
@@ -1614,15 +1666,15 @@ text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_f
 
 8.14 미만에서는 index_options 미지정도 비양자화이므로 포함한다. 템플릿 기준 판정(VEC-002)을 실제 인덱스로 보완한다.
 
-### ILM-004, ILM-005, ILM-006 — 크기 기준 없이 롤오버하는 ILM 정책
+### ILM-004, ILM-005, ILM-007, ILM-006 — 크기 기준 없이 롤오버하는 ILM 정책
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `deep.r_ilm_policies` |
-| 판정 항목 | ILM-004 크기 기준 없이 롤오버하는 ILM 정책 / ILM-005 롤오버 샤드 크기 기준이 권장 상한 초과 / ILM-006 삭제 단계가 없는 ILM 정책 |
+| 판정 항목 | ILM-004 크기 기준 없이 롤오버하는 ILM 정책 / ILM-005 롤오버 샤드 크기 기준이 권장 상한 초과 / ILM-007 효과 없는 max_primary_shard_docs 설정 / ILM-006 삭제 단계가 없는 ILM 정책 |
 | 근거 구분 | 공식 기준 / 사실 보고 |
 | 가능 심각도 | 주의, 참고 |
-| 임계값 | `ilm_rollover_max_shard_gb` = 50 — [공식] 롤오버 샤드 크기 권장 상한<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 임계값 | `ilm_implicit_max_shard_docs` = 200,000,000 — [공식] 샤드당 2억건이면 rollover 가 항상 실행됨. 더 큰 값은 효과 없음<br>`ilm_rollover_max_shard_gb` = 50 — [공식] 롤오버 샤드 크기 권장 상한<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (ilm_policies.json) |
 | 근거 파일 | ilm_policies.json |
 | 참고 문서 | [Rollover (ILM)](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
@@ -1634,6 +1686,34 @@ text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_f
 hot 롤오버에 max_primary_shard_size(또는 max_size)가 없으면 주의(ILM-004): 공식 권장은 샤드 크기 기준 롤오버이며,
 max_age 단독이면 수집량에 따라 작은 인덱스가 쌓인다(OVS-002 의 원인). max_primary_shard_size > 50GB 면 주의(ILM-005).
 delete 단계가 없으면 참고(ILM-006, 보존 기간 무제한). Elastic 관리 정책(_meta.managed=true)은 표에 표시만 한다.
+max_primary_shard_docs 가 200,000,000 을 넘으면 참고(ILM-007): rollover 는 샤드당 2억건에서 항상 실행되므로 더 큰 값은 효과가 없다(공식).
+
+### ILM-008, ILM-009 — force merge 여유 디스크 부족
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `deep.r_forcemerge` |
+| 판정 항목 | ILM-008 force merge 여유 디스크 부족 / ILM-009 오래 걸리는 force merge |
+| 근거 구분 | 공식 기준 / 도구 판단 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `forcemerge_free_space_factor` = 3 — [공식] max_num_segments=1 은 shard 크기의 최대 3배 여유 공간이 필요할 수 있음<br>`forcemerge_stuck_hours` = 24 — [도구] force merge 단계에 이 시간 이상 머물면 보고<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 필요 입력 | (ilm_policies.json 또는 ilm_explain.json) 그리고 (nodes_stats.json) |
+| 근거 파일 | commercial/ilm_explain.json / nodes_stats.json / ilm_policies.json / nodes_stats.json / indices.json |
+| 참고 문서 | [Force merge API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge)<br>[Force merge (ILM)](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-forcemerge) |
+
+**판정 로직**
+
+ILM 의 1 segment force merge: 여유 디스크와 진행 상황.
+
+공식: max_num_segments=1 force merge 는 shard 크기의 최대 3배 여유 공간이 필요할 수 있고, force_merge thread pool 은
+노드당 max(1, allocated processors / 8) 이다. 1 segment merge 는 forcemerge max_num_segments=1(그 단계에서 실행)과
+force_merge_index 가 켜진 searchable_snapshot(기본 true, 앞 단계의 tier 에서 실행, 이미 1 segment 로 merge 했다면 생략)이다.
+이런 merge 가 있는 사용 중 정책에서,
+실행 tier(hot/warm/cold, 해당 tier 가 없으면 frozen 을 뺀 전체 data 노드) 노드의
+여유 디스크가 정책을 쓰는 인덱스의 가장 큰 primary shard x forcemerge_free_space_factor 보다 작으면 주의(ILM-008).
+수집 시점에 forcemerge action(또는 searchable_snapshot 의 forcemerge step)에 forcemerge_stuck_hours 이상 머문
+ilm_explain 항목 → 참고(ILM-009). data 노드의 force_merge pool 크기와 대기 건수를 함께 표시한다.
+partial mount 인덱스는 크기가 캐시 크기라 제외한다.
 
 ### CLU-022 — voting config exclusion 잔존
 
@@ -2157,6 +2237,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `hot_thread_pct_warn` | 50 | [도구] 단일 스레드 CPU% |
 | `log_scan_bytes` | 8MiB | [도구] 로그 파일당 스캔 크기(끝부분) |
 | `docs_per_shard_warn` | 200,000,000 | [공식] 샤드당 2억건 미만 권장 |
+| `docs_rollover_overshoot_pct` | 5 | [도구] 롤오버된 샤드가 2억건을 넘어도 되는 허용치(ILM 은 poll_interval 마다 확인) |
 | `docs_per_shard_crit` | 1,500,000,000 | [도구] Lucene 한계(2,147,483,519) 접근 경보 |
 | `indices_per_gb_master_heap` | 3,000 | [공식] 마스터 heap 1GB당 인덱스 3000개 |
 | `mapping_heap_pct_warn` | 50 | [도구] 매핑 오버헤드 추정 / heap |
@@ -2190,8 +2271,14 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `oversharding_min_data_gb` | 100 | [도구] 소규모 클러스터는 분포 판정 제외 |
 | `ds_min_backing_indices` | 5 | [도구] 데이터 스트림 판정 최소 백킹 수 |
 | `ds_small_backing_shard_gb` | 1 | [도구] 백킹 샤드 중앙값 기준 |
+| `logsdb_shard_gb_high` | 30 | [도구] logsdb shard 범위 상한(공식 상한은 50GB) |
+| `logsdb_shard_gb_low` | 10 | [공식] 10~50GB 범위의 하한 |
+| `logsdb_rows_max` | 100 | [도구] logsdb shard 크기 표에 보여 줄 최대 인덱스 수 |
 | `mapping_fields_near_limit_pct` | 90 | [도구] total_fields.limit 대비 필드 수 |
 | `ilm_rollover_max_shard_gb` | 50 | [공식] 롤오버 샤드 크기 권장 상한 |
+| `ilm_implicit_max_shard_docs` | 200,000,000 | [공식] 샤드당 2억건이면 rollover 가 항상 실행됨. 더 큰 값은 효과 없음 |
+| `forcemerge_free_space_factor` | 3 | [공식] max_num_segments=1 은 shard 크기의 최대 3배 여유 공간이 필요할 수 있음 |
+| `forcemerge_stuck_hours` | 24 | [도구] force merge 단계에 이 시간 이상 머물면 보고 |
 | `disk_io_busy_pct_warn` | 60 | [도구] 기동 이후 평균 디스크 사용률 |
 | `search_expensive_share_warn` | 10 | [도구] 비용이 큰 쿼리 유형의 검색 대비 비중(%) |
 | `diff_min_hours_for_projection` | 1.0 | [도구] 이보다 짧은 간격은 외삽 안 함 |

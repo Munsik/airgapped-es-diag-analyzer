@@ -6,7 +6,7 @@ Uses only the Python 3.8+ standard library and makes no outbound network calls.
 """
 from .i18n import N_
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 # ---------------------------------------------------------------------------
 # Baseline for findings
@@ -29,6 +29,7 @@ VERSION_GATES = [
     ((8, 3), "SHD-001", N_("pkg.gate.shd001")),
     ((8, 5), "DISK-*", N_("pkg.gate.disk")),
     ((8, 14), "VEC-002", N_("pkg.gate.vec002a")),
+    ((9, 0), "IDX-013", N_("pkg.gate.idx013")),
     ((9, 1), "VEC-002", N_("pkg.gate.vec002b")),
     ((9, 2), "VEC-003", N_("pkg.gate.vec003")),
 ]

@@ -9,7 +9,7 @@ import collections
 
 from ..i18n import T, N_, tr
 from ..model import Finding, Severity, table
-from ..util import dig, fmt_bytes, fmt_num, parse_bytes, pct, num, items, strs
+from ..util import dicts, dig, fmt_bytes, fmt_num, parse_bytes, pct, num, items, strs
 
 CFG = "config"
 SIZ = "shard"
@@ -30,6 +30,18 @@ D_GEN = ("General recommendations",
          "https://www.elastic.co/docs/deploy-manage/production-guidance/general-recommendations")
 D_KNN = ("Tune approximate kNN search",
          "https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/approximate-knn-search")
+D_ROLLOVER = ("Rollover (ILM): max_primary_shard_docs",
+              "https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover")
+D_ILM_SETTINGS = ("ILM settings: indices.lifecycle.poll_interval",
+                  "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-lifecycle-management-settings")
+D_LOGS_DS = ("Logs data streams",
+             "https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream")
+D_LOGSDB = ("Configure a logs data stream",
+            "https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream-configure")
+D_SORT = ("Index sorting settings",
+          "https://www.elastic.co/docs/reference/elasticsearch/index-settings/sorting")
+D_FORCEMERGE = ("Force merge API",
+                "https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge")
 
 GB = 1024 ** 3
 
@@ -216,12 +228,17 @@ def r_docs_per_shard(ctx):
 
     The Lucene limit (2,147,483,519) applies to maxDoc, which includes deleted documents. cat shards has no deleted count,
     so the index deleted count divided by the number of primaries is added (shown as an estimate).
+    Rollover always runs once a shard reaches 200M documents, and ILM checks the condition every poll_interval (10m by default),
+    so a rolled-over index normally ends a little above 200M. Rolled-over indices are reported only when they exceed 200M by more
+    than docs_rollover_overshoot_pct (SHD-013, rollover ran late). The write index and indices without rollover keep SHD-008.
     """
     pri_count = collections.Counter()
     for s in ctx.shards:
         if (s.get("prirep") or "").lower() == "p":
             pri_count[s.get("index")] += 1
-    warn, crit = [], []
+    limit = ctx.t["docs_per_shard_warn"]
+    late_limit = limit * (1 + ctx.t["docs_rollover_overshoot_pct"] / 100.0)
+    warn, crit, late = [], [], []
     for s in ctx.shards:
         if (s.get("prirep") or "").lower() != "p":
             continue
@@ -235,8 +252,14 @@ def r_docs_per_shard(ctx):
         row = [idx, s.get("shard"), fmt_num(docs), fmt_num(int(est)), s.get("node")]
         if est >= ctx.t["docs_per_shard_crit"]:
             crit.append(row)
-        elif docs >= ctx.t["docs_per_shard_warn"]:
-            warn.append(row)
+        elif docs >= limit:
+            if ctx.rolled_over(idx):
+                if docs > late_limit:
+                    ds = ctx.data_stream_of(idx)
+                    late.append([idx, s.get("shard"), fmt_num(docs), "+%.1f%%" % ((docs / float(limit) - 1) * 100),
+                                 (ds or {}).get("name") or "-", ctx.ilm_policy_of(idx) or "-"])
+            else:
+                warn.append(row)
     out = []
     cols = ["index", "shard", T("rules.guidance.r_docs_per_shard.01"), T("rules.guidance.r_docs_per_shard.02"), "node"]
     if crit:
@@ -249,11 +272,161 @@ def r_docs_per_shard(ctx):
     if warn:
         out.append(Finding(
             "SHD-008", SIZ, Severity.WARNING, T("rules.guidance.r_docs_per_shard.07"),
-            observed=T("rules.guidance.r_docs_per_shard.08") % (fmt_num(ctx.t["docs_per_shard_warn"]), len(warn)),
+            observed=T("rules.guidance.r_docs_per_shard.08") % (fmt_num(limit), len(warn)),
             impact=T("rules.guidance.r_docs_per_shard.09"),
             recommend=T("rules.guidance.r_docs_per_shard.10"),
-            evidence=table(cols, warn[: ctx.t["top_n"]]), refs=[D_SHARDS], source="indices.json"))
+            evidence=table(cols, warn[: ctx.t["top_n"]]), refs=[D_SHARDS, D_ROLLOVER], source="indices.json"))
+    if late:
+        late.sort(key=lambda r: -int(r[2].replace(",", "")))
+        out.append(Finding(
+            "SHD-013", SIZ, Severity.WARNING, T("rules.guidance.r_docs_per_shard.11"),
+            observed=T("rules.guidance.r_docs_per_shard.12") % (len(late), fmt_num(limit), ctx.t["docs_rollover_overshoot_pct"]),
+            impact=T("rules.guidance.r_docs_per_shard.13"),
+            recommend=T("rules.guidance.r_docs_per_shard.14"),
+            evidence=table(["index", "shard", T("rules.guidance.r_docs_per_shard.01"), T("rules.guidance.r_docs_per_shard.15"),
+                            "data stream", "ILM policy"], late[: ctx.t["top_n"]]),
+            refs=[D_ROLLOVER, D_ILM_SETTINGS], source="indices.json / commercial/ilm_explain.json"))
     return out
+
+
+def _rollover_trigger(ctx, idx, docs, shard_bytes, is_write):
+    """Best guess of the rollover condition that ended this index. The bundle does not record it."""
+    if is_write:
+        return T("rules.guidance.r_logsdb_shard_size.20")
+    ro = ctx.rollover_conditions(ctx.ilm_policy_of(idx))
+    if docs is not None and docs >= ctx.t["ilm_implicit_max_shard_docs"]:
+        return T("rules.guidance.r_logsdb_shard_size.21")
+    mds = num(ro, "max_primary_shard_docs", default=None)
+    if mds and docs is not None and docs >= mds * 0.95:
+        return "max_primary_shard_docs"
+    for key in ("max_primary_shard_size", "max_size"):
+        lim = parse_bytes(ro.get(key))
+        if lim and shard_bytes >= lim * 0.9 / (1 if key == "max_primary_shard_size" else max(ctx.primary_count(idx), 1)):
+            return key
+    if ro.get("max_age"):
+        return T("rules.guidance.r_logsdb_shard_size.22") % ro.get("max_age")
+    return "-"
+
+
+def r_logsdb_shard_size(ctx):
+    """Primary shard size of logsdb indices against the 10-30GB range (tool judgment, Info).
+
+    Basis: rollover always runs at 200M documents per shard (official), and the official docs note that space-efficient data
+    reaches 200M documents before 50GB. logsdb sorts by host.name and @timestamp by default (official), and index sorting
+    costs time at flush and merge (official). force merge to one segment needs up to 3x the shard size in free space (official),
+    and large shards take longer to recover (official). The 30GB upper end is not an official number: it follows an Elastic
+    internal discussion that 10-30GB suits logsdb and TSDB. The official 10-50GB range and SHD-003 (50GB and above) still apply.
+
+    Partially mounted (frozen) indices are skipped because their size is the cache size. Per index, the largest primary
+    shard is rated. logsdb_shard_gb_high <= largest primary < shard_size_gb_warn → SHD-014 (Info). A rolled-over index whose
+    largest primary is below logsdb_shard_gb_low with fewer than 200M documents → SHD-015 (Info): it was ended by max_age
+    or a small size condition, not by the document limit. The rollover condition shown is an estimate.
+    """
+    hi, lo = ctx.t["logsdb_shard_gb_high"] * GB, ctx.t["logsdb_shard_gb_low"] * GB
+    top = ctx.t["shard_size_gb_warn"] * GB
+    biggest = {}
+    for s in ctx.shards:
+        if (s.get("prirep") or "").lower() != "p":
+            continue
+        idx = s.get("index")
+        if not idx or ctx.is_system_index(idx) or ctx.is_partial_mount(idx):
+            continue
+        b = parse_bytes(s.get("store"))
+        if b is None:
+            continue
+        try:
+            docs = int(str(num(s, "docs")))
+        except ValueError:
+            docs = None
+        if idx not in biggest or b > biggest[idx][0]:
+            biggest[idx] = (b, docs)
+    logsdb = [i for i in biggest if ctx.index_mode(i) == "logsdb"]
+    if not logsdb:
+        return []
+    writes = ctx.write_targets()
+    big, small = [], []
+    for idx in logsdb:
+        b, docs = biggest[idx]
+        is_write = idx in writes
+        if hi <= b < top:
+            big.append((b, idx, docs, is_write))
+        elif b < lo and not is_write and ctx.rolled_over(idx) and \
+                (docs is None or docs < ctx.t["ilm_implicit_max_shard_docs"]):
+            small.append((b, idx, docs, is_write))
+    lic = (ctx.license.get("type") or "-") if isinstance(ctx.license, dict) else "-"
+    cols = ["index", "data stream", T("rules.guidance.r_logsdb_shard_size.01"), T("rules.guidance.r_logsdb_shard_size.02"),
+            T("rules.guidance.r_logsdb_shard_size.03"), T("rules.guidance.r_logsdb_shard_size.04"), "ILM policy"]
+
+    def rows(lst):
+        out = []
+        for b, idx, docs, is_write in lst[: ctx.t["logsdb_rows_max"]]:
+            ds = ctx.data_stream_of(idx)
+            out.append([idx, (ds or {}).get("name") or "-", fmt_bytes(b), fmt_num(docs),
+                        ("%.0fB" % (b / float(docs))) if docs else "-",
+                        _rollover_trigger(ctx, idx, docs, b, is_write), ctx.ilm_policy_of(idx) or "-"])
+        return out
+    out = []
+    if big:
+        big.sort(key=lambda r: -r[0])
+        out.append(Finding(
+            "SHD-014", SIZ, Severity.INFO, T("rules.guidance.r_logsdb_shard_size.05"),
+            observed=T("rules.guidance.r_logsdb_shard_size.06")
+                     % (len(logsdb), len(big), ctx.t["logsdb_shard_gb_high"], ctx.t["shard_size_gb_warn"], lic),
+            impact=T("rules.guidance.r_logsdb_shard_size.07"),
+            recommend=T("rules.guidance.r_logsdb_shard_size.08") % ctx.t["logsdb_shard_gb_high"],
+            evidence=table(cols, rows(big)), affected=[r[1] for r in big],
+            refs=[D_ROLLOVER, D_LOGSDB, D_SORT, D_FORCEMERGE, D_SHARDS],
+            source="indices.json / settings.json / commercial/data_stream.json"))
+    if small:
+        small.sort(key=lambda r: r[0])
+        out.append(Finding(
+            "SHD-015", SIZ, Severity.INFO, T("rules.guidance.r_logsdb_shard_size.09"),
+            observed=T("rules.guidance.r_logsdb_shard_size.10") % (len(logsdb), len(small), ctx.t["logsdb_shard_gb_low"]),
+            impact=T("rules.guidance.r_logsdb_shard_size.11"),
+            recommend=T("rules.guidance.r_logsdb_shard_size.12"),
+            evidence=table(cols, rows(small)), affected=[r[1] for r in small],
+            refs=[D_SHARDS, D_ROLLOVER], source="indices.json / settings.json / commercial/ilm_policies.json"))
+    return out
+
+
+def r_logsdb_adoption(ctx):
+    """Elasticsearch 9.0+ and logs-*-* data streams whose write index is not in logsdb mode → Info (IDX-013).
+
+    Official: from 9.0, logsdb is set automatically on new logs-*-* data streams. Data streams that existed before an
+    upgrade from 8.x, including integration and APM streams, are not switched. Data streams set to time_series are skipped,
+    and so are bundles without settings.json and data_stream.json index_mode, where the mode cannot be determined.
+    """
+    if ctx.version_tuple < (9, 0, 0):
+        return []
+    rows = []
+    for ds in dicts(ctx.data_streams):
+        name = str(ds.get("name") or "")
+        parts = name.split("-")
+        if not name.startswith("logs-") or len(parts) < 3 or not all(parts[1:]):
+            continue
+        idxs = [i.get("index_name") for i in dicts(ds.get("indices"))]
+        if not idxs:
+            continue
+        w = idxs[-1]
+        known = ctx.index_setting(w, "index.mode") is not None or ds.get("index_mode") or \
+            any(i.get("index_mode") for i in dicts(ds.get("indices"))) or w in ctx.index_settings
+        mode = ctx.index_mode(w)
+        if not known or mode in ("logsdb", "time_series"):
+            continue
+        b = dig(ctx.indices_stats, w, "primaries", "store", "size_in_bytes")
+        rows.append([name, w, mode, fmt_bytes(b) if b is not None else "-", ds.get("template") or "-"])
+    if not rows:
+        return []
+    rows.sort()
+    return [Finding(
+        "IDX-013", SIZ, Severity.INFO, T("rules.guidance.r_logsdb_adoption.01"),
+        observed=T("rules.guidance.r_logsdb_adoption.02") % (ctx.version, len(rows)),
+        impact=T("rules.guidance.r_logsdb_adoption.03"),
+        recommend=T("rules.guidance.r_logsdb_adoption.04"),
+        evidence=table(["data stream", "write index", "index.mode", T("rules.guidance.r_logsdb_adoption.05"), "template"],
+                       rows[: ctx.t["top_n"]]),
+        affected=[r[0] for r in rows], refs=[D_LOGS_DS, D_LOGSDB],
+        source="commercial/data_stream.json / settings.json")]
 
 
 def r_master_heap_per_index(ctx):
@@ -860,7 +1033,7 @@ def r_large_documents(ctx):
 RULES = [
     r_large_result_sets, r_large_documents,
     r_cluster_name, r_path_settings, r_discovery, r_jvm_diag_settings,
-    r_docs_per_shard, r_master_heap_per_index, r_mapping_heap_overhead,
+    r_docs_per_shard, r_logsdb_shard_size, r_logsdb_adoption, r_master_heap_per_index, r_mapping_heap_overhead,
     r_empty_indices, r_total_shards_per_node,
     r_index_buffer, r_open_contexts, r_search_timeout, r_replica_throughput,
     r_store_preload, r_remote_storage,
