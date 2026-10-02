@@ -17,7 +17,7 @@ __version__ = "0.14.0"
 # Analyzing a version newer than the baseline raises VER-001 (defaults and behavior may have changed).
 # ---------------------------------------------------------------------------
 ES_BASELINE = (9, 4)
-DOCS_CHECKED = "2026-09"
+DOCS_CHECKED = "2026-10"
 VALIDATED_BUNDLE = N_("pkg.validated_bundle")
 FIELD_TESTED = N_("pkg.field_tested")
 SUPPORTED_MIN = (8, 0)

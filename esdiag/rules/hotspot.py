@@ -19,6 +19,10 @@ D_BAL = (N_("rules.hotspot._.02"),
          "https://www.elastic.co/docs/troubleshoot/elasticsearch/troubleshooting-unbalanced-cluster")
 D_SHARDS = ("Size your shards",
             "https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards")
+D_TPL = ("Templates",
+         "https://www.elastic.co/docs/manage-data/data-store/templates")
+D_DELAY = ("Delaying allocation when a node leaves",
+           "https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-allocation-relocation-recovery/delaying-allocation-when-node-leaves")
 D_REC = (N_("rules.hotspot._.03"),
          "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-recovery-settings")
 
@@ -38,6 +42,8 @@ def r_resource_hotspot(ctx):
     For each metric, Warning when max - min within the tier >= gap and the max is >= floor. Values are point-in-time at collection.
     Nodes up for less than node_compare_min_uptime_hours are left out of the heap and CPU comparison (cold caches and
     fewer active shards right after a restart make them look idle). Disk usage does not reset on restart, so they stay in that one.
+    The official docs look for skew that persists and for write and search queues backing up; the queues at collection are shown
+    as well, and one bundle cannot show whether the skew persists.
     """
     rows, flags, skipped = [], [], []
     checks = ((T("rules.hotspot.r_resource_hotspot.01"), "heap", ctx.t["hotspot_heap_pct_gap"], ctx.t["hotspot_heap_pct_floor"]),
@@ -51,6 +57,7 @@ def r_resource_hotspot(ctx):
             rows.append([tier, n.name, "%s%%" % n.heap_used_pct if n.heap_used_pct is not None else "-",
                          "%s%%" % n.cpu_pct if n.cpu_pct is not None else "-",
                          "%.1f%%" % n.disk_used_pct if n.disk_used_pct is not None else "-",
+                         "%d / %d" % (num(n.stats, "thread_pool", "write", "queue"), num(n.stats, "thread_pool", "search", "queue")),
                          fmt_ms(n.uptime_ms) + (T("rules.hotspot.r_resource_hotspot.10") if fresh else "")
                          if n.uptime_ms else "-"])
         if len(nodes) < 2:
@@ -66,7 +73,7 @@ def r_resource_hotspot(ctx):
             mx, mn = max(vals), min(vals)
             if mx[0] - mn[0] >= gap and mx[0] >= floor:
                 flags.append(T("rules.hotspot.r_resource_hotspot.04") % (tier, label, mx[0] - mn[0], mx[1], mx[0]))
-    ev = table(["tier", "node", "heap%", "cpu%", "disk%", "uptime"], rows)
+    ev = table(["tier", "node", "heap%", "cpu%", "disk%", T("rules.hotspot.r_resource_hotspot.12"), "uptime"], rows)
     note = (T("rules.hotspot.r_resource_hotspot.11") % (ctx.t["node_compare_min_uptime_hours"], ", ".join(skipped))
             if skipped else "")
     if not flags:
@@ -221,7 +228,7 @@ def r_template_conflict(ctx):
         impact=T("rules.hotspot.r_template_conflict.03"),
         recommend=T("rules.hotspot.r_template_conflict.04"),
         evidence=table([T("rules.hotspot.r_template_conflict.05"), T("rules.hotspot.r_template_conflict.06"), T("rules.hotspot.r_template_conflict.07"), T("rules.hotspot.r_template_conflict.06")], rows[: ctx.t["top_n"]]),
-        source="templates.json / index_templates.json")]
+        refs=[D_TPL], source="templates.json / index_templates.json")]
 
 
 def r_delayed_allocation(ctx):
@@ -241,7 +248,7 @@ def r_delayed_allocation(ctx):
         impact=T("rules.hotspot.r_delayed_allocation.03"),
         recommend=T("rules.hotspot.r_delayed_allocation.04"),
         evidence=table(["index", "delayed_timeout"], rows[: ctx.t["top_n"]]),
-        source="settings.json")]
+        refs=[D_DELAY], source="settings.json")]
 
 
 def r_tier_saturation(ctx):

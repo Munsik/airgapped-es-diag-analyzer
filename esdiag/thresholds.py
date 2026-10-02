@@ -10,7 +10,8 @@ DEFAULTS = {
     # --- JVM ---
     "heap_used_pct_warn": 75,                        # [Tool] Heap usage at collection time
     "heap_used_pct_crit": 85,                        # [Tool] Heap usage at collection time
-    "heap_max_bytes_crit": 32 * 1024 ** 3,           # [Official] Compressed oops boundary (below 32GB recommended)
+    "heap_max_bytes_crit": 30 * 1024 ** 3,           # [Official] Compressed oops boundary can be as high as about 30GB (used when the JVM flag is missing)
+    "heap_oops_safe_bytes": 26 * 1024 ** 3,          # [Official] 26GB is safe on most systems (used when the JVM flag is missing)
     "heap_vs_ram_pct_warn": 50,                      # [Official] Heap <= 50% of total memory
     "heap_vs_ram_tolerance_pct": 2,                  # [Tool] Tolerance for rounding and adjusted_total error
     "old_gc_time_ratio_warn": 0.02,                  # [Tool] Cumulative old GC time / uptime
@@ -25,6 +26,7 @@ DEFAULTS = {
     "fd_used_pct_warn": 70,                          # [Tool] Open files / maximum (official minimum limit is 65,535)
     "cgroup_throttle_ratio_warn": 0.01,              # [Tool] throttled / elapsed periods
     "cgroup_throttle_ratio_crit": 0.05,              # [Tool] throttled / elapsed periods
+    "dedicated_master_data_nodes": 10,               # [Tool] Field guideline: data node count from which dedicated masters are expected
     "uptime_short_hours": 6,                         # [Tool] Treats the node as recently restarted
     "node_compare_min_uptime_hours": 24,             # [Tool] Nodes up for less than this are left out of node-to-node comparisons
 
@@ -45,6 +47,7 @@ DEFAULTS = {
     "shards_per_gb_heap_warn": 20,                   # [Official] 20 shards per 1GB of heap (versions before 8.3 only)
     "shards_per_gb_heap_crit": 30,                   # [Tool] Versions before 8.3 only
     "max_shards_per_node_headroom_pct_warn": 80,     # [Tool] Usage against cluster.max_shards_per_node
+    "max_shards_per_node_crit_pct": 95,              # [Tool] Usage against cluster.max_shards_per_node that becomes Critical
     "shard_size_gb_warn": 50,                        # [Official] Shards of 10-50GB
     "shard_size_gb_crit": 200,                       # [Tool] Upper bound based on recovery time
     "small_shard_mb": 1024,                          # [Tool] Small shard threshold
@@ -143,6 +146,7 @@ DEFAULTS = {
     "logsdb_rows_max": 100,                         # [Tool] Maximum indices listed in the logsdb shard size table
 
     # --- Mapping / ILM policy ---
+    "nested_fields_near_limit_pct": 80,             # [Tool] Nested field count against nested_fields.limit
     "mapping_fields_near_limit_pct": 90,            # [Tool] Field count against total_fields.limit
     "ilm_rollover_max_shard_gb": 50,                # [Official] Recommended upper bound for shard size at rollover
     "ilm_implicit_max_shard_docs": 200000000,       # [Official] Rollover always runs at 200M docs per shard; higher values have no effect

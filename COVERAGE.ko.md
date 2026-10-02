@@ -237,6 +237,20 @@ ECH/ECE/ECK 배포로 감지되면 위 CFG 항목은 오케스트레이터 관�
 | hot threads 의 대기 시간("other")을 I/O 신호로 보기 | 사용 안 함 | 락 대기 시간도 포함되어 스토리지 대기를 구분하지 못함 |
 | 코어 수보다 높은 load average 를 I/O 대기로 보기 | 사용 안 함 | 컨테이너 안에서는 load 가 호스트 값일 수 있음(OS-001) |
 
+### 10-4. 공식 문서 재대조 (2026-10)
+
+공식 기준으로 표기한 판정, 버전 분기, 설정 기본값 전체를 현재 공식 문서와 다시 대조했고, 문서에 없는 부분은 Elasticsearch 소스로 확인했습니다. 바뀐 내용은 CHANGELOG 0.14.0 의 "공식 문서 재대조" 에 있습니다.
+
+| 항목 | 상태 | 룰 |
+| --- | --- | --- |
+| compressed oops: 대부분 26GB 는 안전, 약 30GB 까지 가능 (JVM settings) | 구현 | JVM-002(JVM 플래그를 먼저 봄) |
+| closed 인덱스는 샤드 한도에 세지 않고, frozen 인덱스는 따로 셈 (Miscellaneous cluster settings) | 구현 | CLU-015 |
+| `"_source": {"enabled": false}` 로 _source 비활성 (_source field) | 구현 | DISK-007 |
+| 기본 max_headroom 은 8.5 부터, 워터마크를 직접 지정하지 않았을 때만 적용 | 구현 | DISK-001~005 |
+| bootstrap check 는 운영 모드에서만 적용 | 구현 | SYS-001, SYS-003 |
+| 노드가 몇 대를 넘으면 전용 마스터 노드 권장 | 도구 판단 | CLU-007(데이터 노드 10대, 현장 기준) |
+| ERU 사용량 | 미구현 | 공식 문서에 계산식이 없고 과금은 계약에 따라 다르다고 명시 |
+
 ---
 
 ## 11. Troubleshooting 문서 (운영 판단 기준)

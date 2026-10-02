@@ -270,7 +270,8 @@ def render(data, unused, filename):
         spec = kb.lookup(key)
         t, u = kb.DOCS[spec["doc"]]
         w("| `%s` | %s | %s | %s | %s | %s | %s | [%s](%s) |" % (
-            key, spec["default"] or T("gen.none"), spec["kind"], spec["scope"], spec["meaning"].replace("|", "/"),
+            key, (spec["default"] or T("gen.none")) + (T("gen.kb.src") if spec.get("basis") == "source" else ""),
+            spec["kind"], spec["scope"], spec["meaning"].replace("|", "/"),
             _eff(spec), _risk(spec), tr(t), u))
     for prefix, spec in kb.PREFIX_RULES:
         spec = kb._localized(spec)

@@ -161,7 +161,7 @@ def r_pending_tasks(ctx):
 
 
 def r_master_quorum(ctx):
-    """Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical; 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= 6 data nodes → Warning (CLU-007)."""
+    """Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical; 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= dedicated_master_data_nodes data nodes → Warning (CLU-007). The official docs only say dedicated masters make sense once a cluster has more than a handful of nodes; the node count is a field guideline."""
     [n for n in ctx.master_nodes if not n.is_voting_only]
     total = len(ctx.master_nodes)
     out = []
@@ -185,7 +185,7 @@ def r_master_quorum(ctx):
                            affected=names, source="nodes.json"))
     # Dedicated master recommendation
     dedicated = [n for n in ctx.master_nodes if n.is_dedicated_master]
-    if not dedicated and len(ctx.data_nodes) >= 6:
+    if not dedicated and len(ctx.data_nodes) >= ctx.t["dedicated_master_data_nodes"]:
         out.append(Finding("CLU-007", CAT, Severity.WARNING, T("rules.cluster.r_master_quorum.13"),
                            observed=T("rules.cluster.r_master_quorum.14")
                                     % len(ctx.data_nodes),
@@ -255,7 +255,7 @@ RISKY_SETTINGS = [
 
 
 def r_risky_settings(ctx):
-    """Rates only cluster settings that differ from the default (explicitly set in persistent/transient). allocation.enable != all → Critical, rebalance.enable != all → Warning, disk.threshold_enabled=false → Critical, cluster.blocks.read_only(_allow_delete)=true → Critical, destructive_requires_name=false → Warning (CLU-011). A value in allocation.exclude._name/_ip/_host → Warning (CLU-012). Any transient setting → Info (CLU-013, deprecated since 7.16). use_adaptive_replica_selection=false → Warning (CLU-014, default is true)."""
+    """Rates only cluster settings that differ from the default (explicitly set in persistent/transient). allocation.enable != all → Critical, rebalance.enable != all → Warning, disk.threshold_enabled=false → Critical, cluster.blocks.read_only(_allow_delete)=true → Critical, destructive_requires_name=false → Warning (CLU-011). A value in allocation.exclude._name/_ip/_host → Warning (CLU-012). Any transient setting → Info (CLU-013, no longer recommended since 7.16). use_adaptive_replica_selection=false → Warning (CLU-014, default is true)."""
     out = []
     rows = []
     for scope in ("persistent", "transient"):
@@ -309,27 +309,40 @@ def r_risky_settings(ctx):
 
 
 def r_shard_capacity(ctx):
-    """Usage = (active + unassigned - shards on frozen-only nodes) / (cluster.max_shards_per_node x number of data nodes excluding frozen-only). >= max_shards_per_node_headroom_pct_warn → Warning, >= 95% → Critical."""
+    """Usage of the cluster shard limit (CLU-015).
+
+    Official counting: cluster.max_shards_per_node applies to non-frozen data nodes and counts the primary and replica shards of
+    open indices, unassigned ones included; closed indices do not count, and frozen (partially mounted) indices count against
+    cluster.max_shards_per_node.frozen instead. Usage = (active + unassigned - shards of partially mounted indices - shards of
+    closed indices) / (cluster.max_shards_per_node x non-frozen data nodes). Closed indices come from cat indices (status close).
+    >= max_shards_per_node_headroom_pct_warn → Warning, >= max_shards_per_node_crit_pct → Critical.
+    """
     out = []
     max_per_node = ctx.setting("cluster.max_shards_per_node", 1000)
     try:
         max_per_node = int(max_per_node)
     except (TypeError, ValueError):
         max_per_node = 1000
-    # cluster.max_shards_per_node applies to the data node group without frozen-only nodes,
-    # and frozen-only nodes are counted separately with cluster.max_shards_per_node.frozen (default 3000).
     frozen_only = set(n.name for n in ctx.data_nodes
                       if [r for r in n.roles if r.startswith("data")] == ["data_frozen"])
     data_nodes = len([n for n in ctx.data_nodes if n.name not in frozen_only]) or len(ctx.nodes)
     limit = max_per_node * data_nodes
-    frozen_shards = len([sh for sh in ctx.shards if sh.get("node") in frozen_only])
-    open_shards = ((num(ctx.health, "active_shards")) + (num(ctx.health, "unassigned_shards"))
-                   - frozen_shards)
+    frozen_shards = len([sh for sh in ctx.shards if ctx.is_partial_mount(sh.get("index"))])
+    closed_shards = 0
+    for r in ctx.cat_indices or []:
+        if not isinstance(r, dict) or str(r.get("status") or "").lower() != "close":
+            continue
+        try:
+            closed_shards += int(str(r.get("pri") or 0)) * (1 + int(str(r.get("rep") or 0)))
+        except ValueError:
+            continue
+    open_shards = max(0, (num(ctx.health, "active_shards")) + (num(ctx.health, "unassigned_shards"))
+                      - frozen_shards - closed_shards)
     used = (float(open_shards) / limit * 100.0) if limit else None
     if used is not None and used >= ctx.t["max_shards_per_node_headroom_pct_warn"]:
         out.append(Finding(
             "CLU-015", CAT,
-            Severity.CRITICAL if used >= 95 else Severity.WARNING,
+            Severity.CRITICAL if used >= ctx.t["max_shards_per_node_crit_pct"] else Severity.WARNING,
             T("rules.cluster.r_shard_capacity.01"),
             observed=T("rules.cluster.r_shard_capacity.02")
                      % (fmt_num(open_shards), fmt_num(limit), used, max_per_node, data_nodes),

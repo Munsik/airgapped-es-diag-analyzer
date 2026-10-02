@@ -272,7 +272,7 @@ SCENARIOS = [
     ("1 master", lambda b: _roles(b, [["master", "data_hot"], ["data_hot"], ["data_hot"]]), ["CLU-006"]),
     ("2 masters", lambda b: _roles(b, [["master", "data_hot"], ["master", "data_hot"], ["data_hot"]]), ["CLU-006"]),
     ("4 masters, no dedicated master", lambda b: (
-        b.clone_nodes(7), _roles(b, [["master", "data_hot"]] * 4 + [["data_hot"]] * 3)), ["CLU-007"]),
+        b.clone_nodes(10), _roles(b, [["master", "data_hot"]] * 4 + [["data_hot"]] * 6)), ["CLU-007"]),
     ("old version 7.17, heap 1GB", lambda b: (
         b.edit("version.json", lambda v: v["version"].update(number="7.17.0")),
         b.add_index("many-shards", pri=40),
@@ -508,6 +508,17 @@ SCENARIOS = [
     ("hot tier full, warm tier empty", lambda b: _tier_layout(b, [0.8, 0.05]), ["COST-003!INFO"]),
     ("rolled-over index kept on hot", _hot_rolled, ["COST-001!INFO"]),
     ("landing tier headroom", _headroom, ["COST-004!WARNING"]),
+    ("compressed oops off", lambda b: b.each_node(
+        fn_info=lambda i, n: n.setdefault("jvm", {}).update(using_compressed_ordinary_object_pointers="false") if i == 0 else None),
+     ["JVM-002!WARNING"]),
+    ("heap 28GB without the oops flag", lambda b: b.each_node(
+        fn_info=lambda i, n: n.setdefault("jvm", {}).pop("using_compressed_ordinary_object_pointers", None),
+        fn_stats=lambda i, s: s["jvm"]["mem"].update(heap_max_in_bytes=28 * GB)),
+     ["JVM-002!INFO"]),
+    ("_source disabled in the mapping", lambda b: (
+        b.add_index("no-source"),
+        b.put("mapping.json", {"no-source": {"mappings": {"_source": {"enabled": False}, "properties": {}}}})),
+     ["DISK-007!WARNING"]),
 ]
 
 

@@ -20,6 +20,7 @@ Fields
   change  : impact when a non-numeric value changes
   risk    : severity hint when the value differs from the default: (up, down) or a single value. None | "INFO" | "WARNING"
   doc     : reference doc key (DOCS)
+  basis   : "docs" when the default is in the official docs, "source" when it is only in the Elasticsearch source code
 """
 
 import re
@@ -62,12 +63,44 @@ DOCS = {
                  "https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit"),
     "shards": ("Size your shards",
                "https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards"),
+    "idxmgmt": ("Index management settings",
+                "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-management-settings"),
+    "ars": ("Search shard routing",
+            "https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-shard-routing"),
+    "querydsl": ("Query DSL",
+                 "https://www.elastic.co/docs/reference/query-languages/querydsl"),
+    "searchapi": ("The search API",
+                  "https://www.elastic.co/docs/solutions/search/the-search-api"),
+    "ilm": ("Index lifecycle management settings",
+            "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-lifecycle-management-settings"),
+    "geoip": ("GeoIP processor",
+              "https://www.elastic.co/docs/reference/enrich-processor/geoip-processor"),
+    "snapshot": ("Snapshot and restore settings",
+                 "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/snapshot-restore-settings"),
+    "monitoring": ("Monitoring settings",
+                   "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/monitoring-settings"),
+    "ml": ("Machine learning settings",
+           "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/machine-learning-settings"),
+    "store": ("Store (index settings)",
+              "https://www.elastic.co/docs/reference/elasticsearch/index-settings/store"),
+    "reqcache_node": ("Shard request cache settings",
+                      "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/shard-request-cache-settings"),
+    "reqcache": ("The shard request cache",
+                 "https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-request-cache"),
+    "delayed": ("Delaying allocation when a node leaves",
+                "https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-allocation-relocation-recovery/delaying-allocation-when-node-leaves"),
+    "total_shards": ("Total shards per node",
+                     "https://www.elastic.co/docs/reference/elasticsearch/index-settings/total-shards-per-node"),
+    "blocks": ("Index blocks",
+               "https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block"),
+    "memory": ("Disable swapping",
+               "https://www.elastic.co/docs/deploy-manage/deploy/self-managed/setup-configuration-memory"),
 }
 
 
-def S(default, kind, scope, meaning, up=None, down=None, change=None, risk=None, doc="misc"):
+def S(default, kind, scope, meaning, up=None, down=None, change=None, risk=None, doc="misc", basis="docs"):
     return {"default": default, "kind": kind, "scope": scope, "meaning": meaning,
-            "up": up, "down": down, "change": change, "risk": risk, "doc": doc}
+            "up": up, "down": down, "change": change, "risk": risk, "doc": doc, "basis": basis}
 
 
 KB = {
@@ -118,7 +151,7 @@ KB = {
     "cluster.routing.use_adaptive_replica_selection": S(
         "true", "dynamic", "cluster", N_("settings_kb._.28"),
         change=N_("settings_kb._.29"),
-        risk="WARNING", doc="search"),
+        risk="WARNING", doc="ars"),
     "cluster.routing.allocation.balance.shard": S(
         "0.45", "dynamic", "cluster", N_("settings_kb._.30"),
         change=N_("settings_kb._.31"),
@@ -161,11 +194,11 @@ KB = {
     "cluster.max_shards_per_node": S(
         "1000", "dynamic", "cluster", N_("settings_kb._.55"),
         up=N_("settings_kb._.56"),
-        down=N_("settings_kb._.57"), risk=("WARNING", "INFO"), doc="shards"),
+        down=N_("settings_kb._.57"), risk=("WARNING", "INFO"), doc="misc"),
     "cluster.max_shards_per_node.frozen": S(
         "3000", "dynamic", "cluster", N_("settings_kb._.58"),
         up=N_("settings_kb._.59"), down=N_("settings_kb._.60"),
-        risk=("INFO", "INFO"), doc="shards"),
+        risk=("INFO", "INFO"), doc="misc"),
     "cluster.blocks.read_only": S(
         "false", "dynamic", "cluster", N_("settings_kb._.61"),
         change=N_("settings_kb._.62"), risk="WARNING", doc="misc"),
@@ -174,26 +207,26 @@ KB = {
         change=N_("settings_kb._.64"), risk="WARNING", doc="misc"),
     "action.destructive_requires_name": S(
         "true", "dynamic", "cluster", N_("settings_kb._.65"),
-        change=N_("settings_kb._.66"), risk="WARNING", doc="misc"),
+        change=N_("settings_kb._.66"), risk="WARNING", doc="idxmgmt"),
     "action.auto_create_index": S(
         "true", "dynamic", "cluster", N_("settings_kb._.67"),
-        change=N_("settings_kb._.68"), risk="INFO", doc="misc"),
+        change=N_("settings_kb._.68"), risk="INFO", doc="idxmgmt"),
     "cluster.indices.close.enable": S(
         "true", "dynamic", "cluster", N_("settings_kb._.69"),
         change=N_("settings_kb._.70"),
-        risk="INFO", doc="misc"),
+        risk="INFO", doc="idxmgmt"),
     "cluster.persistent_tasks.allocation.enable": S(
         "all", "dynamic", "cluster", N_("settings_kb._.71"),
         change=N_("settings_kb._.72"), risk="WARNING", doc="misc"),
     # ------------------------------------------------------------ cluster: recovery, search, breakers
     "indices.recovery.max_bytes_per_sec": S(
-        "40mb", "dynamic", "cluster", N_("settings_kb._.73"),
+        N_("settings_kb.recovery_default"), "dynamic", "cluster", N_("settings_kb._.73"),
         up=N_("settings_kb._.74"),
         down=N_("settings_kb._.75"), risk=("INFO", "WARNING"), doc="recovery"),
     "search.default_search_timeout": S(
         "-1", "dynamic", "cluster", N_("settings_kb._.76"),
         change=N_("settings_kb._.77"),
-        risk="INFO", doc="search"),
+        risk="INFO", doc="searchapi"),
     "search.max_buckets": S(
         "65536", "dynamic", "cluster", N_("settings_kb._.78"),
         up=N_("settings_kb._.79"),
@@ -201,12 +234,12 @@ KB = {
     "search.allow_expensive_queries": S(
         "true", "dynamic", "cluster", N_("settings_kb._.81"),
         change=N_("settings_kb._.82"),
-        risk="INFO", doc="search"),
+        risk="INFO", doc="querydsl"),
     "search.low_level_cancellation": S(
         "true", "dynamic", "cluster", N_("settings_kb._.83"),
-        change=N_("settings_kb._.84"), risk="INFO", doc="search"),
+        change=N_("settings_kb._.84"), risk="INFO", doc="search", basis="source"),
     "indices.breaker.total.limit": S(
-        "95%", "dynamic", "cluster", N_("settings_kb._.85"),
+        N_("settings_kb.breaker_total_default"), "dynamic", "cluster", N_("settings_kb._.85"),
         up=N_("settings_kb._.86"),
         down=N_("settings_kb._.87"), risk=("WARNING", "INFO"), doc="breaker"),
     "indices.breaker.fielddata.limit": S(
@@ -224,29 +257,29 @@ KB = {
     "script.max_compilations_rate": S(
         "150/5m", "dynamic", "cluster", N_("settings_kb._.96"),
         change=N_("settings_kb._.97"),
-        risk="INFO", doc="misc"),
+        risk="INFO", doc="breaker"),
     "indices.lifecycle.poll_interval": S(
         "10m", "dynamic", "cluster", N_("settings_kb._.98"),
         up=N_("settings_kb._.99"),
-        down=N_("settings_kb._.100"), risk=("INFO", "WARNING"), doc="misc"),
+        down=N_("settings_kb._.100"), risk=("INFO", "WARNING"), doc="ilm"),
     "xpack.monitoring.collection.enabled": S(
         "false", "dynamic", "cluster", N_("settings_kb._.101"),
         change=N_("settings_kb._.102"),
-        risk="INFO", doc="misc"),
+        risk="INFO", doc="monitoring"),
     "ingest.geoip.downloader.enabled": S(
         "true", "dynamic", "cluster", N_("settings_kb._.103"),
         change=N_("settings_kb._.104"),
-        risk=None, doc="misc"),
+        risk=None, doc="geoip"),
     "slm.retention_schedule": S(
         "0 30 1 * * ?", "dynamic", "cluster", N_("settings_kb._.105"),
-        change=N_("settings_kb._.106"), risk=None, doc="misc"),
+        change=N_("settings_kb._.106"), risk=None, doc="snapshot"),
     "cluster.metadata.display_name": S(
         "", "dynamic", "cluster", N_("settings_kb._.107"), change=N_("settings_kb._.108"),
         risk=None, doc="misc"),
     "xpack.ml.max_machine_memory_percent": S(
         "30", "dynamic", "cluster", N_("settings_kb._.109"),
         up=N_("settings_kb._.110"), down=N_("settings_kb._.111"),
-        risk=("INFO", "INFO"), doc="misc"),
+        risk=("INFO", "INFO"), doc="ml"),
     # ------------------------------------------------------------ node (static, elasticsearch.yml)
     "indices.memory.index_buffer_size": S(
         "10%", "static", "node", N_("settings_kb._.112"),
@@ -258,7 +291,7 @@ KB = {
         risk=("INFO", "INFO"), doc="qcache"),
     "indices.requests.cache.size": S(
         "1%", "static", "node", N_("settings_kb._.118"),
-        up=N_("settings_kb._.119"), down=N_("settings_kb._.120"), risk=("INFO", "INFO"), doc="qcache"),
+        up=N_("settings_kb._.119"), down=N_("settings_kb._.120"), risk=("INFO", "INFO"), doc="reqcache_node"),
     "indices.fielddata.cache.size": S(
         "unbounded", "static", "node", N_("settings_kb._.121"),
         change=N_("settings_kb._.122"),
@@ -268,7 +301,7 @@ KB = {
         change=N_("settings_kb._.124"),
         risk="WARNING", doc="breaker"),
     "thread_pool.write.queue_size": S(
-        "10000", "static", "node", N_("settings_kb._.125"),
+        N_("settings_kb.write_queue_default"), "static", "node", N_("settings_kb._.125"),
         up=N_("settings_kb._.126"),
         down=N_("settings_kb._.127"), risk=("WARNING", "INFO"), doc="tp"),
     "thread_pool.search.queue_size": S(
@@ -290,17 +323,17 @@ KB = {
         up=N_("settings_kb._.142"),
         down=N_("settings_kb._.143"), risk=("WARNING", "INFO"), doc="net"),
     "transport.compress": S(
-        "indexing_data", "dynamic", "cluster", N_("settings_kb._.144"),
+        "indexing_data", "static", "node", N_("settings_kb._.144"),
         change=N_("settings_kb._.145"),
         risk="INFO", doc="net"),
     "bootstrap.memory_lock": S(
         "false", "static", "node", N_("settings_kb._.146"),
         change=N_("settings_kb._.147"),
-        risk=None, doc="misc"),
+        risk=None, doc="memory", basis="source"),
     "node.store.allow_mmap": S(
         "true", "static", "node", N_("settings_kb._.148"),
         change=N_("settings_kb._.149"),
-        risk="INFO", doc="misc"),
+        risk="INFO", doc="store"),
     # ------------------------------------------------------------ index
     "index.refresh_interval": S(
         N_("settings_kb._.150"), "dynamic", "index", N_("settings_kb._.151"),
@@ -339,7 +372,7 @@ KB = {
         "20", "dynamic", "index", N_("settings_kb._.175"), up=N_("settings_kb._.176"), down=N_("settings_kb._.177"),
         risk=("INFO", "INFO"), doc="maplimit"),
     "index.mapping.nested_fields.limit": S(
-        "50", "dynamic", "index", N_("settings_kb._.178"),
+        N_("settings_kb.nested_default"), "dynamic", "index", N_("settings_kb._.178"),
         up=N_("settings_kb._.179"), down=N_("settings_kb._.180"), risk=("WARNING", "INFO"),
         doc="maplimit"),
     "index.mapping.nested_objects.limit": S(
@@ -349,32 +382,32 @@ KB = {
     "index.unassigned.node_left.delayed_timeout": S(
         "1m", "dynamic", "index", N_("settings_kb._.184"),
         up=N_("settings_kb._.185"),
-        down=N_("settings_kb._.186"), risk=("INFO", "WARNING"), doc="index"),
+        down=N_("settings_kb._.186"), risk=("INFO", "WARNING"), doc="delayed"),
     "index.codec": S(
         "default(LZ4)", "static", "index", N_("settings_kb._.187"),
         change=N_("settings_kb._.188"),
         risk="INFO", doc="index"),
     "index.routing.allocation.total_shards_per_node": S(
         "-1", "dynamic", "index", N_("settings_kb._.189"),
-        down=N_("settings_kb._.190"), risk=(None, "WARNING"), doc="alloc"),
+        down=N_("settings_kb._.190"), risk=(None, "WARNING"), doc="total_shards"),
     "index.search.idle.after": S(
         "30s", "dynamic", "index", N_("settings_kb._.191"),
         up=N_("settings_kb._.192"), down=N_("settings_kb._.193"),
         risk=("INFO", "INFO"), doc="index"),
     "index.requests.cache.enable": S(
         "true", "dynamic", "index", N_("settings_kb._.194"), change=N_("settings_kb._.195"),
-        risk="INFO", doc="qcache"),
+        risk="INFO", doc="reqcache"),
     "index.queries.cache.enabled": S(
         "true", "static", "index", N_("settings_kb._.196"), change=N_("settings_kb._.197"),
         risk="INFO", doc="qcache"),
     "index.merge.policy.max_merged_segment": S(
         "5gb", "dynamic", "index", N_("settings_kb._.198"),
         up=N_("settings_kb._.199"),
-        down=N_("settings_kb._.200"), risk=("INFO", "INFO"), doc="merge"),
+        down=N_("settings_kb._.200"), risk=("INFO", "INFO"), doc="merge", basis="source"),
     "index.merge.policy.segments_per_tier": S(
         "10", "dynamic", "index", N_("settings_kb._.201"),
         up=N_("settings_kb._.202"), down=N_("settings_kb._.203"),
-        risk=("INFO", "INFO"), doc="merge"),
+        risk=("INFO", "INFO"), doc="merge", basis="source"),
     "index.highlight.max_analyzed_offset": S(
         "1000000", "dynamic", "index", N_("settings_kb._.204"),
         up=N_("settings_kb._.205"), down=N_("settings_kb._.206"),
@@ -394,19 +427,19 @@ KB = {
         down=N_("settings_kb._.214"), risk=("INFO", "INFO"), doc="index"),
     "index.max_refresh_listeners": S(
         "1000", "dynamic", "index", N_("settings_kb._.217"), up=N_("settings_kb._.218"),
-        down=N_("settings_kb._.219"), risk=("INFO", "INFO"), doc="index"),
+        down=N_("settings_kb._.219"), risk=("INFO", "INFO"), doc="index", basis="source"),
     "index.auto_expand_replicas": S(
         "false", "dynamic", "index", N_("settings_kb._.220"),
         change=N_("settings_kb._.221"),
         risk="INFO", doc="index"),
     "index.blocks.write": S("false", "dynamic", "index", N_("settings_kb._.222"), change=N_("settings_kb._.223"),
-                            risk="WARNING", doc="index"),
+                            risk="WARNING", doc="blocks"),
     "index.blocks.read_only": S("false", "dynamic", "index", N_("settings_kb._.224"), change=N_("settings_kb._.225"),
-                                risk="WARNING", doc="index"),
+                                risk="WARNING", doc="blocks"),
     "index.blocks.read_only_allow_delete": S(
         "false", "dynamic", "index", N_("settings_kb._.226"),
         change=N_("settings_kb._.227"),
-        risk="WARNING", doc="index"),
+        risk="WARNING", doc="blocks"),
 }
 
 # Values treated as equal to the default (including markers used by deployment types)
@@ -486,15 +519,66 @@ AUTO_DEFAULT = ("thread_pool.write.size", "thread_pool.search.size", "thread_poo
 UNBOUNDED = ("-1", "-1b", "unbounded")
 
 
-def compare(key, value, es_default=None):
+_GIB = 1024 ** 3
+
+
+def _recovery_default(node):
+    """indices.recovery.max_bytes_per_sec default of a node (RecoverySettings): 40mb, except on dedicated cold/frozen nodes,
+    where it grows with total memory (40/60/90/125/250mb at <=4/8/16/32GB/above)."""
+    data = [r for r in (node.roles or []) if r.startswith("data")]
+    if not data or any(r not in ("data_cold", "data_frozen") for r in data):
+        return "40mb"
+    ram = node.ram_total or 0
+    for limit, val in ((4, "40mb"), (8, "60mb"), (16, "90mb"), (32, "125mb")):
+        if ram <= limit * _GIB:
+            return val
+    return "250mb"
+
+
+def default_for(key, ctx=None, node=None, index=None):
+    """Default that depends on the version, the node or the index, or None to use the KB value.
+
+    thread_pool.write.queue_size: max(10000, allocated processors x 750) from 9.2 (10000 before).
+    index.mapping.nested_fields.limit: 100 for indices created on index version 9_050_0_00 (9.3) or later, 50 before.
+    indices.breaker.total.limit: 95% with use_real_memory (default), 70% when a node turns it off.
+    indices.recovery.max_bytes_per_sec: per node role and memory (see _recovery_default).
+    All taken from the Elasticsearch source of the matching versions.
+    """
+    try:
+        if key == "thread_pool.write.queue_size" and ctx is not None and node is not None:
+            if ctx.version_tuple >= (9, 2, 0):
+                alloc = int(node.info.get("os", {}).get("allocated_processors") or node.processors or 0)
+                return str(max(10000, alloc * 750))
+            return "10000"
+        if key == "index.mapping.nested_fields.limit" and ctx is not None and index is not None:
+            created = ctx.index_setting(index, "index.version.created")
+            if created is not None:
+                return "100" if int(str(created)) >= 9050000 else "50"
+            return None
+        if key == "indices.breaker.total.limit" and ctx is not None:
+            for n in ctx.nodes:
+                if str(n.setting("indices.breaker.total.use_real_memory", "true")).lower() == "false":
+                    return "70%"
+            return "95%"
+        if key == "indices.recovery.max_bytes_per_sec" and node is not None:
+            return _recovery_default(node)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return None
+
+
+def compare(key, value, es_default=None, default=None):
     """(changed, direction, spec, default_used, default_source)
 
     direction: "up" | "down" | "change" | None
     default_source: "official docs" | "bundle (reported by ES)" | "not registered"
+    default: a context-dependent default from default_for(), used instead of the KB value when given.
     """
     spec = lookup(key)
     if spec is not None:
-        default, source = spec["default"], T("settings_kb.compare.01")
+        if default is None:
+            default = spec["default"]
+        source = T("settings_kb.compare.04") if spec.get("basis") == "source" else T("settings_kb.compare.01")
     elif es_default is not None:
         default, source = es_default, T("settings_kb.compare.02")
     else:

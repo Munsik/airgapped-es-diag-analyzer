@@ -53,6 +53,11 @@ class _FakeCtx(object):
     def watermark(self, kind):
         return self._s.get("cluster.routing.allocation.disk.watermark." + kind)
 
+    def setting_source(self, key):
+        return "default"           # every value here plays the role of the defaults section
+
+    version_tuple = (9, 4, 0)
+
 
 def test_units():
     check("parse_bytes 1.5tb", parse_bytes("1.5tb") == int(1.5 * TB))
@@ -124,8 +129,8 @@ def test_bundle(path):
     check("ECH bundle: initial_master_nodes is downgraded to info",
           all(f.severity == "INFO" for f in r.findings if f.id == "CFG-005"))
     check("docker install: CFG-002 does not apply", "CFG-002" not in ids)
-    check("logsdb/time_series indices are excluded from the codec finding",
-          not any(f.id == "DISK-006" and any("logsdb" in str(row) or "time_series" in str(row)
+    check("logsdb indices are excluded from the codec finding",
+          not any(f.id == "DISK-006" and any("logsdb" in str(row)
                                              for row in (f.evidence or {}).get("rows", []))
                   for f in r.findings))
 

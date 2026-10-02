@@ -26,6 +26,14 @@ D_SEARCH = ("Tune for search speed",
             "https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/search-speed")
 D_DISK = ("Tune for disk usage",
           "https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/disk-usage")
+D_SOURCE = (N_("rules.guidance._.source"),
+            "https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/mapping-source-field")
+D_PAGINATE = ("Paginate search results",
+              "https://www.elastic.co/docs/reference/elasticsearch/rest-apis/paginate-search-results")
+D_INDEX_MODULES = ("Index modules (index.max_result_window)",
+                   "https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules")
+D_BOOT = ("Bootstrap checks",
+          "https://www.elastic.co/docs/deploy-manage/deploy/self-managed/bootstrap-checks")
 D_GEN = ("General recommendations",
          "https://www.elastic.co/docs/deploy-manage/production-guidance/general-recommendations")
 D_KNN = ("Tune approximate kNN search",
@@ -163,7 +171,7 @@ def r_discovery(ctx):
             "CFG-006", CFG, sev, T("rules.guidance.r_discovery.09"),
             observed=T("rules.guidance.r_discovery.10") % ", ".join(dev_mode),
             impact=T("rules.guidance.r_discovery.11"),
-            recommend=rec, refs=[D_SETTINGS], source="nodes.json (transport_address)"))
+            recommend=rec, refs=[D_SETTINGS, D_BOOT], source="nodes.json (transport_address)"))
     return out
 
 
@@ -419,6 +427,8 @@ def r_logsdb_adoption(ctx):
     Official: from 9.0, logsdb is set automatically on new logs-*-* data streams. Data streams that existed before an
     upgrade from 8.x, including integration and APM streams, are not switched. Data streams set to time_series are skipped,
     and so are bundles without settings.json and data_stream.json index_mode, where the mode cannot be determined.
+    The switch is cluster.logsdb.enabled: it defaults to false when logs data existed before 9.0 (logsdb.prior_logs_usage),
+    and while it is false even new logs-*-* indices stay standard. Its value is shown when the bundle reports it.
     """
     if ctx.version_tuple < (9, 0, 0):
         return []
@@ -442,9 +452,14 @@ def r_logsdb_adoption(ctx):
     if not rows:
         return []
     rows.sort()
+    enabled = ctx.setting("cluster.logsdb.enabled")
+    prior = ctx.setting("logsdb.prior_logs_usage")
+    obs = T("rules.guidance.r_logsdb_adoption.02") % (ctx.version, len(rows))
+    if enabled is not None:
+        obs += T("rules.guidance.r_logsdb_adoption.06") % (str(enabled).lower(), str(prior).lower() if prior is not None else "-")
     return [Finding(
         "IDX-013", SIZ, Severity.INFO, T("rules.guidance.r_logsdb_adoption.01"),
-        observed=T("rules.guidance.r_logsdb_adoption.02") % (ctx.version, len(rows)),
+        observed=obs,
         impact=T("rules.guidance.r_logsdb_adoption.03"),
         recommend=T("rules.guidance.r_logsdb_adoption.04"),
         evidence=table(["data stream", "write index", "index.mode", T("rules.guidance.r_logsdb_adoption.05"), "template"],
@@ -485,7 +500,8 @@ def r_master_heap_per_index(ctx):
 def r_mapping_heap_overhead(ctx):
     """Estimated heap needed per data node = cluster state mapping size (deduplicated) + node field overhead + 0.5GB (official formula).
 
-    Estimate / heap_max >= mapping_heap_pct_warn → Warning, below → OK. Dedicated master and ML nodes are not part of the calculation.
+    The official check is that the estimate fits in the heap: estimate >= heap_max → Warning. Estimate / heap_max >= mapping_heap_pct_warn
+    (tool threshold) → Info, below → OK. Dedicated master and ML nodes are not part of the calculation.
     """
     dedup = dig(ctx.cluster_stats, "indices", "mappings", "total_deduplicated_mapping_size_in_bytes")
     rows, bad = [], []
@@ -500,7 +516,7 @@ def r_mapping_heap_overhead(ctx):
         rows.append([n.name, fmt_bytes(dedup), fmt_bytes(over), fmt_bytes(need), fmt_bytes(heap),
                      "%.0f%%" % p if p else "-"])
         if p and p >= ctx.t["mapping_heap_pct_warn"]:
-            bad.append(n.name)
+            bad.append((n.name, p))
     if not rows:
         return []
     ev = table(["node", T("rules.guidance.r_mapping_heap_overhead.01"), T("rules.guidance.r_mapping_heap_overhead.02"), T("rules.guidance.r_mapping_heap_overhead.03"), "heap", T("rules.guidance.r_mapping_heap_overhead.04")], rows)
@@ -509,10 +525,11 @@ def r_mapping_heap_overhead(ctx):
                         observed=T("rules.guidance.r_mapping_heap_overhead.06")
                                  % ctx.t["mapping_heap_pct_warn"],
                         evidence=ev, refs=[D_SHARDS], source="cluster_stats.json / nodes_stats.json")]
+    over = [b for b in bad if b[1] >= 100]
     return [Finding(
-        "SHD-010", SIZ, Severity.WARNING, T("rules.guidance.r_mapping_heap_overhead.07"),
-        observed=T("rules.guidance.r_mapping_heap_overhead.08")
-                 % (ctx.t["mapping_heap_pct_warn"], ", ".join(bad)),
+        "SHD-010", SIZ, Severity.WARNING if over else Severity.INFO, T("rules.guidance.r_mapping_heap_overhead.07"),
+        observed=(T("rules.guidance.r_mapping_heap_overhead.11") % ", ".join(b[0] for b in over)) if over else
+                 T("rules.guidance.r_mapping_heap_overhead.08") % (ctx.t["mapping_heap_pct_warn"], ", ".join(b[0] for b in bad)),
         impact=T("rules.guidance.r_mapping_heap_overhead.09"),
         recommend=T("rules.guidance.r_mapping_heap_overhead.10"),
         evidence=ev, refs=[D_SHARDS], source="cluster_stats.json / nodes_stats.json")]
@@ -576,7 +593,7 @@ def r_index_buffer(ctx):
     """Indexing buffer per shard.
 
     indices.memory.index_buffer_size (default 10% of heap) is shared by the 'recently written (active)' shards.
-    A shard with no writes for 5 minutes or more becomes inactive and gives its buffer back. The bundle cannot show directly which shards are active,
+    A shard with no writes for 5 minutes or more (indices.memory.shard_inactive_time, from the source) becomes inactive and gives its buffer back. The bundle cannot show directly which shards are active,
     so only shards that are confirmed write targets (data stream write indices plus indices that were indexing at collection time) are counted.
     """
     write_idx = set()
@@ -727,7 +744,11 @@ def r_remote_storage(ctx):
 # ============================================================
 
 def r_codec(ctx):
-    """User indices in standard mode with primary store >= codec_check_min_bytes and index.codec left at default (not set) → Info. logsdb and time_series are excluded because best_compression is their default."""
+    """User indices with primary store >= codec_check_min_bytes and index.codec left at default (not set) → Info.
+
+    Only logsdb is excluded: it is the only index mode whose default codec is best_compression (official logsdb docs, and IndexMode in
+    the Elasticsearch source). standard and time_series indices default to the LZ4 codec.
+    """
     rows = []
     for name, st in ctx.indices_stats.items():
         if ctx.is_system_index(name):
@@ -735,8 +756,8 @@ def r_codec(ctx):
         size = num(st, "primaries", "store", "size_in_bytes")
         if size < ctx.t["codec_check_min_bytes"]:
             continue
-        mode = str(ctx.index_setting(name, "index.mode") or "standard").lower()
-        if mode in ("logsdb", "time_series"):
+        mode = str(ctx.index_mode(name) or "standard").lower()
+        if mode == "logsdb":
             continue        # best_compression is the default for this index mode
         codec = ctx.index_setting(name, "index.codec")
         if codec is None or str(codec).lower() == "default":
@@ -756,30 +777,47 @@ def r_codec(ctx):
 
 
 def r_source_mode(ctx):
-    """index.mapping.source.mode=disabled → Warning. Any other mode (synthetic, etc.) → Info."""
-    rows = []
+    """_source disabled → Warning; synthetic _source → Info (DISK-007).
+
+    Disabled is found two ways: the mapping parameter "_source": {"enabled": false} in mapping.json (the documented way), and
+    index.mapping.source.mode=disabled in settings.json. index.mapping.source.mode=synthetic is listed as Info. stored is the
+    default and is not listed. System indices are skipped.
+    """
+    disabled, synthetic = [], []
+    seen = set()
+    for name, summ in items(ctx.mapping_summary):
+        if ctx.is_system_index(name) or not isinstance(summ, dict):
+            continue
+        if summ.get("source_disabled"):
+            disabled.append([name, "_source.enabled: false"])
+            seen.add(name)
     for name in ctx.index_settings.keys():
-        mode = ctx.index_setting(name, "index.mapping.source.mode")
-        if mode:
-            rows.append([name, str(mode)])
-    if not rows:
-        return []
-    disabled = [r for r in rows if str(r[1]).lower() == "disabled"]
-    if not disabled:
+        if ctx.is_system_index(name):
+            continue
+        mode = str(ctx.index_setting(name, "index.mapping.source.mode") or "").lower()
+        if mode == "disabled" and name not in seen:
+            disabled.append([name, "index.mapping.source.mode: disabled"])
+        elif mode == "synthetic":
+            synthetic.append([name, "index.mapping.source.mode: synthetic"])
+    if disabled:
+        disabled.sort()
+        return [Finding(
+            "DISK-007", SIZ, Severity.WARNING, T("rules.guidance.r_source_mode.05"),
+            observed=T("rules.guidance.r_source_mode.06") % len(disabled),
+            impact=T("rules.guidance.r_source_mode.07"),
+            recommend=T("rules.guidance.r_source_mode.08"),
+            evidence=table(["index", T("rules.guidance.r_source_mode.09")], disabled[: ctx.t["top_n"]]),
+            refs=[D_DISK, D_SOURCE], source="mapping.json / settings.json")]
+    if synthetic:
+        synthetic.sort()
         return [Finding(
             "DISK-007", SIZ, Severity.INFO, T("rules.guidance.r_source_mode.01"),
-            observed=T("rules.guidance.r_source_mode.02") % len(rows),
+            observed=T("rules.guidance.r_source_mode.02") % len(synthetic),
             impact=T("rules.guidance.r_source_mode.03"),
             recommend=T("rules.guidance.r_source_mode.04"),
-            evidence=table(["index", "source.mode"], rows[: ctx.t["top_n"]]),
-            refs=[D_DISK], source="settings.json")]
-    return [Finding(
-        "DISK-007", SIZ, Severity.WARNING, T("rules.guidance.r_source_mode.05"),
-        observed=T("rules.guidance.r_source_mode.06") % len(disabled),
-        impact=T("rules.guidance.r_source_mode.07"),
-        recommend=T("rules.guidance.r_source_mode.08"),
-        evidence=table(["index", "source.mode"], disabled[: ctx.t["top_n"]]),
-        refs=[D_DISK], source="settings.json")]
+            evidence=table(["index", T("rules.guidance.r_source_mode.09")], synthetic[: ctx.t["top_n"]]),
+            refs=[D_DISK, D_SOURCE], source="settings.json")]
+    return []
 
 
 def r_dynamic_mapping(ctx):
@@ -903,7 +941,8 @@ def r_vector_memory(ctx):
 def r_vector_quantization(ctx):
     """Whether high-dimension float vectors are quantized (rated after merging components).
 
-    From 8.14, a dense_vector without index_options gets quantized HNSW by default.
+    From 8.14, a float dense_vector without index_options gets quantized HNSW by default (int8_hnsw; bbq_hnsw for 384 dimensions
+    or more from 9.1; bbq_disk from 9.4 when the license allows it). byte and bit vectors are not quantized and are not rated.
     So 'not set' is not treated as a problem on 8.14 or later; only an explicit non-quantized type (hnsw/flat) is rated.
     """
     quant_default = ctx.version_tuple >= (8, 14, 0)
@@ -1012,7 +1051,7 @@ def r_large_result_sets(ctx):
         impact=T("rules.guidance.r_large_result_sets.03"),
         recommend=T("rules.guidance.r_large_result_sets.04"),
         evidence=table(["index", "max_result_window"], rows[: ctx.t["top_n"]]),
-        refs=[D_GEN], source="settings.json")]
+        refs=[D_INDEX_MODULES, D_PAGINATE], source="settings.json")]
 
 
 def r_large_documents(ctx):

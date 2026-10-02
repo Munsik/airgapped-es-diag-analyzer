@@ -39,7 +39,7 @@ def count_fields(props):
 
 
 def summarize(pairs):
-    """Takes an (index, body) iterator and builds {index: {total, nested, fielddata, vectors, runtime}}."""
+    """Takes an (index, body) iterator and builds {index: {total, nested, fielddata, vectors, runtime, source_disabled}}."""
     out = {}
     for name, body in pairs:
         m = body.get("mappings") if isinstance(body, dict) else None
@@ -47,5 +47,7 @@ def summarize(pairs):
             continue
         total, nested, fd, vec = count_fields(m.get("properties"))
         rt = len(items(m.get("runtime")))
-        out[name] = {"total": total + rt, "nested": nested, "fielddata": fd, "vectors": vec, "runtime": rt}
+        src = m.get("_source") if isinstance(m.get("_source"), dict) else {}
+        out[name] = {"total": total + rt, "nested": nested, "fielddata": fd, "vectors": vec, "runtime": rt,
+                     "source_disabled": str(src.get("enabled")).lower() == "false"}
     return out

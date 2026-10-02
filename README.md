@@ -175,7 +175,7 @@ Logs show when an event happened, so collect in `local` or `remote` mode when yo
 | Item | Value |
 | --- | --- |
 | Elasticsearch version used as the baseline | **9.4** |
-| Date checked against the official docs | 2026-09 |
+| Date checked against the official docs | 2026-10 |
 | Verified on real bundles | 9.4.4 (ECH, 3 nodes, single tier) and 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), both in api mode |
 | Verified collection modes | **api** (the two bundles above) and **local** (self-managed ES 8.19.21 single node on Rocky Linux 9, collected with diagnostics 9.4.1). **Remote and multi-node local are not verified** |
 | Large bundle check | 9.5.3 bundle (2,494 indices, cluster\_state 190MB, mapping 178MB): analysis in 7 seconds, peak memory about 0.9GB |
@@ -214,9 +214,9 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 
 | Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
-| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 69 |
+| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 68 |
 | Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 56 |
-| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 57 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 58 |
 | Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-013 |
 
 When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
@@ -409,7 +409,7 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 132 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 136 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
@@ -452,14 +452,15 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 929 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 938 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
-| `tests/drive_branches.py` | Forces every finding branch to run with 58 scenarios and checks the severity too | 58 passed, 0 finding branches not run |
+| `tests/drive_branches.py` | Forces every finding branch to run with 61 scenarios and checks the severity too | 61 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
 | `tools/gen_rules_doc.py --check` | Consistency of thresholds and docstrings | 0 problems |
 | `tests/test_local_mode.py` | Local and remote mode handling (false positives from logs/, gz, double counting, syscalls/ branches, collection failure messages) on synthetic data. No external bundle needed | 0 failures |
 | `tests/test_logsdb.py` | Every branch of the document limit, logsdb and force merge findings (SHD-008, 013, 014, 015, IDX-013, ILM-007, 008, 009) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_write_path.py` | Every branch of the write path and operations findings (PERF-012, OS-007, SHD-016, IDX-014, 015, CLU-017, MAP-004, DIF-013) on synthetic data, in both languages. No external bundle needed | 0 failures |
+| `tests/test_doc_audit.py` | Fixes from the official documentation audit: JVM-002 oops flag, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom conditions, development mode, and context-dependent settings defaults, on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_bottleneck_cost.py` | Bottleneck summary, recently restarted nodes left out of comparisons (HOT-001, 002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001 and COST-001 to 004 on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |
@@ -524,6 +525,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 │   ├── test_logsdb.py          # document limit, logsdb and force merge checks (synthetic data)
 │   ├── test_write_path.py      # write path and operations checks (synthetic data)
 │   ├── test_bottleneck_cost.py # bottleneck summary and storage cost checks (synthetic data)
+│   ├── test_doc_audit.py       # fixes from the official documentation audit (synthetic data)
 │   └── make_broken_bundle.py   # create a bundle with injected failures
 ├── docs/STYLE.md              # style and glossary
 ├── README.md / README.ko.md

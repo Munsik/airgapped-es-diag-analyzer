@@ -8,6 +8,8 @@ from ..model import Finding, Severity, table
 from ..util import dig, fmt_bytes, fmt_ms, fmt_num, parse_bytes, pct, num
 
 CAT = "shard"
+DOC_INDEX_MODULES = ("Index modules (refresh_interval, search idle)",
+                     "https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules")
 DOC_MERGE = ("Merge settings", "https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge")
 DOC_TRANSLOG = ("Translog settings", "https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog")
 DOC_SIZE = (N_("rules.shards._.01"),
@@ -41,8 +43,8 @@ def _total_store(ctx, index):
 def r_shard_density(ctx):
     """Shard density per node.
 
-    '20 shards per 1GB of heap' is the official guideline for versions before 8.3. From 8.3 the heap overhead per shard dropped sharply,
-    and the official docs retired this guideline in favor of the 'field mapper heap estimate (SHD-010)' and cluster.max_shards_per_node (CLU-015).
+    '20 shards per 1GB of heap' is the official guideline for versions before 8.3. From 8.3 the heap overhead per shard dropped sharply
+    (Elastic blog), and the docs replaced the guideline during 8.3.x with the 'field mapper heap estimate (SHD-010)' and cluster.max_shards_per_node (CLU-015).
     So on 8.3 or later it is not rated and only the current numbers are shown.
     """
     counts = collections.Counter()
@@ -428,7 +430,7 @@ def r_refresh_interval(ctx):
         recommend=T("rules.shards.r_refresh_interval.04"),
         evidence=table(["index", "refresh_interval", T("rules.shards.r_refresh_interval.05"), T("rules.shards.r_refresh_interval.06"), T("rules.shards.r_refresh_interval.07")],
                        rows[: ctx.t["top_n"]]),
-        source="settings.json / indices_stats.json")]
+        refs=[DOC_INDEX_MODULES], source="settings.json / indices_stats.json")]
 
 
 def r_read_only_blocks(ctx):

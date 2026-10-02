@@ -5,7 +5,7 @@
 
 ## [0.14.0] - 2026-10-02
 
-모든 리포트 맨 위에 병목 요약을 넣고, 최근 재시작한 노드를 노드 간 비교에서 빼고, 네트워크 스토리지 위의 frozen shared cache 와 스토리지 비용 판정을 추가했습니다. 공식 수치가 없는 임계값은 모두 `[도구]` 로 표기하고 `--thresholds` 로 바꿀 수 있습니다.
+모든 리포트 맨 위에 병목 요약을 넣고, 최근 재시작한 노드를 노드 간 비교에서 빼고, 네트워크 스토리지 위의 frozen shared cache 와 스토리지 비용 판정을 추가했습니다. 공식 문서와 전체를 다시 대조해 고친 내용도 담았습니다. 공식 수치가 없는 임계값은 모두 `[도구]` 로 표기하고 `--thresholds` 로 바꿀 수 있습니다.
 
 ### 추가
 
@@ -29,6 +29,28 @@
 - ING-001: 실패가 하나라도 있으면 주의 → 파이프라인별로 노드 전체 실패를 합해 실패율을 계산. 1% 이상이면 주의, 아니면 참고. 근거 구분은 도구 판단으로 바뀜
 - 콘솔: 한글을 두 칸으로 계산해 열을 맞춤
 - 단일 번들 판정 룰 120개, 두 번들 비교 룰 10개(판정 ID 182개 + 비교 DIF-001~013)
+
+### 공식 문서 재대조
+
+공식 기준으로 표기한 판정, 버전 분기, 설정 지식 베이스의 기본값을 현재 공식 문서(9.x)와 다시 대조했습니다. 문서에 없거나 버전마다 다른 부분은 Elasticsearch 소스로 확인했습니다.
+
+- CLU-013: transient 설정을 "7.16 부터 deprecated" 로 적었음 → "7.16 부터 권장하지 않음"(7.16 마이그레이션 가이드는 deprecated 가 아니라고 함)
+- JVM-002: 32GiB 를 공식 경계로 표기했음 → JVM 이 보고한 플래그(`using_compressed_ordinary_object_pointers`)로 판정. false 면 주의, true 면 크기와 관계없이 정상. 플래그가 없을 때만 30GB 이상 주의, 26GB 이상 참고(공식: 대부분 26GB 는 안전, 약 30GB 까지 가능)
+- DISK-006: time_series 를 "기본 best_compression" 이라 제외했음 → 기본 codec 이 best_compression 인 것은 logsdb 뿐(Elasticsearch 소스 IndexMode)이라 time_series 도 점검
+- DISK-007: `index.mapping.source.mode` 만 봤음 → 문서화된 매핑 파라미터 `"_source": {"enabled": false}` 도 mapping.json 에서 찾음. 기본값인 `stored` 는 더 이상 나열하지 않음
+- IDX-013: `cluster.logsdb.enabled` 와 `logsdb.prior_logs_usage` 를 표시. 9.0 이전부터 logs 데이터가 있던 클러스터는 `cluster.logsdb.enabled` 기본값이 false 라 새 logs-*-* 인덱스도 standard 로 만들어짐. 권고에 이 설정을 켜는 방법을 추가하고, 필요한 구독이 없으면 원래 _source 를 저장한다고 안내
+- CLU-015: closed 인덱스 샤드까지 셌음 → 공식 계산은 open 인덱스만 셈(closed 는 cat indices 로 판단). frozen 샤드는 노드가 아니라 인덱스 종류(partial 마운트)로 구분. 치명 기준(95%)은 도구 임계값으로 표기
+- CLU-007: 데이터 노드 6대부터 전용 마스터 권고 → 10대부터(`dedicated_master_data_nodes`, 현장 기준). 공식 문서는 "노드가 몇 대를 넘으면" 이라고만 함
+- SHD-010: heap 의 50% 에서 주의 → 추정치가 heap 보다 크면 주의(공식 기준), 50% 부터는 참고(도구 판단)
+- MAP-006: nested 기본 한도를 50 으로 봤음 → 9.3 이후 만든 인덱스는 100, 그 전은 50(인덱스 버전 기준). 80% 기준은 도구 임계값으로 표기
+- 디스크 워터마크: defaults 의 기본 max_headroom(200/150/100GB)을 그대로 썼음 → 8.5 부터, 그리고 워터마크를 직접 지정하지 않았을 때만 적용(공식)
+- SYS-001, SYS-003: 모든 노드가 개발 모드(loopback transport 또는 single-node discovery)면 bootstrap check 가 적용되지 않으므로 치명을 주의로 낮춤
+- HOT-001: 공식 문서가 핫스팟 지표로 쓰는 write·search 큐를 함께 표시
+- CLU-019: 근거 구분을 공식 기준에서 도구 판단으로 변경(공식 문서에서 awareness 는 선택 사항)
+- 설정 지식 베이스: `transport.compress` 는 static·노드 설정. 상황에 따라 달라지는 기본값을 계산: `thread_pool.write.queue_size` 는 9.2 부터 max(10000, 프로세서 수 x 750), `index.mapping.nested_fields.limit` 은 인덱스 버전별, `indices.breaker.total.limit` 는 use_real_memory 가 false 면 70%, `indices.recovery.max_bytes_per_sec` 는 전용 cold/frozen 노드에서 역할과 메모리별. 소스에만 있는 기본값은 따로 표기(`search.low_level_cancellation`, merge policy, `index.max_refresh_listeners`, `bootstrap.memory_lock`). `xpack.monitoring.collection.enabled` 는 deprecated 로 표기. 설정 23개의 참고 링크를 실제로 설명하는 페이지로 수정
+- 참고 링크: JVM 판정은 JVM settings, GEN-001 은 index modules 와 페이지네이션 문서로. IDX-007, CFG-006, TPL-001, CLU-021 에 참고 문서 추가
+- 문구: VEC-002(float 벡터만 해당, 9.1 부터 bbq_hnsw, 9.4 부터 라이선스에 따라 bbq_disk), SHD-001(8.3 경계 근거는 Elastic 블로그), SHD-011(ILM 은 기본으로 빈 인덱스를 롤오버하지 않음), SYS-001(1048576 권고는 8.15~8.17 문서부터), PERF-004(5분 비활성 기준은 소스), CLU-021(노드가 돌아오지 않을 때는 0 도 유효)
+- `tests/test_doc_audit.py`, `tests/drive_branches.py` 시나리오 3개 추가. 임계값 4개: `dedicated_master_data_nodes`, `heap_oops_safe_bytes`, `max_shards_per_node_crit_pct`, `nested_fields_near_limit_pct`
 
 ### 검토했지만 넣지 않은 것
 

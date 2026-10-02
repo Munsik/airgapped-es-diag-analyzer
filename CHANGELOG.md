@@ -7,7 +7,7 @@ Each entry is written as "previous behavior → current behavior (reason)". Use 
 
 ## [0.14.0] - 2026-10-02
 
-A bottleneck summary at the top of every report, recently restarted nodes left out of node comparisons, frozen shared cache on network storage, and storage cost findings. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.
+A bottleneck summary at the top of every report, recently restarted nodes left out of node comparisons, frozen shared cache on network storage, storage cost findings, and fixes from a full check against the official docs. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.
 
 ### Added
 
@@ -31,6 +31,28 @@ A bottleneck summary at the top of every report, recently restarted nodes left o
 - ING-001: any failure was a Warning → failures are summed per pipeline across nodes with a failure ratio. 1% or more → Warning, otherwise Info. The basis is now a tool threshold
 - Console: column alignment counts Hangul as two columns
 - 120 single-bundle rules and 10 bundle-comparison rules (182 finding IDs plus comparison DIF-001~013)
+
+### Official documentation audit
+
+Every finding labeled Official, every version gate and the defaults in the settings knowledge base were checked again against the current docs (9.x), and against the Elasticsearch source where the docs are silent or disagree between versions.
+
+- CLU-013: transient settings were called "deprecated since 7.16" → "no longer recommended since 7.16" (the 7.16 migration guide says they are not deprecated)
+- JVM-002: 32GiB was labeled the official boundary → the flag the JVM reports (`using_compressed_ordinary_object_pointers`) decides: false → Warning, true → no finding at any size. Only without the flag: 30GB or more → Warning, 26GB or more → Info (the docs: 26GB is safe on most systems, up to about 30GB)
+- DISK-006: time_series was skipped as "best_compression by default" → only logsdb defaults to best_compression (Elasticsearch source, IndexMode), so time_series indices are checked too
+- DISK-007: only `index.mapping.source.mode` was read → the documented mapping parameter `"_source": {"enabled": false}` is found in mapping.json as well. `stored` (the default) is no longer listed
+- IDX-013: shows `cluster.logsdb.enabled` and `logsdb.prior_logs_usage`. On a cluster with logs data from before 9.0, `cluster.logsdb.enabled` defaults to false and even new logs-*-* indices stay standard. The recommendation now offers turning it on, and says that without the required subscription logsdb keeps the original _source
+- CLU-015: shards of closed indices were counted → the official count covers open indices only (closed indices come from cat indices). Frozen shards are now told apart by index type (partial mount) instead of by node. The Critical line (95%) is a labeled tool threshold
+- CLU-007: dedicated masters were expected from 6 data nodes → from 10 data nodes (`dedicated_master_data_nodes`, field guideline). The docs only say "more than a handful"
+- SHD-010: Warning at 50% of the heap → Warning when the estimate is larger than the heap (the official check), Info from 50% (tool threshold)
+- MAP-006: the default nested limit was 50 → 100 for indices created on 9.3 or later, 50 before (by index version). The 80% line is a labeled tool threshold
+- Disk watermarks: the default max_headroom (200/150/100GB) from the defaults section was used as is → it applies only from 8.5 and only while the watermark itself is not set explicitly (official)
+- SYS-001, SYS-003: when every node runs in development mode (loopback transport or single-node discovery), bootstrap checks are not enforced, so Critical drops to Warning
+- HOT-001: write and search queues are shown, as the docs use them as a hot spot indicator
+- CLU-019: basis changed from Official to Tool threshold (awareness is an option in the docs, not a requirement)
+- Settings knowledge base: `transport.compress` is static and node scoped. Defaults that depend on the context are computed: `thread_pool.write.queue_size` max(10000, processors x 750) from 9.2, `index.mapping.nested_fields.limit` by index version, `indices.breaker.total.limit` 70% when use_real_memory is false, `indices.recovery.max_bytes_per_sec` by role and memory on dedicated cold/frozen nodes. Defaults found only in the source are labeled (`search.low_level_cancellation`, merge policy, `index.max_refresh_listeners`, `bootstrap.memory_lock`). `xpack.monitoring.collection.enabled` is marked deprecated. 23 settings point to the page that documents them
+- Reference links: JVM findings point to JVM settings; GEN-001 to index modules and pagination; IDX-007, CFG-006, TPL-001 and CLU-021 gained references
+- Wording: VEC-002 (float vectors only; bbq_hnsw from 9.1, bbq_disk from 9.4 with a license), SHD-001 (the 8.3 boundary comes from the Elastic blog), SHD-011 (ILM does not roll over empty indices by default), SYS-001 (1048576 recommended since the 8.15 to 8.17 docs), PERF-004 (the 5 minute inactive time is from the source), CLU-021 (0 is valid when a node will not return)
+- `tests/test_doc_audit.py` and 3 more `tests/drive_branches.py` scenarios. 4 thresholds: `dedicated_master_data_nodes`, `heap_oops_safe_bytes`, `max_shards_per_node_crit_pct`, `nested_fields_near_limit_pct`
 
 ### Reviewed but not added
 

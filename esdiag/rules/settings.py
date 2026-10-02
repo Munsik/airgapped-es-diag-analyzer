@@ -11,7 +11,7 @@ import collections
 from ..i18n import T
 from ..model import Finding, Severity, table
 from ..util import items, num
-from ..settings_kb import DOCS, compare, effect_of, lookup, risk_of
+from ..settings_kb import DOCS, compare, default_for, effect_of, lookup, risk_of
 
 CAT = "settings"
 _SEV = {"WARNING": Severity.WARNING, "INFO": Severity.INFO, None: Severity.INFO}
@@ -93,7 +93,7 @@ def r_cluster_setting_changes(ctx):
     rows, sevs, docs, same = [], [], set(), []
     for scope in ("transient", "persistent"):
         for key, val in sorted(_flat(ctx.cluster_settings.get(scope) or {}).items()):
-            changed, direction, spec, default, dsrc = compare(key, val)
+            changed, direction, spec, default, dsrc = compare(key, val, default=default_for(key, ctx))
             if not changed:
                 same.append([scope, key, str(val)])
                 continue
@@ -178,7 +178,7 @@ def r_node_setting_changes(ctx):
             spec = lookup(k)
             if not spec:
                 continue
-            changed, direction, spec, default, _src = compare(k, v)
+            changed, direction, spec, default, _src = compare(k, v, default=default_for(k, ctx, node=n))
             if not changed:
                 continue
             alloc = num(n.info, "os", "allocated_processors") or n.processors
@@ -268,7 +268,7 @@ def r_index_setting_changes(ctx):
             spec = lookup(k)
             if not spec or spec["scope"] != "index":
                 continue
-            changed, direction, spec, default, _src = compare(k, v)
+            changed, direction, spec, default, _src = compare(k, v, default=default_for(k, ctx, index=name))
             if not changed:
                 continue
             key = (k, str(v))

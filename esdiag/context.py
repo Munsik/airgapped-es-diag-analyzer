@@ -523,6 +523,14 @@ class Context(object):
     def is_frozen_only(self, node):
         return self.tier_of(node) == "frozen"
 
+    def dev_mode(self, node):
+        """True when the node runs in development mode: its bound transport address is loopback or discovery.type is
+        single-node. Bootstrap checks are enforced only in production mode (official)."""
+        if str(node.setting("discovery.type") or "") == "single-node":
+            return True
+        ta = str(node.info.get("transport_address") or "")
+        return ta.startswith("127.") or ta.startswith("[::1]") or ta.startswith("localhost")
+
     def recently_restarted(self, node):
         """True when the node has been up for less than node_compare_min_uptime_hours.
 
@@ -563,7 +571,14 @@ class Context(object):
             except ValueError:
                 return None
             need_free = total * (1.0 - ratio)
-            head = self.setting("cluster.routing.allocation.disk.watermark.%s.max_headroom" % kind)
+            hkey = "cluster.routing.allocation.disk.watermark.%s.max_headroom" % kind
+            head = self.setting(hkey)
+            wkey = "cluster.routing.allocation.disk.watermark." + kind
+            if kind != "flood_stage.frozen" and self.setting_source(hkey) == "default":
+                # The default headroom (200/150/100GB) exists from 8.5 and applies only while the watermark itself is not
+                # set explicitly (official). A value from the defaults section is ignored in those cases.
+                if (0, 0, 0) < self.version_tuple < (8, 5, 0) or self.setting_source(wkey) != "default":
+                    head = None
             if head is None and kind == "flood_stage.frozen":
                 head = self.t.get("disk_watermark_flood_frozen_headroom_default")
             head_b = parse_bytes(head) if head not in (None, "-1", -1) else None

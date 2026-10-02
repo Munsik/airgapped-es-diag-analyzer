@@ -10,7 +10,7 @@
 | --- | --- |
 | 도구 버전 | esdiag 0.14.0 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
-| 공식 문서 대조 시점 | 2026-09 |
+| 공식 문서 대조 시점 | 2026-10 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
 | 현장 실행 확인 | 9.5.3 다중 tier 번들로 오탐·미탐 교정, 파일·필드 구조 대조, 대형 번들(cluster_state 190MB·mapping 178MB) 메모리 검증 |
 | 검증된 수집 모드 | api 모드만 검증 — local / remote 모드(서버 로그·OS 명령 결과 포함)는 확인이 필요할 수 있음 |
@@ -134,12 +134,13 @@ Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명,
 | 판정 항목 | CLU-006 마스터 후보 노드 없음 / CLU-007 전용 마스터 노드 부재 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
 | 가능 심각도 | 치명, 주의 |
+| 임계값 | `dedicated_master_data_nodes` = 10 — [도구] 현장 기준: 전용 마스터가 필요해지는 데이터 노드 수 |
 | 필요 입력 | (nodes.json) |
 | 근거 파일 | nodes.json |
 
 **판정 로직**
 
-마스터 후보(roles 에 master 포함, voting_only 포함) 수. 0대 → 치명, 다중 노드인데 1대 → 치명, 2대 → 주의(1대 이탈 시 정족수 상실. 공식: 마스터 후보 2대 이하는 모두 살아 있어야 함). 짝수(4대 이상)는 ES 가 투표 구성에서 1대를 자동 제외하므로 판정하지 않는다(CLU-006). 전용 마스터가 없고 데이터 노드 >= 6대 → 주의(CLU-007).
+마스터 후보(roles 에 master 포함, voting_only 포함) 수. 0대 → 치명, 다중 노드인데 1대 → 치명, 2대 → 주의(1대 이탈 시 정족수 상실. 공식: 마스터 후보 2대 이하는 모두 살아 있어야 함). 짝수(4대 이상)는 ES 가 투표 구성에서 1대를 자동 제외하므로 판정하지 않는다(CLU-006). 전용 마스터가 없고 데이터 노드 >= dedicated_master_data_nodes 대 → 주의(CLU-007). 공식 문서는 노드가 몇 대를 넘으면 전용 마스터가 낫다고만 하며, 대수는 현장 기준이다.
 
 ### CLU-008, CLU-009, CLU-010 — 노드 버전 불일치
 
@@ -170,7 +171,7 @@ Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명,
 
 **판정 로직**
 
-기본값이 아닌(persistent/transient 에 명시된) 클러스터 설정만 판정. allocation.enable != all → 치명, rebalance.enable != all → 주의, disk.threshold_enabled=false → 치명, cluster.blocks.read_only(_allow_delete)=true → 치명, destructive_requires_name=false → 주의(CLU-011). allocation.exclude._name/_ip/_host 값 존재 → 주의(CLU-012). transient 설정 존재 → 참고(CLU-013, 7.16 부터 deprecated). use_adaptive_replica_selection=false → 주의(CLU-014, 기본 true).
+기본값이 아닌(persistent/transient 에 명시된) 클러스터 설정만 판정. allocation.enable != all → 치명, rebalance.enable != all → 주의, disk.threshold_enabled=false → 치명, cluster.blocks.read_only(_allow_delete)=true → 치명, destructive_requires_name=false → 주의(CLU-011). allocation.exclude._name/_ip/_host 값 존재 → 주의(CLU-012). transient 설정 존재 → 참고(CLU-013, 7.16 부터 권장하지 않음). use_adaptive_replica_selection=false → 주의(CLU-014, 기본 true).
 
 ### CLU-015 — 클러스터 샤드 한도 임박
 
@@ -179,14 +180,20 @@ Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명,
 | 함수 | `cluster.r_shard_capacity` |
 | 근거 구분 | 공식 기준 |
 | 가능 심각도 | 치명, 주의 |
-| 임계값 | `max_shards_per_node_headroom_pct_warn` = 80 — [도구] cluster.max_shards_per_node 대비 사용률 |
+| 임계값 | `max_shards_per_node_crit_pct` = 95 — [도구] cluster.max_shards_per_node 대비 치명이 되는 사용률<br>`max_shards_per_node_headroom_pct_warn` = 80 — [도구] cluster.max_shards_per_node 대비 사용률 |
 | 필요 입력 | (cluster_settings.json) 그리고 (cluster_health.json) 그리고 (nodes.json) |
 | 근거 파일 | cluster_health.json / cluster_settings.json |
 | 참고 문서 | [샤드 사이징 가이드](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
 
 **판정 로직**
 
-사용률 = (active + unassigned − frozen 전용 노드의 샤드) / (cluster.max_shards_per_node x frozen 전용을 제외한 데이터 노드 수). >= max_shards_per_node_headroom_pct_warn → 주의, >= 95% → 치명.
+클러스터 샤드 한도 사용률(CLU-015).
+
+공식 계산 방식: cluster.max_shards_per_node 는 frozen 이 아닌 data 노드에 적용되고, open 인덱스의 primary 와 replica 샤드를
+미할당까지 포함해 센다. closed 인덱스는 세지 않고, frozen(partial 마운트) 인덱스는 cluster.max_shards_per_node.frozen 으로
+따로 센다. 사용률 = (active + unassigned - partial 마운트 인덱스 샤드 - closed 인덱스
+샤드) / (cluster.max_shards_per_node x frozen 이 아닌 data 노드 수). closed 인덱스는 cat indices 의 status close 로 판단한다.
+>= max_shards_per_node_headroom_pct_warn → 주의, >= max_shards_per_node_crit_pct → 치명.
 
 ### CLU-016 — dangling 인덱스 존재
 
@@ -229,7 +236,7 @@ dangling 인덱스가 1개 이상이면 주의.
 | --- | --- |
 | 함수 | `cluster.r_zone_balance` |
 | 판정 항목 | CLU-018 가용영역 간 데이터 노드 불균형 / CLU-019 shard allocation awareness 미설정 |
-| 근거 구분 | 공식 기준 / 도구 판단 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의 |
 | 필요 입력 | (nodes.json) 그리고 (cluster_settings.json) |
 | 근거 파일 | cluster_settings.json / nodes.json / nodes.json |
@@ -360,28 +367,34 @@ tier preference 등)는 등록 대상이 아니므로 자연히 제외된다. �
 | 임계값 | `heap_used_pct_crit` = 85 — [도구] 수집 순간 heap 사용률<br>`heap_used_pct_warn` = 75 — [도구] 수집 순간 heap 사용률 |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
-| 참고 문서 | [Heap 크기 설정](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration) |
+| 참고 문서 | [JVM 설정(heap 크기)](https://www.elastic.co/docs/reference/elasticsearch/jvm-settings) |
 
 **판정 로직**
 
 노드별 jvm.mem.heap_used_percent(수집 순간값). >= heap_used_pct_crit → 치명, >= heap_used_pct_warn → 주의, 그 외 정상.
 
-### JVM-002, JVM-003, JVM-004 — Heap 32GB 경계 초과(compressed oops 손실 가능)
+### JVM-002, JVM-003, JVM-004 — heap 이 compressed oops 경계를 넘음
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `nodes.r_heap_sizing` |
-| 판정 항목 | JVM-002 Heap 32GB 경계 초과(compressed oops 손실 가능) / JVM-003 Heap 이 물리 메모리 대비 과다 / JVM-004 Xms 와 Xmx 불일치 |
+| 판정 항목 | JVM-002 heap 이 compressed oops 경계를 넘음 / JVM-003 Heap 이 물리 메모리 대비 과다 / JVM-004 Xms 와 Xmx 불일치 |
 | 근거 구분 | 공식 기준 |
-| 가능 심각도 | 주의 |
-| 임계값 | `heap_max_bytes_crit` = 32GiB — [공식] compressed oops 경계(32GB 미만 권장)<br>`heap_vs_ram_pct_warn` = 50 — [공식] heap <= 전체 메모리의 50%<br>`heap_vs_ram_tolerance_pct` = 2 — [도구] 반올림·adjusted_total 오차 허용 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `heap_max_bytes_crit` = 30GiB — [공식] compressed oops 경계는 약 30GB 까지 가능(JVM 플래그가 없을 때만 사용)<br>`heap_oops_safe_bytes` = 26GiB — [공식] 대부분의 시스템에서 26GB 는 안전(JVM 플래그가 없을 때만 사용)<br>`heap_vs_ram_pct_warn` = 50 — [공식] heap <= 전체 메모리의 50%<br>`heap_vs_ram_tolerance_pct` = 2 — [도구] 반올림·adjusted_total 오차 허용 |
 | 필요 입력 | (nodes.json) 그리고 (nodes_stats.json) |
 | 근거 파일 | nodes.json / nodes.json / nodes_stats.json |
-| 참고 문서 | [Heap 크기 설정](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration) |
+| 참고 문서 | [JVM 설정(heap 크기)](https://www.elastic.co/docs/reference/elasticsearch/jvm-settings) |
 
 **판정 로직**
 
-heap_max >= heap_max_bytes_crit(32GiB) 또는 using_compressed_ordinary_object_pointers=false → 주의(JVM-002). heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → 주의(JVM-003). heap_init(Xms) != heap_max(Xmx) → 주의(JVM-004).
+compressed oops, RAM 대비 heap, Xms 와 Xmx(JVM-002~004).
+
+JVM-002 는 JVM 이 보고한 플래그(nodes.json jvm.using_compressed_ordinary_object_pointers)로 판정한다: false → 주의, true 면
+heap 크기와 관계없이 정상. 플래그가 없을 때만 heap 크기를 본다: 공식 문서는 대부분의 시스템에서 26GB 는 안전하고 경계가
+약 30GB 까지 될 수 있다고 하므로 heap >= heap_max_bytes_crit(30GiB) → 주의, >= heap_oops_safe_bytes
+(26GiB) → 참고.
+heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → 주의(JVM-003). heap_init(Xms) != heap_max(Xmx) → 주의(JVM-004).
 
 ### JVM-005 — GC 부담 정상 범위
 
@@ -593,9 +606,9 @@ cache, 원격 스토리지)이고, 락이나 다른 노드 응답을 기다리�
 
 노드당 샤드 밀도.
 
-'heap 1GB당 샤드 20개' 는 8.3 미만 버전의 공식 기준이다. 8.3 부터 샤드당 heap 오버헤드가 크게 줄어
-공식 문서가 이 기준을 폐기하고 '필드 매퍼 heap 산정(SHD-010)' 과 cluster.max_shards_per_node(CLU-015)
-로 대체했다. 따라서 8.3 이상에서는 판정하지 않고 현황만 표기한다.
+'heap 1GB당 샤드 20개' 는 8.3 미만 버전의 공식 기준이다. 8.3 부터 샤드당 heap 오버헤드가 크게 줄었고(Elastic 블로그)
+공식 문서는 8.3.x 중에 이 기준을 '필드 매퍼 heap 산정(SHD-010)' 과 cluster.max_shards_per_node(CLU-015)
+로 바꿨다. 따라서 8.3 이상에서는 판정하지 않고 현황만 표기한다.
 
 ### SHD-006 — 같은 tier 노드 간 샤드 수 불균형
 
@@ -809,6 +822,7 @@ indexing.index_failed 또는 search.query_failure > 0 인 인덱스. 사용자 �
 | 임계값 | `heavy_index_docs` = 10,000,000 — [도구] 대량 색인 인덱스 기준<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (settings.json) 그리고 (indices_stats.json) |
 | 근거 파일 | settings.json / indices_stats.json |
+| 참고 문서 | [Index modules (refresh_interval, search idle)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 
 **판정 로직**
 
@@ -1005,7 +1019,7 @@ ds_small_backing_shard_gb 미만이면 주의. 롤오버가 max_age 로만 일�
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (settings.json) |
 | 근거 파일 | settings.json |
-| 참고 문서 | [General recommendations](https://www.elastic.co/docs/deploy-manage/production-guidance/general-recommendations) |
+| 참고 문서 | [Index modules (index.max_result_window)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules)<br>[Paginate search results](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/paginate-search-results) |
 
 **판정 로직**
 
@@ -1073,7 +1087,7 @@ path.data/path.logs 위치.
 | 가능 심각도 | 주의 |
 | 필요 입력 | (nodes.json) |
 | 근거 파일 | nodes.json / nodes.json (transport_address) |
-| 참고 문서 | [Important settings configuration](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration) |
+| 참고 문서 | [Important settings configuration](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration)<br>[Bootstrap checks](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/bootstrap-checks) |
 
 **판정 로직**
 
@@ -1168,6 +1182,8 @@ Elasticsearch 9.0 이상에서 write index 가 logsdb 가 아닌 logs-*-* data s
 공식: 9.0 부터 새 logs-*-* data stream 에는 logsdb 가 자동 적용된다. 8.x 에서 업그레이드하기 전부터 있던 data stream
 (integration·APM 포함)은 바뀌지 않는다. time_series 로 설정된 data stream 은 제외하고, settings.json 과
 data_stream.json 의 index_mode 가 모두 없어 mode 를 알 수 없는 번들도 제외한다.
+이를 정하는 설정은 cluster.logsdb.enabled 다. 9.0 이전부터 logs 데이터가 있었으면(logsdb.prior_logs_usage) 기본값이 false 이고,
+false 인 동안은 새 logs-*-* 인덱스도 standard 로 만들어진다. 번들에 값이 있으면 함께 보여 준다.
 
 ### SHD-009 — 마스터 노드 heap 대비 인덱스 수 과다
 
@@ -1191,7 +1207,7 @@ data_stream.json 의 index_mode 가 모두 없어 mode 를 알 수 없는 번들
 | --- | --- |
 | 함수 | `guidance.r_mapping_heap_overhead` |
 | 근거 구분 | 공식 기준 |
-| 가능 심각도 | 주의, 정상 |
+| 가능 심각도 | 주의, 참고, 정상 |
 | 임계값 | `heap_baseline_bytes` = 512MiB — [공식] 필드 매퍼 산정 시 추가 여유 0.5GB<br>`mapping_heap_pct_warn` = 50 — [도구] 매핑 오버헤드 추정 / heap |
 | 필요 입력 | (nodes_stats.json) 그리고 (cluster_stats.json) |
 | 근거 파일 | cluster_stats.json / nodes_stats.json |
@@ -1201,7 +1217,8 @@ data_stream.json 의 index_mode 가 모두 없어 mode 를 알 수 없는 번들
 
 데이터 노드별 필요 heap 추정 = cluster state 매핑 크기(중복 제거) + 노드 필드 오버헤드 + 0.5GB(공식 산정식).
 
-추정치 / heap_max >= mapping_heap_pct_warn → 주의, 미만 → 정상. 전용 마스터·ML 노드는 산정 대상이 아니다.
+공식 기준은 추정치가 heap 안에 들어가는지다: 추정치 >= heap_max → 주의. 추정치 / heap_max >= mapping_heap_pct_warn
+(도구 판단) → 참고, 미만 → 정상. 전용 마스터·ML 노드는 산정 대상이 아니다.
 
 ### SHD-011 — 빈 인덱스 다수
 
@@ -1254,7 +1271,7 @@ docs.count=0 인 사용자 인덱스 수 >= empty_index_count_warn → 주의.
 샤드당 indexing buffer.
 
 indices.memory.index_buffer_size(기본 heap 10%)는 '최근 쓰기가 있는(active) 샤드' 가 나눠 쓴다.
-5분 이상 쓰기가 없는 샤드는 inactive 로 버퍼를 반납한다. 번들에서 active 여부를 직접 알 수 없으므로
+5분 이상(indices.memory.shard_inactive_time, 소스 기준) 쓰기가 없는 샤드는 inactive 로 버퍼를 반납한다. 번들에서 active 여부를 직접 알 수 없으므로
 쓰기 대상으로 확정 가능한 샤드(데이터 스트림 write index + 수집 순간 색인 중인 인덱스)만 센다.
 
 ### PERF-005 — 열린 search context 과다
@@ -1335,7 +1352,7 @@ index.store.preload 가 설정된 인덱스가 있으면 참고, 그 수 > prelo
 
 nodes_stats fs.data[].type 에 nfs / cifs / smb / fuse / glusterfs / ceph 가 포함되면 주의.
 
-### DISK-006 — 대형 standard 인덱스에 기본 codec 사용
+### DISK-006 — 대형 인덱스의 기본 codec
 
 | 항목 | 내용 |
 | --- | --- |
@@ -1349,7 +1366,10 @@ nodes_stats fs.data[].type 에 nfs / cifs / smb / fuse / glusterfs / ceph 가 �
 
 **판정 로직**
 
-standard 모드 사용자 인덱스 중 primary store >= codec_check_min_bytes 이고 index.codec 이 default(미지정) → 참고. logsdb·time_series 는 best_compression 이 기본이라 제외.
+primary 저장량이 codec_check_min_bytes 이상이고 index.codec 을 지정하지 않은(기본값) 사용자 인덱스 → 참고.
+
+logsdb 만 뺀다. 기본 codec 이 best_compression 인 index mode 는 logsdb 하나뿐이다(공식 logsdb 문서, Elasticsearch 소스의
+IndexMode). standard 와 time_series 인덱스의 기본 codec 은 LZ4 다.
 
 ### DISK-007 — _source 비활성 인덱스
 
@@ -1359,13 +1379,17 @@ standard 모드 사용자 인덱스 중 primary store >= codec_check_min_bytes �
 | 근거 구분 | 공식 기준 |
 | 가능 심각도 | 주의, 참고 |
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
-| 필요 입력 | (settings.json) |
-| 근거 파일 | settings.json |
-| 참고 문서 | [Tune for disk usage](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/disk-usage) |
+| 필요 입력 | (settings.json 또는 mapping.json) |
+| 근거 파일 | mapping.json / settings.json / settings.json |
+| 참고 문서 | [Tune for disk usage](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/disk-usage)<br>[_source 필드](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/mapping-source-field) |
 
 **판정 로직**
 
-index.mapping.source.mode=disabled → 주의. 그 외 모드(synthetic 등) 지정 → 참고.
+_source 비활성 → 주의, synthetic _source → 참고(DISK-007).
+
+비활성은 두 가지로 찾는다: mapping.json 의 매핑 파라미터 "_source": {"enabled": false}(문서화된 방식)와
+settings.json 의 index.mapping.source.mode=disabled. index.mapping.source.mode=synthetic 은 참고로 보여 준다. stored 는
+기본값이라 보여 주지 않는다. system 인덱스는 제외한다.
 
 ### MAP-003 — 동적 매핑 통제가 없는 인덱스 템플릿
 
@@ -1414,10 +1438,11 @@ index.mapping.source.mode=disabled → 주의. 그 외 모드(synthetic 등) 지
 
 **판정 로직**
 
-고차원 float 벡터의 양자화 여부 (컴포넌트 병합 후 판정).
+고차원 float 벡터의 양자화 여부(component 병합 후 판정).
 
-8.14 부터 dense_vector 의 index_options 를 지정하지 않으면 양자화 HNSW 가 기본 적용된다.
-따라서 '미지정' 은 8.14 이상에서 문제로 보지 않고, 비양자화 타입(hnsw/flat)을 명시한 경우만 판정한다.
+8.14 부터 index_options 가 없는 float dense_vector 는 기본으로 양자화된 HNSW 가 된다(int8_hnsw. 9.1 부터 384 차원 이상은 bbq_hnsw,
+9.4 부터는 라이선스가 허용하면 bbq_disk). byte·bit 벡터는 양자화하지 않으므로 판정하지 않는다.
+그래서 8.14 이상에서 '미지정' 은 문제로 보지 않고, 명시적 비양자화 타입(hnsw/flat)만 판정한다.
 
 ### VEC-004 — 벡터 인덱스의 세그먼트 수 과다
 
@@ -1476,6 +1501,8 @@ tier 가 다르면 역할과 부하가 달라 비교하지 않는다. frozen tie
 지표별로 tier 내 최대−최소 >= gap 이고 최대값 >= floor 일 때 주의. 수집 순간값이다.
 uptime 이 node_compare_min_uptime_hours 미만인 노드는 heap·CPU 비교에서 뺀다(재시작 직후에는 캐시가 비어 있고
 활성 샤드도 적어 한가해 보임). 디스크 사용량은 재시작해도 그대로라 디스크 비교에는 넣는다.
+공식 문서는 지속되는 편중과 write·search 큐 적체를 신호로 본다. 수집 시점의 큐도 함께 보여 주며, 번들 하나로는
+편중이 지속되는지 알 수 없다.
 
 ### HOT-002.(하위 항목) — 같은 tier 안에서 %s 작업량 편중
 
@@ -1543,6 +1570,7 @@ indices.recovery.max_bytes_per_sec 의 기본값(40mb)은 그 자체로 문제�
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (templates.json) 그리고 (index_templates.json) |
 | 근거 파일 | templates.json / index_templates.json |
+| 참고 문서 | [Templates](https://www.elastic.co/docs/manage-data/data-store/templates) |
 
 **판정 로직**
 
@@ -1562,6 +1590,7 @@ composable 템플릿이 하나라도 매칭되면 레거시 템플릿은 적용�
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (settings.json) |
 | 근거 파일 | settings.json |
+| 참고 문서 | [Delaying allocation when a node leaves](https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-allocation-relocation-recovery/delaying-allocation-when-node-leaves) |
 
 **판정 로직**
 
@@ -1846,7 +1875,7 @@ io_time 은 ES 기동 이후 장치가 I/O 를 처리한 누적 시간이다. >=
 | 판정 항목 | MAP-004 필드 수가 매핑 한도에 근접한 인덱스 / MAP-005 text 필드에 fielddata 활성화 / MAP-006 nested 필드 수가 한도에 근접 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
 | 가능 심각도 | 주의, 참고 |
-| 임계값 | `mapping_fields_near_limit_pct` = 90 — [도구] total_fields.limit 대비 필드 수<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 임계값 | `mapping_fields_near_limit_pct` = 90 — [도구] total_fields.limit 대비 필드 수<br>`nested_fields_near_limit_pct` = 80 — [도구] nested_fields.limit 대비 nested 필드 수<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (mapping.json) |
 | 근거 파일 | mapping.json / mapping.json / settings.json |
 | 참고 문서 | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit)<br>[fielddata mapping parameter](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/text#fielddata-mapping-param) |
@@ -1859,7 +1888,7 @@ mapping.json 의 실제 매핑으로 인덱스별 필드 수를 공식 산정 �
 ignore_dynamic_beyond_limit 가 없는 인덱스는 색인이 실패할 수 있으므로 표의 앞에 둔다. data stream template 을 누가 관리하는지
 (Fleet package 또는 Elastic)도 함께 보여 준다. integration template 은 대개 ignore 옵션을 켜 두기 때문이다.
 searchable snapshot mount 는 읽기 전용이라 제외한다.
-text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_fields.limit × 80% → 주의(MAP-006).
+text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_fields.limit × nested_fields_near_limit_pct → 주의(MAP-006). 기본 한도는 9.3 이후 만든 인덱스는 100, 그 전은 50.
 
 ### VEC-005 — 실제 인덱스의 고차원 float 벡터가 비양자화
 
@@ -2174,7 +2203,10 @@ logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는�
 
 **판정 로직**
 
-syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) 미만 → 치명, 1048576(공식 권고값) 미만 → 참고, 이상 → 정상(SYS-001). sysctl 의 vm.swappiness 가 1 초과이고 swap_total > 0 이며 mlockall 이 true 가 아님 → 참고(SYS-002). syscalls/proc-limit.txt 의 Max open files 가 65535 미만 또는 Max processes 가 4096 미만(soft 기준) → 치명(SYS-003), 충족 → 정상. syscalls/dmesg.txt 에 OOM killer 기록이 있고 대상 프로세스가 java/elasticsearch → 치명, 그 외 프로세스 → 주의(SYS-004), 기록 없음 → 정상.
+진단을 실행한 host 의 OS 설정(SYS-001~004).
+
+syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) 미만 → 치명, 1048576(공식 권고값, 8.15~8.17 문서부터. 이전은 262144) 미만 → 참고, 이상 → 정상(SYS-001). sysctl 의 vm.swappiness 가 1 초과이고 swap_total > 0 이며 mlockall 이 true 가 아님 → 참고(SYS-002). syscalls/proc-limit.txt 의 Max open files 가 65535 미만 또는 Max processes 가 4096 미만(soft 기준) → 치명(SYS-003), 충족 → 정상. syscalls/dmesg.txt 에 OOM killer 기록이 있고 대상 프로세스가 java/elasticsearch → 치명, 그 외 프로세스 → 주의(SYS-004), 기록 없음 → 정상.
+모든 노드가 개발 모드(transport 가 loopback 이거나 single-node discovery)이면 bootstrap check 가 적용되지 않으므로 SYS-001 과 SYS-003 의 치명은 주의로 낮춘다.
 
 ## 변화 추세 (--baseline 비교 모드)
 
@@ -2333,16 +2365,16 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 
 | 설정 | 기본값 | 종류 | 범위 | 의미 | 변경 영향 | 위험도(↑/↓) | 문서 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `action.auto_create_index` | true | dynamic | cluster | 존재하지 않는 인덱스로 색인 시 자동 생성 허용 여부(패턴 지정 가능). | 제한하면 오타 인덱스 생성은 막지만, 허용 패턴에 없는 수집 대상은 색인이 실패합니다. 데이터 스트림·시스템 인덱스 패턴이 빠지면 기능이 멈출 수 있습니다. | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `action.destructive_requires_name` | true | dynamic | cluster | 와일드카드·_all 로 인덱스를 삭제하지 못하게 막음(8.0 부터 기본 true). | false 면 DELETE * 같은 요청 하나로 전체 인덱스가 삭제될 수 있습니다. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `bootstrap.memory_lock` | false | static | node | heap 을 RAM 에 고정(swap 방지). | true 면 swap 을 막습니다. OS memlock 한도가 부족하면 기동 시 bootstrap check 가 실패합니다. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `action.auto_create_index` | true | dynamic | cluster | 존재하지 않는 인덱스로 색인 시 자동 생성 허용 여부(패턴 지정 가능). | 제한하면 오타 인덱스 생성은 막지만, 허용 패턴에 없는 수집 대상은 색인이 실패합니다. 데이터 스트림·시스템 인덱스 패턴이 빠지면 기능이 멈출 수 있습니다. | INFO | [Index management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-management-settings) |
+| `action.destructive_requires_name` | true | dynamic | cluster | 와일드카드·_all 로 인덱스를 삭제하지 못하게 막음(8.0 부터 기본 true). | false 면 DELETE * 같은 요청 하나로 전체 인덱스가 삭제될 수 있습니다. | WARNING | [Index management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-management-settings) |
+| `bootstrap.memory_lock` | false (공식 문서에 없음, Elasticsearch 소스 기준) | static | node | heap 을 RAM 에 고정(swap 방지). | true 면 swap 을 막습니다. OS memlock 한도가 부족하면 기동 시 bootstrap check 가 실패합니다. | - | [Disable swapping](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/setup-configuration-memory) |
 | `cluster.blocks.read_only` | false | dynamic | cluster | 클러스터 전체 읽기 전용. | true 면 모든 쓰기와 메타데이터 변경이 거부됩니다. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.blocks.read_only_allow_delete` | false | dynamic | cluster | 클러스터 전체 읽기 전용(삭제만 허용). | true 면 인덱스 삭제 외 모든 쓰기가 거부됩니다. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `cluster.indices.close.enable` | true | dynamic | cluster | 인덱스 close API 허용 여부. | false 면 인덱스를 닫을 수 없습니다(닫힌 인덱스는 복제·스냅샷 대상 관리가 어려워 막는 경우가 있음). | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `cluster.indices.close.enable` | true | dynamic | cluster | 인덱스 close API 허용 여부. | false 면 인덱스를 닫을 수 없습니다(닫힌 인덱스는 복제·스냅샷 대상 관리가 어려워 막는 경우가 있음). | INFO | [Index management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-management-settings) |
 | `cluster.info.update.interval` | 30s | dynamic | cluster | 디스크 사용량 확인 주기. | ↑ 급격한 디스크 증가를 늦게 감지합니다.<br>↓ 마스터 부하가 조금 늘어납니다. | WARNING / INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
-| `cluster.max_shards_per_node` | 1000 | dynamic | cluster | non-frozen 데이터 노드당 열린 샤드 한도(클러스터 한도 = 값 × 노드 수). | ↑ 한도 도달 시점은 늦어지지만, 한도가 막아 주던 과다 샤딩의 비용(heap·cluster state·마스터 부하)이 그대로 쌓입니다.<br>↓ 신규 인덱스 생성·롤오버가 더 일찍 실패합니다. | WARNING / INFO | [Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
-| `cluster.max_shards_per_node.frozen` | 3000 | dynamic | cluster | frozen 전용 노드당 샤드 한도. | ↑ frozen 노드의 메타데이터 부하가 커집니다.<br>↓ 마운트 가능한 인덱스가 줄어듭니다. | INFO / INFO | [Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
-| `cluster.metadata.display_name` | (없음) | dynamic | cluster | 클러스터 표시 이름(Elastic Cloud 메타데이터). | 동작 영향 없음. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `cluster.max_shards_per_node` | 1000 | dynamic | cluster | non-frozen 데이터 노드당 열린 샤드 한도(클러스터 한도 = 값 × 노드 수). | ↑ 한도 도달 시점은 늦어지지만, 한도가 막아 주던 과다 샤딩의 비용(heap·cluster state·마스터 부하)이 그대로 쌓입니다.<br>↓ 신규 인덱스 생성·롤오버가 더 일찍 실패합니다. | WARNING / INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `cluster.max_shards_per_node.frozen` | 3000 | dynamic | cluster | frozen 전용 노드당 샤드 한도. | ↑ frozen 노드의 메타데이터 부하가 커집니다.<br>↓ 마운트 가능한 인덱스가 줄어듭니다. | INFO / INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `cluster.metadata.display_name` | (없음) | dynamic | cluster | 사용자가 정하는 클러스터 메타데이터(ECH 는 배포 이름을 저장). Elasticsearch 설정이 아니므로 기본값이 없습니다. | 동작 영향 없음. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.persistent_tasks.allocation.enable` | all | dynamic | cluster | persistent task(ML job, transform 등) 할당 허용. | none 이면 새 persistent task 가 할당되지 않습니다. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.routing.allocation.allow_rebalance` | always | dynamic | cluster | 리밸런싱을 시작하는 조건(desired balance 할당기 기본 always, 이전 할당기는 indices_all_active). | 조건을 엄격히 하면(indices_primaries_active / indices_all_active) 복구가 끝날 때까지 리밸런싱이 미뤄져 편중 해소가 늦어집니다. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.awareness.attributes` | (없음) | dynamic | cluster | primary/replica 를 서로 다른 영역(zone·rack)에 배치하기 위한 노드 속성. | 설정 시 같은 샤드의 사본이 다른 영역에 배치됩니다. 영역별 노드 수가 다르면 일부 사본이 미할당될 수 있습니다. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
@@ -2364,65 +2396,65 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `cluster.routing.allocation.same_shard.host` | false | dynamic | cluster | 같은 호스트의 여러 노드에 동일 샤드 사본 배치 금지. | true 는 한 서버에 노드를 여러 개 띄운 구성에서 필요한 안전장치입니다. 단일 노드/호스트 구성에서 false 로 두면 호스트 장애 시 primary 와 replica 가 함께 사라질 수 있습니다. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.total_shards_per_node` | -1 | dynamic | cluster | 노드당 전체 샤드 수 상한(-1=무제한). | ↓ 상한에 걸리면 샤드가 미할당으로 남습니다. 노드 장애 시 남은 노드로 옮길 수 없어 red 가 될 수 있습니다. | - / WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.rebalance.enable` | all | dynamic | cluster | 샤드 리밸런싱 허용 범위. | 리밸런싱이 제한되어 노드 증설 후에도 샤드가 새 노드로 이동하지 않고, 편중이 고착됩니다. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
-| `cluster.routing.use_adaptive_replica_selection` | true | dynamic | cluster | 검색 요청을 응답시간·큐 길이를 반영해 사본에 분배(ARS). | false 면 라운드로빈으로 분배되어, 느린 노드 1대가 전체 검색 p99 를 끌어올립니다. | WARNING | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
+| `cluster.routing.use_adaptive_replica_selection` | true | dynamic | cluster | 검색 요청을 응답시간·큐 길이를 반영해 사본에 분배(ARS). | false 면 라운드로빈으로 분배되어, 느린 노드 1대가 전체 검색 p99 를 끌어올립니다. | WARNING | [Search shard routing](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-shard-routing) |
 | `http.max_content_length` | 100mb | static | node | HTTP 요청 본문 최대 크기. | ↑ 대형 bulk·문서가 허용되어 heap 급증 위험이 커집니다(Lucene 한계 약 2GB 는 그대로).<br>↓ 대형 bulk 요청이 413 으로 거부됩니다. | WARNING / INFO | [Networking settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/networking-settings) |
 | `index.auto_expand_replicas` | false | dynamic | index | 데이터 노드 수에 맞춰 replica 수 자동 조정. | 대형 인덱스에 쓰면 노드 증설 시 replica 가 자동으로 늘어 디스크·복구 부하가 급증합니다. | INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.blocks.read_only` | false | dynamic | index | 읽기 전용. | true 면 쓰기·메타데이터 변경이 거부됩니다. | WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.blocks.read_only_allow_delete` | false | dynamic | index | 읽기 전용(삭제 허용). flood stage 가 자동 설정. | true 면 색인이 거부됩니다. 디스크 여유 확보 후 해제해야 합니다(8.x 는 여유 회복 시 자동 해제). | WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.blocks.write` | false | dynamic | index | 쓰기 차단. | true 면 색인이 거부됩니다. | WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
+| `index.blocks.read_only` | false | dynamic | index | 읽기 전용. | true 면 쓰기·메타데이터 변경이 거부됩니다. | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
+| `index.blocks.read_only_allow_delete` | false | dynamic | index | 읽기 전용(삭제 허용). flood stage 가 자동 설정. | true 면 색인이 거부됩니다. 디스크 여유 확보 후 해제해야 합니다(8.x 는 여유 회복 시 자동 해제). | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
+| `index.blocks.write` | false | dynamic | index | 쓰기 차단. | true 면 색인이 거부됩니다. | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
 | `index.codec` | default(LZ4) | static | index | stored field 압축 방식(logsdb·time_series 모드는 best_compression 기본). | best_compression 은 저장 공간을 줄이는 대신 문서 조회 시 압축 해제 비용이 늘어납니다. static 이라 닫힌 인덱스에서만 바꿀 수 있고, 기존 세그먼트는 merge 후 반영됩니다. | INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.highlight.max_analyzed_offset` | 1000000 | dynamic | index | 하이라이트 시 분석할 최대 문자 수. | ↑ 대형 문서 하이라이팅이 CPU·heap 을 크게 씁니다.<br>↓ 긴 문서의 하이라이트가 잘리거나 실패합니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.mapping.depth.limit` | 20 | dynamic | index | 객체 중첩 최대 깊이. | ↑ 깊은 중첩 문서가 허용됩니다.<br>↓ 색인이 거부될 수 있습니다. | INFO / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
-| `index.mapping.nested_fields.limit` | 50 | dynamic | index | nested 타입 필드 수 한도. | ↑ nested 는 숨은 문서를 만들어 저장·검색 비용이 큽니다.<br>↓ 매핑이 거부됩니다. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
+| `index.mapping.nested_fields.limit` | 100(9.3 이전에 만든 인덱스는 50) | dynamic | index | nested 타입 필드 수 한도. | ↑ nested 는 숨은 문서를 만들어 저장·검색 비용이 큽니다.<br>↓ 매핑이 거부됩니다. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
 | `index.mapping.nested_objects.limit` | 10000 | dynamic | index | 문서당 nested 객체 수 한도. | ↑ 문서 1건이 수만 개의 숨은 문서로 늘어 heap·디스크를 과점할 수 있습니다.<br>↓ 색인이 거부됩니다. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
 | `index.mapping.total_fields.limit` | 1000 | dynamic | index | 인덱스당 최대 필드 수(매핑 폭증 방지). | ↑ 필드가 늘수록 cluster state·heap 사용이 늘고 마스터 부하가 커집니다(매핑 폭증 신호).<br>↓ 새 필드가 들어오면 색인이 실패합니다. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
 | `index.max_docvalue_fields_search` | 100 | dynamic | index | 요청당 docvalue_fields 최대 수. | ↑ 응답 생성 비용이 늘어납니다.<br>↓ 해당 요청이 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_inner_result_window` | 100 | dynamic | index | inner_hits·top_hits 의 from + size 최대값. | ↑ 집계 응답이 커져 heap 사용이 늘어납니다.<br>↓ 해당 쿼리가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_ngram_diff` | 1 | dynamic | index | ngram 토크나이저 min/max 차이 허용치. | ↑ 토큰 수가 급증해 색인 크기와 속도에 큰 영향을 줍니다.<br>↓ 분석기 정의가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.max_refresh_listeners` | 1000 | dynamic | index | refresh=wait_for 대기자 최대 수. | ↑ 대기 요청이 heap 을 더 씁니다.<br>↓ 초과 요청은 강제 refresh 를 유발합니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
+| `index.max_refresh_listeners` | 1000 (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | refresh=wait_for 대기자 최대 수. | ↑ 대기 요청이 heap 을 더 씁니다.<br>↓ 초과 요청은 강제 refresh 를 유발합니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_regex_length` | 1000 | dynamic | index | regexp 쿼리 최대 길이. | ↑ 복잡한 정규식이 CPU 를 과점할 수 있습니다.<br>↓ 해당 쿼리가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_result_window` | 10000 | dynamic | index | from + size 최대값. | ↑ 깊은 페이징이 허용되어 샤드마다 from+size 건을 모으므로 heap 사용이 페이지 깊이에 비례해 늘어납니다.<br>↓ 깊은 페이지 요청이 거부됩니다. | WARNING / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_script_fields` | 32 | dynamic | index | 요청당 script_fields 최대 수. | ↑ 검색 CPU 사용이 늘어납니다.<br>↓ 해당 요청이 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_shingle_diff` | 3 | dynamic | index | shingle 필터 min/max 차이 허용치. | ↑ 토큰 수가 급증합니다.<br>↓ 분석기 정의가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_terms_count` | 65536 | dynamic | index | terms 쿼리의 최대 항목 수. | ↑ 대형 terms 쿼리가 CPU·heap 을 크게 씁니다.<br>↓ 해당 쿼리가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.merge.policy.max_merged_segment` | 5gb | dynamic | index | merge 로 만들어지는 세그먼트의 최대 크기. | ↑ 세그먼트 수가 줄어 검색(특히 kNN)이 빨라지지만 merge 한 번의 I/O 가 커집니다.<br>↓ 세그먼트가 많아져 검색이 느려집니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.segments_per_tier` | 10 | dynamic | index | tier 당 허용 세그먼트 수. | ↑ merge 는 줄지만 세그먼트가 많아집니다.<br>↓ merge 가 잦아져 I/O 가 늘어납니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merged_segment` | 5gb (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 로 만들어지는 세그먼트의 최대 크기. | ↑ 세그먼트 수가 줄어 검색(특히 kNN)이 빨라지지만 merge 한 번의 I/O 가 커집니다.<br>↓ 세그먼트가 많아져 검색이 느려집니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.segments_per_tier` | 10 (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | tier 당 허용 세그먼트 수. | ↑ merge 는 줄지만 세그먼트가 많아집니다.<br>↓ merge 가 잦아져 I/O 가 늘어납니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
 | `index.number_of_replicas` | 1 | dynamic | index | 샤드당 replica 수. | ↑ 가용성·검색 처리량은 늘지만 디스크와 색인 비용이 배수로 늘어납니다.<br>↓ 0 이면 노드 1대 장애로 데이터가 유실될 수 있습니다. | INFO / WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.queries.cache.enabled` | true | static | index | 노드 query(filter) 캐시 사용. | false 면 반복 필터를 매번 다시 계산합니다. | INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
 | `index.refresh_interval` | 1s(미지정 시 search idle 적용) | dynamic | index | 새 문서가 검색에 보이기까지의 주기. | ↑ 색인 처리량이 늘고 merge 부담이 줄지만 검색 반영이 늦어집니다. -1 은 refresh 중지.<br>↓ 세그먼트가 잦게 생겨 CPU·merge 부담이 커집니다. 명시하면 search idle 최적화가 꺼집니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.requests.cache.enable` | true | dynamic | index | shard request 캐시 사용. | false 면 반복 집계를 매번 다시 계산합니다. | INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
-| `index.routing.allocation.total_shards_per_node` | -1 | dynamic | index | 이 인덱스의 노드당 샤드 수 상한(핫스팟 방지). | ↓ 너무 작으면 노드 장애 시 샤드를 옮길 곳이 없어 미할당됩니다. | - / WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
+| `index.requests.cache.enable` | true | dynamic | index | shard request 캐시 사용. | false 면 반복 집계를 매번 다시 계산합니다. | INFO | [The shard request cache](https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-request-cache) |
+| `index.routing.allocation.total_shards_per_node` | -1 | dynamic | index | 이 인덱스의 노드당 샤드 수 상한(핫스팟 방지). | ↓ 너무 작으면 노드 장애 시 샤드를 옮길 곳이 없어 미할당됩니다. | - / WARNING | [Total shards per node](https://www.elastic.co/docs/reference/elasticsearch/index-settings/total-shards-per-node) |
 | `index.search.idle.after` | 30s | dynamic | index | 검색이 없으면 주기적 refresh 를 건너뛰기 시작하는 시간. | ↑ refresh 생략 효과가 늦게 시작됩니다.<br>↓ 검색 idle 전환이 빨라져, 뜸한 첫 검색이 refresh 를 기다리게 됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.translog.durability` | request | dynamic | index | 요청마다 translog 를 fsync 할지(request) 주기적으로 할지(async). | async 면 색인이 빨라지는 대신 노드 비정상 종료 시 sync_interval 동안의 확인 응답된 쓰기가 유실될 수 있습니다. | WARNING | [Translog settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog) |
 | `index.translog.sync_interval` | 5s | dynamic | index | async 모드의 translog fsync 주기. | ↑ async 모드에서 유실 가능 구간이 길어집니다.<br>↓ fsync 가 잦아집니다. | INFO / INFO | [Translog settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog) |
-| `index.unassigned.node_left.delayed_timeout` | 1m | dynamic | index | 노드 이탈 후 replica 재할당을 미루는 시간. | ↑ 노드 복귀를 기다리는 동안 yellow 가 길어지지만 불필요한 재복제는 줄어듭니다.<br>↓ 잠깐의 재기동에도 전체 재복제가 시작됩니다(0 이면 즉시). | INFO / WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
+| `index.unassigned.node_left.delayed_timeout` | 1m | dynamic | index | 노드 이탈 후 replica 재할당을 미루는 시간. | ↑ 노드 복귀를 기다리는 동안 yellow 가 길어지지만 불필요한 재복제는 줄어듭니다.<br>↓ 잠깐의 재기동에도 전체 재복제가 시작됩니다(0 이면 즉시). | INFO / WARNING | [Delaying allocation when a node leaves](https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-allocation-relocation-recovery/delaying-allocation-when-node-leaves) |
 | `indices.breaker.fielddata.limit` | 40% | dynamic | cluster | fielddata 적재 한도(heap 대비). | ↑ text 필드 집계 등으로 heap 이 잠식되어 GC 압박이 커집니다.<br>↓ 집계가 더 일찍 거부됩니다. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.breaker.request.limit` | 60% | dynamic | cluster | 요청 단위 메모리(집계 등) 한도. | ↑ 대형 집계가 heap 을 과점할 수 있습니다.<br>↓ 집계가 더 일찍 거부됩니다. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
-| `indices.breaker.total.limit` | 95% | dynamic | cluster | parent breaker 한도(use_real_memory=true 기준 95%, false 면 70%). | ↑ OOM 직전까지 요청을 받아들여 노드가 OutOfMemoryError 로 종료될 위험이 커집니다.<br>↓ 정상 요청도 CircuitBreakingException 으로 거부됩니다. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
+| `indices.breaker.total.limit` | 95%(indices.breaker.total.use_real_memory 가 false 면 70%) | dynamic | cluster | parent breaker 한도(use_real_memory=true 기준 95%, false 면 70%). | ↑ OOM 직전까지 요청을 받아들여 노드가 OutOfMemoryError 로 종료될 위험이 커집니다.<br>↓ 정상 요청도 CircuitBreakingException 으로 거부됩니다. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.breaker.total.use_real_memory` | true | static | node | parent breaker 가 실제 heap 사용량을 기준으로 판단. | false 면 추정치 기준(한도 기본 70%)으로 동작해 실제 heap 과 괴리가 생길 수 있습니다. | WARNING | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.fielddata.cache.size` | unbounded | static | node | fielddata 캐시 상한(기본 무제한, 실제 상한은 fielddata breaker). | 상한을 두면 eviction 이 발생해 해당 집계가 매번 fielddata 를 다시 적재합니다. | INFO | [Field data cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/field-data-cache-settings) |
-| `indices.lifecycle.poll_interval` | 10m | dynamic | cluster | ILM 조건 확인 주기. | ↑ 롤오버·삭제가 늦게 수행되어 샤드 크기·디스크가 계획보다 커집니다.<br>↓ 마스터 부하가 늘어납니다. 테스트 목적 외에는 줄이지 않습니다. | INFO / WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `indices.lifecycle.poll_interval` | 10m | dynamic | cluster | ILM 조건 확인 주기. | ↑ 롤오버·삭제가 늦게 수행되어 샤드 크기·디스크가 계획보다 커집니다.<br>↓ 마스터 부하가 늘어납니다. 테스트 목적 외에는 줄이지 않습니다. | INFO / WARNING | [Index lifecycle management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-lifecycle-management-settings) |
 | `indices.memory.index_buffer_size` | 10% | static | node | 색인 버퍼(heap 대비). 쓰기 중인 샤드가 공유. | ↑ 대량 색인 효율은 좋아지지만 검색·집계에 쓸 heap 이 줄어듭니다.<br>↓ flush 가 잦아지고 작은 세그먼트가 늘어납니다. | INFO / INFO | [Indexing buffer settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/indexing-buffer-settings) |
 | `indices.queries.cache.size` | 10% | static | node | 노드 query(filter) 캐시 크기(heap 대비). | ↑ heap 상주량이 늘어 GC 압박이 커집니다.<br>↓ 필터 캐시 적중률이 떨어집니다. | INFO / INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
-| `indices.recovery.max_bytes_per_sec` | 40mb | dynamic | cluster | 노드당 복구 대역 상한(전용 cold/frozen 노드는 메모리 기반으로 자동 산정). | ↑ 복구가 빨라지지만 복구 트래픽이 서비스 I/O 를 잠식할 수 있습니다.<br>↓ 노드 교체·재기동 후 복구가 느려져 yellow 상태가 길어집니다. | INFO / WARNING | [Index recovery settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-recovery-settings) |
-| `indices.requests.cache.size` | 1% | static | node | shard request 캐시 크기(heap 대비). | ↑ heap 상주량이 늘어납니다.<br>↓ 집계 결과 캐시 효과가 줄어듭니다. | INFO / INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
-| `ingest.geoip.downloader.enabled` | true | dynamic | cluster | GeoIP DB 자동 다운로드. | 폐쇄망에서는 false 가 정상입니다. 이 경우 DB 를 수동으로 배포해야 geoip processor 가 동작합니다. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `indices.recovery.max_bytes_per_sec` | 40mb(전용 cold/frozen 노드는 전체 메모리에 따라 40mb~250mb) | dynamic | cluster | 노드당 복구 대역 상한(전용 cold/frozen 노드는 메모리 기반으로 자동 산정). | ↑ 복구가 빨라지지만 복구 트래픽이 서비스 I/O 를 잠식할 수 있습니다.<br>↓ 노드 교체·재기동 후 복구가 느려져 yellow 상태가 길어집니다. | INFO / WARNING | [Index recovery settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-recovery-settings) |
+| `indices.requests.cache.size` | 1% | static | node | shard request 캐시 크기(heap 대비). | ↑ heap 상주량이 늘어납니다.<br>↓ 집계 결과 캐시 효과가 줄어듭니다. | INFO / INFO | [Shard request cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/shard-request-cache-settings) |
+| `ingest.geoip.downloader.enabled` | true | dynamic | cluster | GeoIP DB 자동 다운로드. | 폐쇄망에서는 false 가 정상입니다. 이 경우 DB 를 수동으로 배포해야 geoip processor 가 동작합니다. | - | [GeoIP processor](https://www.elastic.co/docs/reference/enrich-processor/geoip-processor) |
 | `network.breaker.inflight_requests.limit` | 100% | dynamic | cluster | 수신 중인 요청(transport/HTTP) 크기 한도. | ↑ 대형 bulk 가 한꺼번에 들어와 heap 이 급증할 수 있습니다.<br>↓ 대형 요청이 거부됩니다. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `node.processors` | 가용 프로세서 수(자동) | static | node | ES 가 인식하는 CPU 수(스레드풀 크기 산정 기준). | 실제보다 크게 잡으면 스레드가 과다해지고, 작게 잡으면 CPU 를 다 쓰지 못합니다. 컨테이너에서 CPU limit 과 맞출 때 사용합니다. | INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
-| `node.store.allow_mmap` | true | static | node | Lucene 파일 mmap 사용. | false 면 mmap 대신 NIO 로 읽어 검색 성능이 떨어질 수 있습니다(vm.max_map_count 를 못 올리는 환경용). | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `script.max_compilations_rate` | 150/5m | dynamic | cluster | 스크립트 컴파일 속도 한도. | 올리면 매번 다른 스크립트를 보내는 잘못된 사용(파라미터 미사용)이 가려지고 CPU·메모리 부담이 커집니다. | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `search.allow_expensive_queries` | true | dynamic | cluster | script·wildcard·regexp·fuzzy 등 비싼 쿼리 허용 여부. | false 면 해당 쿼리가 거부됩니다(보호 목적). Kibana 일부 기능도 영향받을 수 있습니다. | INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
-| `search.default_search_timeout` | -1 | dynamic | cluster | 요청에 timeout 이 없을 때 적용되는 검색 타임아웃(-1=무제한). | 짧게 두면 무거운 쿼리가 부분 결과로 끝나고, 무제한이면 비정상 쿼리가 자원을 계속 점유할 수 있습니다. | INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
-| `search.low_level_cancellation` | true | dynamic | cluster | 검색 취소 요청을 세그먼트 단위로 빠르게 반영. | false 면 취소된 검색이 늦게 멈춰 자원을 더 오래 씁니다. | INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
+| `node.store.allow_mmap` | true | static | node | Lucene 파일 mmap 사용. | false 면 mmap 대신 NIO 로 읽어 검색 성능이 떨어질 수 있습니다(vm.max_map_count 를 못 올리는 환경용). | INFO | [Store (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/store) |
+| `script.max_compilations_rate` | 150/5m | dynamic | cluster | 스크립트 컴파일 속도 한도. | 올리면 매번 다른 스크립트를 보내는 잘못된 사용(파라미터 미사용)이 가려지고 CPU·메모리 부담이 커집니다. | INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
+| `search.allow_expensive_queries` | true | dynamic | cluster | script·wildcard·regexp·fuzzy 등 비싼 쿼리 허용 여부. | false 면 해당 쿼리가 거부됩니다(보호 목적). Kibana 일부 기능도 영향받을 수 있습니다. | INFO | [Query DSL](https://www.elastic.co/docs/reference/query-languages/querydsl) |
+| `search.default_search_timeout` | -1 | dynamic | cluster | 요청에 timeout 이 없을 때 적용되는 검색 타임아웃(-1=무제한). | 짧게 두면 무거운 쿼리가 부분 결과로 끝나고, 무제한이면 비정상 쿼리가 자원을 계속 점유할 수 있습니다. | INFO | [The search API](https://www.elastic.co/docs/solutions/search/the-search-api) |
+| `search.low_level_cancellation` | true (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | cluster | 검색 취소 요청을 세그먼트 단위로 빠르게 반영. | false 면 취소된 검색이 늦게 멈춰 자원을 더 오래 씁니다. | INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
 | `search.max_buckets` | 65536 | dynamic | cluster | 단일 응답의 최대 집계 버킷 수. | ↑ 대형 집계가 허용되어 coordinating 노드 heap 압박·circuit breaker 발동 위험이 커집니다.<br>↓ 기존 대시보드 집계가 실패할 수 있습니다. | WARNING / INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
-| `slm.retention_schedule` | 0 30 1 * * ? | dynamic | cluster | SLM 보존 정책(오래된 스냅샷 삭제) 실행 주기. | 실행 시각이 바뀝니다. 너무 드물면 스냅샷 저장소 용량이 계획보다 커집니다. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `slm.retention_schedule` | 0 30 1 * * ? | dynamic | cluster | SLM 보존 정책(오래된 스냅샷 삭제) 실행 주기. | 실행 시각이 바뀝니다. 너무 드물면 스냅샷 저장소 용량이 계획보다 커집니다. | - | [Snapshot and restore settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/snapshot-restore-settings) |
 | `thread_pool.search.queue_size` | 자동 산정(9.4.4 관측: search 스레드 수 × 1000, 8.x 이전 문서 기준 1000) | static | node | search 스레드풀 대기열 크기. | ↑ rejection 은 줄지만 검색 지연·heap 사용이 늘어납니다.<br>↓ rejection 이 더 빨리 발생합니다. | WARNING / INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
 | `thread_pool.search.size` | int((코어 수 × 3) / 2) + 1(자동) | static | node | search 스레드 수. | 임의 변경 시 CPU 경합이나 처리량 저하가 생깁니다. | WARNING | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
-| `thread_pool.write.queue_size` | 10000 | static | node | write 스레드풀 대기열 크기. | ↑ rejection 은 줄지만 요청이 큐에서 오래 대기해 지연과 heap 사용이 늘어납니다. 원인(과부하)이 가려집니다.<br>↓ rejection(429)이 더 빨리 발생합니다. | WARNING / INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
+| `thread_pool.write.queue_size` | 10000(9.2부터 max(10000, 할당 프로세서 수 x 750)) | static | node | write 스레드풀 대기열 크기. | ↑ rejection 은 줄지만 요청이 큐에서 오래 대기해 지연과 heap 사용이 늘어납니다. 원인(과부하)이 가려집니다.<br>↓ rejection(429)이 더 빨리 발생합니다. | WARNING / INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
 | `thread_pool.write.size` | CPU 코어 수(자동) | static | node | write 스레드 수. | 코어 수보다 크게 잡으면 컨텍스트 스위칭만 늘고 처리량은 늘지 않습니다. | WARNING | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
-| `transport.compress` | indexing_data | dynamic | cluster | 노드 간 전송 압축 대상. | true 는 모든 전송을 압축해 CPU 를 더 쓰고, false 는 색인 데이터도 압축하지 않아 네트워크 사용이 늘어납니다. | INFO | [Networking settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/networking-settings) |
-| `xpack.ml.max_machine_memory_percent` | 30 | dynamic | cluster | ML 작업이 쓸 수 있는 노드 메모리 비율. | ↑ ML 프로세스가 파일시스템 캐시·다른 프로세스 몫을 잠식합니다.<br>↓ ML job 이 할당되지 못할 수 있습니다. | INFO / INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `xpack.monitoring.collection.enabled` | false | dynamic | cluster | 레거시 내부 모니터링 수집. | true 면 클러스터 자신에 모니터링 데이터를 색인해 부하가 늘어납니다. 운영 모니터링은 별도 클러스터를 권장합니다. | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `transport.compress` | indexing_data | static | node | 노드 간 전송 압축 대상. | true 는 모든 전송을 압축해 CPU 를 더 쓰고, false 는 색인 데이터도 압축하지 않아 네트워크 사용이 늘어납니다. | INFO | [Networking settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/networking-settings) |
+| `xpack.ml.max_machine_memory_percent` | 30 | dynamic | cluster | ML 작업이 쓸 수 있는 노드 메모리 비율. | ↑ ML 프로세스가 파일시스템 캐시·다른 프로세스 몫을 잠식합니다.<br>↓ ML job 이 할당되지 못할 수 있습니다. | INFO / INFO | [Machine learning settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/machine-learning-settings) |
+| `xpack.monitoring.collection.enabled` | false | dynamic | cluster | 레거시 내부 모니터링 수집. deprecated 이며 모니터링 플러그인은 10.0 에서 제거됩니다. | true 면 클러스터 자신에 모니터링 데이터를 색인해 부하가 늘어납니다. 운영 모니터링은 별도 클러스터를 권장합니다. | INFO | [Monitoring settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/monitoring-settings) |
 | `cluster.routing.allocation.exclude.*` | (없음) | dynamic | cluster | 지정한 노드(이름·IP·호스트·속성)에서 샤드를 빼냄. | 해당 노드에 샤드가 배치되지 않습니다. 유지보수 후 제거하지 않으면 용량이 남아도 샤드가 다른 노드로 몰립니다. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.include.*` | (없음) | dynamic | cluster | 지정한 노드에만 샤드 배치를 허용. | 조건에 맞지 않는 노드에는 샤드가 배치되지 않아 편중·미할당이 생길 수 있습니다. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.require.*` | (없음) | dynamic | cluster | 지정한 조건을 모두 만족하는 노드에만 샤드 배치. | 조건을 만족하는 노드가 부족하면 샤드가 미할당됩니다. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
@@ -2436,7 +2468,8 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | --- | --- | --- |
 | `heap_used_pct_warn` | 75 | [도구] 수집 순간 heap 사용률 |
 | `heap_used_pct_crit` | 85 | [도구] 수집 순간 heap 사용률 |
-| `heap_max_bytes_crit` | 32GiB | [공식] compressed oops 경계(32GB 미만 권장) |
+| `heap_max_bytes_crit` | 30GiB | [공식] compressed oops 경계는 약 30GB 까지 가능(JVM 플래그가 없을 때만 사용) |
+| `heap_oops_safe_bytes` | 26GiB | [공식] 대부분의 시스템에서 26GB 는 안전(JVM 플래그가 없을 때만 사용) |
 | `heap_vs_ram_pct_warn` | 50 | [공식] heap <= 전체 메모리의 50% |
 | `heap_vs_ram_tolerance_pct` | 2 | [도구] 반올림·adjusted_total 오차 허용 |
 | `old_gc_time_ratio_warn` | 0.02 | [도구] old GC 누적 시간 / uptime |
@@ -2449,6 +2482,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `fd_used_pct_warn` | 70 | [도구] 열린 파일 / 최대(공식 최소 한도는 65,535) |
 | `cgroup_throttle_ratio_warn` | 0.01 | [도구] throttled / elapsed periods |
 | `cgroup_throttle_ratio_crit` | 0.05 | [도구] throttled / elapsed periods |
+| `dedicated_master_data_nodes` | 10 | [도구] 현장 기준: 전용 마스터가 필요해지는 데이터 노드 수 |
 | `uptime_short_hours` | 6 | [도구] 최근 재기동 판단 |
 | `node_compare_min_uptime_hours` | 24 | [도구] uptime 이 이보다 짧은 노드는 노드 간 비교에서 제외 |
 | `disk_watermark_low_default` | 85% | [공식] ES 기본값(설정 파일이 없을 때만 사용) |
@@ -2463,6 +2497,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `shards_per_gb_heap_warn` | 20 | [공식] heap 1GB당 샤드 20개(8.3 미만 전용) |
 | `shards_per_gb_heap_crit` | 30 | [도구] 8.3 미만 전용 |
 | `max_shards_per_node_headroom_pct_warn` | 80 | [도구] cluster.max_shards_per_node 대비 사용률 |
+| `max_shards_per_node_crit_pct` | 95 | [도구] cluster.max_shards_per_node 대비 치명이 되는 사용률 |
 | `shard_size_gb_warn` | 50 | [공식] 샤드 10~50GB |
 | `shard_size_gb_crit` | 200 | [도구] 복구 시간 기준 상한 |
 | `small_shard_mb` | 1,024 | [도구] 소형 샤드 기준 |
@@ -2545,6 +2580,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `logsdb_shard_gb_high` | 30 | [도구] logsdb shard 범위 상한(공식 상한은 50GB) |
 | `logsdb_shard_gb_low` | 10 | [공식] 10~50GB 범위의 하한 |
 | `logsdb_rows_max` | 100 | [도구] logsdb shard 크기 표에 보여 줄 최대 인덱스 수 |
+| `nested_fields_near_limit_pct` | 80 | [도구] nested_fields.limit 대비 nested 필드 수 |
 | `mapping_fields_near_limit_pct` | 90 | [도구] total_fields.limit 대비 필드 수 |
 | `ilm_rollover_max_shard_gb` | 50 | [공식] 롤오버 샤드 크기 권장 상한 |
 | `ilm_implicit_max_shard_docs` | 200,000,000 | [공식] 샤드당 2억건이면 rollover 가 항상 실행됨. 더 큰 값은 효과 없음 |

@@ -53,19 +53,26 @@ def _int(v):
 
 
 def r_os_config(ctx):
-    """vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: target process is java/elasticsearch → Critical, any other process → Warning (SYS-004); no entry → OK."""
+    """OS settings of the host where diagnostics ran (SYS-001 to SYS-004).
+
+    vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation, in the docs since 8.15 to 8.17; 262144 before) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: target process is java/elasticsearch → Critical, any other process → Warning (SYS-004); no entry → OK.
+    When every node runs in development mode (loopback transport or single-node discovery), bootstrap checks are not enforced, so the Critical results of SYS-001 and SYS-003 drop to Warning.
+    """
     out = []
     sc = _sysctl(ctx)
     pl = _proc_limits(ctx)
     if not sc and not pl and not ctx.b.exists("syscalls/dmesg.txt"):
         return out
 
+    dev = bool(ctx.nodes) and all(ctx.dev_mode(n) for n in ctx.nodes)
+    boot_sev = Severity.WARNING if dev else Severity.CRITICAL
+    dev_note = T("rules.syscalls.r_os_config.dev") if dev else ""
     mmc = _int(sc.get("vm.max_map_count"))
     if mmc is not None:
         if mmc < _MIN_MAP_COUNT:
             out.append(Finding(
-                "SYS-001", CAT, Severity.CRITICAL, T("rules.syscalls.r_os_config.01"),
-                observed=T("rules.syscalls.r_os_config.02") % (mmc, _MIN_MAP_COUNT, tr(_SCOPE)),
+                "SYS-001", CAT, boot_sev, T("rules.syscalls.r_os_config.01"),
+                observed=T("rules.syscalls.r_os_config.02") % (mmc, _MIN_MAP_COUNT, tr(_SCOPE)) + dev_note,
                 impact=T("rules.syscalls.r_os_config.03"),
                 recommend=T("rules.syscalls.r_os_config.04"),
                 refs=[REF_MAP, REF_BOOT], source="syscalls/sysctl.txt"))
@@ -105,8 +112,8 @@ def r_os_config(ctx):
                 bad.append(T("rules.syscalls.r_os_config.17") % (label, val, need))
         if bad:
             out.append(Finding(
-                "SYS-003", CAT, Severity.CRITICAL, T("rules.syscalls.r_os_config.18"),
-                observed="; ".join(bad) + ". " + tr(_SCOPE),
+                "SYS-003", CAT, boot_sev, T("rules.syscalls.r_os_config.18"),
+                observed="; ".join(bad) + ". " + tr(_SCOPE) + dev_note,
                 impact=T("rules.syscalls.r_os_config.19"),
                 recommend=T("rules.syscalls.r_os_config.20"),
                 evidence=table([T("rules.syscalls.r_os_config.21"), T("rules.syscalls.r_os_config.22"), T("rules.syscalls.r_os_config.23"), T("rules.syscalls.r_os_config.24")], rows),

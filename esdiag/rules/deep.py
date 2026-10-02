@@ -12,6 +12,7 @@ import datetime
 
 from ..i18n import T, N_, tr
 from ..model import Finding, Severity, table
+from ..settings_kb import default_for
 from ..util import dicts, dig, fmt_bytes, fmt_ms, fmt_num, items, num, parse_bytes, strs
 
 MAPC, OPS, CLU, PERF, VEC = "shard", "ops", "cluster", "perf", "vector"
@@ -67,7 +68,7 @@ def r_mapping_limits_actual(ctx):
     Indices without ignore_dynamic_beyond_limit are listed first because they are the ones that can fail indexing; the table also shows
     who manages the data stream template (Fleet package or Elastic), since integration templates usually set the ignore option.
     Searchable snapshot mounts are skipped because they are read-only.
-    text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × 80% → Warning (MAP-006).
+    text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × nested_fields_near_limit_pct → Warning (MAP-006). The default limit is 100 for indices created on 9.3 or later and 50 before.
     """
     near, fd_rows, nest_rows = [], [], []
     ignored = 0
@@ -87,10 +88,12 @@ def r_mapping_limits_actual(ctx):
         for f in fielddata:
             fd_rows.append([name, f])
         try:
-            nlimit = int(ctx.index_setting(name, "index.mapping.nested_fields.limit") or 50)
+            nlimit = int(ctx.index_setting(name, "index.mapping.nested_fields.limit")
+                         or default_for("index.mapping.nested_fields.limit", ctx, index=name)
+                         or (100 if ctx.version_tuple >= (9, 3, 0) else 50))
         except (TypeError, ValueError):
-            nlimit = 50
-        if nlimit and nested >= nlimit * 0.8:
+            nlimit = 100 if ctx.version_tuple >= (9, 3, 0) else 50
+        if nlimit and nested >= nlimit * ctx.t["nested_fields_near_limit_pct"] / 100.0:
             nest_rows.append([name, nested, nlimit])
     out = []
     if near:

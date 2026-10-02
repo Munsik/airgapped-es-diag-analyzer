@@ -10,7 +10,7 @@
 | --- | --- |
 | Tool version | esdiag 0.14.0 |
 | Elasticsearch baseline version | 9.4 |
-| Official docs checked | 2026-09 |
+| Official docs checked | 2026-10 |
 | Validated on real bundles | 9.4.4 (ECH, 3 nodes, single tier) / 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), api mode |
 | Field-tested | Tuned for false positives and false negatives on a 9.5.3 multi-tier bundle. Compared file and field structure. Verified memory use on large bundles (cluster_state 190 MB, mapping 178 MB). |
 | Validated collection modes | Validated in api mode only. local and remote modes (including server logs and OS command output) may need further verification. |
@@ -134,12 +134,13 @@ Master pending tasks. Count >= pending_tasks_crit or longest wait >= max_task_wa
 | Findings | CLU-006 No master-eligible nodes / CLU-007 No dedicated master nodes |
 | Evidence basis | Official / Tool threshold |
 | Possible severities | Critical, Warning |
+| Thresholds | `dedicated_master_data_nodes` = 10 ([Tool] Field guideline: data node count from which dedicated masters are expected) |
 | Required input | (nodes.json) |
 | Source files | nodes.json |
 
 **Decision logic**
 
-Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical; 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= 6 data nodes → Warning (CLU-007).
+Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical; 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= dedicated_master_data_nodes data nodes → Warning (CLU-007). The official docs only say dedicated masters make sense once a cluster has more than a handful of nodes; the node count is a field guideline.
 
 ### CLU-008, CLU-009, CLU-010: Node version mismatch
 
@@ -170,7 +171,7 @@ More than 1 ES version across nodes → Warning (CLU-008). Major version < eol_m
 
 **Decision logic**
 
-Rates only cluster settings that differ from the default (explicitly set in persistent/transient). allocation.enable != all → Critical, rebalance.enable != all → Warning, disk.threshold_enabled=false → Critical, cluster.blocks.read_only(_allow_delete)=true → Critical, destructive_requires_name=false → Warning (CLU-011). A value in allocation.exclude._name/_ip/_host → Warning (CLU-012). Any transient setting → Info (CLU-013, deprecated since 7.16). use_adaptive_replica_selection=false → Warning (CLU-014, default is true).
+Rates only cluster settings that differ from the default (explicitly set in persistent/transient). allocation.enable != all → Critical, rebalance.enable != all → Warning, disk.threshold_enabled=false → Critical, cluster.blocks.read_only(_allow_delete)=true → Critical, destructive_requires_name=false → Warning (CLU-011). A value in allocation.exclude._name/_ip/_host → Warning (CLU-012). Any transient setting → Info (CLU-013, no longer recommended since 7.16). use_adaptive_replica_selection=false → Warning (CLU-014, default is true).
 
 ### CLU-015: Cluster shard limit nearly reached
 
@@ -179,14 +180,20 @@ Rates only cluster settings that differ from the default (explicitly set in pers
 | Function | `cluster.r_shard_capacity` |
 | Evidence basis | Official |
 | Possible severities | Critical, Warning |
-| Thresholds | `max_shards_per_node_headroom_pct_warn` = 80 ([Tool] Usage against cluster.max_shards_per_node) |
+| Thresholds | `max_shards_per_node_crit_pct` = 95 ([Tool] Usage against cluster.max_shards_per_node that becomes Critical)<br>`max_shards_per_node_headroom_pct_warn` = 80 ([Tool] Usage against cluster.max_shards_per_node) |
 | Required input | (cluster_settings.json) and (cluster_health.json) and (nodes.json) |
 | Source files | cluster_health.json / cluster_settings.json |
 | References | [Shard sizing guide](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
 
 **Decision logic**
 
-Usage = (active + unassigned - shards on frozen-only nodes) / (cluster.max_shards_per_node x number of data nodes excluding frozen-only). >= max_shards_per_node_headroom_pct_warn → Warning, >= 95% → Critical.
+Usage of the cluster shard limit (CLU-015).
+
+Official counting: cluster.max_shards_per_node applies to non-frozen data nodes and counts the primary and replica shards of
+open indices, unassigned ones included; closed indices do not count, and frozen (partially mounted) indices count against
+cluster.max_shards_per_node.frozen instead. Usage = (active + unassigned - shards of partially mounted indices - shards of
+closed indices) / (cluster.max_shards_per_node x non-frozen data nodes). Closed indices come from cat indices (status close).
+>= max_shards_per_node_headroom_pct_warn → Warning, >= max_shards_per_node_crit_pct → Critical.
 
 ### CLU-016: Dangling indices present
 
@@ -229,7 +236,7 @@ write task holds resources and blocks follow-up work. One row per action with th
 | --- | --- |
 | Function | `cluster.r_zone_balance` |
 | Findings | CLU-018 Data nodes are unevenly spread across availability zones / CLU-019 Shard allocation awareness not set |
-| Evidence basis | Official / Tool threshold |
+| Evidence basis | Tool threshold |
 | Possible severities | Warning |
 | Required input | (nodes.json) and (cluster_settings.json) |
 | Source files | cluster_settings.json / nodes.json / nodes.json |
@@ -360,28 +367,34 @@ Severity is the highest risk among the change directions (Warning at most, setti
 | Thresholds | `heap_used_pct_crit` = 85 ([Tool] Heap usage at collection time)<br>`heap_used_pct_warn` = 75 ([Tool] Heap usage at collection time) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes_stats.json |
-| References | [Heap size settings](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration) |
+| References | [JVM settings (heap size)](https://www.elastic.co/docs/reference/elasticsearch/jvm-settings) |
 
 **Decision logic**
 
 Per-node jvm.mem.heap_used_percent (point-in-time at collection). >= heap_used_pct_crit → Critical, >= heap_used_pct_warn → Warning, otherwise OK.
 
-### JVM-002, JVM-003, JVM-004: Heap above the 32GB boundary (compressed oops may be lost)
+### JVM-002, JVM-003, JVM-004: Heap past the compressed oops boundary
 
 | Item | Details |
 | --- | --- |
 | Function | `nodes.r_heap_sizing` |
-| Findings | JVM-002 Heap above the 32GB boundary (compressed oops may be lost) / JVM-003 Heap too large relative to physical memory / JVM-004 Xms and Xmx differ |
+| Findings | JVM-002 Heap past the compressed oops boundary / JVM-003 Heap too large relative to physical memory / JVM-004 Xms and Xmx differ |
 | Evidence basis | Official |
-| Possible severities | Warning |
-| Thresholds | `heap_max_bytes_crit` = 32GiB ([Official] Compressed oops boundary (below 32GB recommended))<br>`heap_vs_ram_pct_warn` = 50 ([Official] Heap <= 50% of total memory)<br>`heap_vs_ram_tolerance_pct` = 2 ([Tool] Tolerance for rounding and adjusted_total error) |
+| Possible severities | Warning, Info |
+| Thresholds | `heap_max_bytes_crit` = 30GiB ([Official] Compressed oops boundary can be as high as about 30GB (used when the JVM flag is missing))<br>`heap_oops_safe_bytes` = 26GiB ([Official] 26GB is safe on most systems (used when the JVM flag is missing))<br>`heap_vs_ram_pct_warn` = 50 ([Official] Heap <= 50% of total memory)<br>`heap_vs_ram_tolerance_pct` = 2 ([Tool] Tolerance for rounding and adjusted_total error) |
 | Required input | (nodes.json) and (nodes_stats.json) |
 | Source files | nodes.json / nodes.json / nodes_stats.json |
-| References | [Heap size settings](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration) |
+| References | [JVM settings (heap size)](https://www.elastic.co/docs/reference/elasticsearch/jvm-settings) |
 
 **Decision logic**
 
-heap_max >= heap_max_bytes_crit (32GiB) or using_compressed_ordinary_object_pointers=false → Warning (JVM-002). heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → Warning (JVM-003). heap_init (Xms) != heap_max (Xmx) → Warning (JVM-004).
+Compressed oops, heap versus RAM, and Xms versus Xmx (JVM-002 to 004).
+
+JVM-002 rests on the flag the JVM reports (nodes.json jvm.using_compressed_ordinary_object_pointers): false → Warning, true → fine
+whatever the heap size. Only when the flag is missing is the heap size used: the official docs say 26GB is safe on most systems
+and the boundary can be as high as about 30GB, so heap >= heap_max_bytes_crit (30GiB) → Warning and >= heap_oops_safe_bytes
+(26GiB) → Info.
+heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → Warning (JVM-003). heap_init (Xms) != heap_max (Xmx) → Warning (JVM-004).
 
 ### JVM-005: GC load is within the normal range
 
@@ -593,8 +606,8 @@ This is a single moment, so read it with hot threads (RT-001) and the storage fi
 
 Shard density per node.
 
-'20 shards per 1GB of heap' is the official guideline for versions before 8.3. From 8.3 the heap overhead per shard dropped sharply,
-and the official docs retired this guideline in favor of the 'field mapper heap estimate (SHD-010)' and cluster.max_shards_per_node (CLU-015).
+'20 shards per 1GB of heap' is the official guideline for versions before 8.3. From 8.3 the heap overhead per shard dropped sharply
+(Elastic blog), and the docs replaced the guideline during 8.3.x with the 'field mapper heap estimate (SHD-010)' and cluster.max_shards_per_node (CLU-015).
 So on 8.3 or later it is not rated and only the current numbers are shown.
 
 ### SHD-006: Uneven shard count across nodes in the same tier
@@ -809,6 +822,7 @@ User index with mapping.total_fields.limit > 1000 (the default) → Warning (MAP
 | Thresholds | `heavy_index_docs` = 10,000,000 ([Tool] Threshold for a heavily indexed index)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (settings.json) and (indices_stats.json) |
 | Source files | settings.json / indices_stats.json |
+| References | [Index modules (refresh_interval, search idle)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 
 **Decision logic**
 
@@ -1005,7 +1019,7 @@ it is a Warning for a 'cluster-wide oversharding trend'. If the conditions are n
 | Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (settings.json) |
 | Source files | settings.json |
-| References | [General recommendations](https://www.elastic.co/docs/deploy-manage/production-guidance/general-recommendations) |
+| References | [Index modules (index.max_result_window)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules)<br>[Paginate search results](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/paginate-search-results) |
 
 **Decision logic**
 
@@ -1073,7 +1087,7 @@ mounts a volume, so neither is affected. The install type is determined from bui
 | Possible severities | Warning |
 | Required input | (nodes.json) |
 | Source files | nodes.json / nodes.json (transport_address) |
-| References | [Important settings configuration](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration) |
+| References | [Important settings configuration](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration)<br>[Bootstrap checks](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/bootstrap-checks) |
 
 **Decision logic**
 
@@ -1168,6 +1182,8 @@ Elasticsearch 9.0+ and logs-*-* data streams whose write index is not in logsdb 
 Official: from 9.0, logsdb is set automatically on new logs-*-* data streams. Data streams that existed before an
 upgrade from 8.x, including integration and APM streams, are not switched. Data streams set to time_series are skipped,
 and so are bundles without settings.json and data_stream.json index_mode, where the mode cannot be determined.
+The switch is cluster.logsdb.enabled: it defaults to false when logs data existed before 9.0 (logsdb.prior_logs_usage),
+and while it is false even new logs-*-* indices stay standard. Its value is shown when the bundle reports it.
 
 ### SHD-009: Too many indices for the master node heap
 
@@ -1191,7 +1207,7 @@ Based on 3000 indices per 1GB of heap on master-eligible nodes.
 | --- | --- |
 | Function | `guidance.r_mapping_heap_overhead` |
 | Evidence basis | Official |
-| Possible severities | Warning, OK |
+| Possible severities | Warning, Info, OK |
 | Thresholds | `heap_baseline_bytes` = 512MiB ([Official] Extra 0.5GB margin in the field mapper estimate)<br>`mapping_heap_pct_warn` = 50 ([Tool] Estimated mapping overhead / heap) |
 | Required input | (nodes_stats.json) and (cluster_stats.json) |
 | Source files | cluster_stats.json / nodes_stats.json |
@@ -1201,7 +1217,8 @@ Based on 3000 indices per 1GB of heap on master-eligible nodes.
 
 Estimated heap needed per data node = cluster state mapping size (deduplicated) + node field overhead + 0.5GB (official formula).
 
-Estimate / heap_max >= mapping_heap_pct_warn → Warning, below → OK. Dedicated master and ML nodes are not part of the calculation.
+The official check is that the estimate fits in the heap: estimate >= heap_max → Warning. Estimate / heap_max >= mapping_heap_pct_warn
+(tool threshold) → Info, below → OK. Dedicated master and ML nodes are not part of the calculation.
 
 ### SHD-011: Many empty indices
 
@@ -1254,7 +1271,7 @@ Whether index.routing.allocation.total_shards_per_node is set to prevent hot spo
 Indexing buffer per shard.
 
 indices.memory.index_buffer_size (default 10% of heap) is shared by the 'recently written (active)' shards.
-A shard with no writes for 5 minutes or more becomes inactive and gives its buffer back. The bundle cannot show directly which shards are active,
+A shard with no writes for 5 minutes or more (indices.memory.shard_inactive_time, from the source) becomes inactive and gives its buffer back. The bundle cannot show directly which shards are active,
 so only shards that are confirmed write targets (data stream write indices plus indices that were indexing at collection time) are counted.
 
 ### PERF-005: Too many open search contexts
@@ -1335,7 +1352,7 @@ Info if any index has index.store.preload set; Warning if the count is > preload
 
 Warning if nodes_stats fs.data[].type includes nfs / cifs / smb / fuse / glusterfs / ceph.
 
-### DISK-006: Default codec on large standard indices
+### DISK-006: Default codec on large indices
 
 | Item | Details |
 | --- | --- |
@@ -1349,7 +1366,10 @@ Warning if nodes_stats fs.data[].type includes nfs / cifs / smb / fuse / gluster
 
 **Decision logic**
 
-User indices in standard mode with primary store >= codec_check_min_bytes and index.codec left at default (not set) → Info. logsdb and time_series are excluded because best_compression is their default.
+User indices with primary store >= codec_check_min_bytes and index.codec left at default (not set) → Info.
+
+Only logsdb is excluded: it is the only index mode whose default codec is best_compression (official logsdb docs, and IndexMode in
+the Elasticsearch source). standard and time_series indices default to the LZ4 codec.
 
 ### DISK-007: Indices with _source disabled
 
@@ -1359,13 +1379,17 @@ User indices in standard mode with primary store >= codec_check_min_bytes and in
 | Evidence basis | Official |
 | Possible severities | Warning, Info |
 | Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
-| Required input | (settings.json) |
-| Source files | settings.json |
-| References | [Tune for disk usage](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/disk-usage) |
+| Required input | (settings.json or mapping.json) |
+| Source files | mapping.json / settings.json / settings.json |
+| References | [Tune for disk usage](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/disk-usage)<br>[_source field](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/mapping-source-field) |
 
 **Decision logic**
 
-index.mapping.source.mode=disabled → Warning. Any other mode (synthetic, etc.) → Info.
+_source disabled → Warning; synthetic _source → Info (DISK-007).
+
+Disabled is found two ways: the mapping parameter "_source": {"enabled": false} in mapping.json (the documented way), and
+index.mapping.source.mode=disabled in settings.json. index.mapping.source.mode=synthetic is listed as Info. stored is the
+default and is not listed. System indices are skipped.
 
 ### MAP-003: Index templates without dynamic mapping control
 
@@ -1416,7 +1440,8 @@ Per-index dense_vector off-heap (total, or primaries if total is missing). Requi
 
 Whether high-dimension float vectors are quantized (rated after merging components).
 
-From 8.14, a dense_vector without index_options gets quantized HNSW by default.
+From 8.14, a float dense_vector without index_options gets quantized HNSW by default (int8_hnsw; bbq_hnsw for 384 dimensions
+or more from 9.1; bbq_disk from 9.4 when the license allows it). byte and bit vectors are not quantized and are not rated.
 So 'not set' is not treated as a problem on 8.14 or later; only an explicit non-quantized type (hnsw/flat) is rated.
 
 ### VEC-004: Too many segments in vector indices
@@ -1476,6 +1501,8 @@ Tiers with different roles and loads are not compared with each other. Frozen ti
 For each metric, Warning when max - min within the tier >= gap and the max is >= floor. Values are point-in-time at collection.
 Nodes up for less than node_compare_min_uptime_hours are left out of the heap and CPU comparison (cold caches and
 fewer active shards right after a restart make them look idle). Disk usage does not reset on restart, so they stay in that one.
+The official docs look for skew that persists and for write and search queues backing up; the queues at collection are shown
+as well, and one bundle cannot show whether the skew persists.
 
 ### HOT-002.(sub-items): Uneven %s workload within a tier
 
@@ -1543,6 +1570,7 @@ It is reported as a possible recovery bottleneck only while a recovery or reloca
 | Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (templates.json) and (index_templates.json) |
 | Source files | templates.json / index_templates.json |
+| References | [Templates](https://www.elastic.co/docs/manage-data/data-store/templates) |
 
 **Decision logic**
 
@@ -1562,6 +1590,7 @@ Pattern overlap is estimated by comparing wildcards.
 | Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (settings.json) |
 | Source files | settings.json |
+| References | [Delaying allocation when a node leaves](https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-allocation-relocation-recovery/delaying-allocation-when-node-leaves) |
 
 **Decision logic**
 
@@ -1846,7 +1875,7 @@ on a hosted instance). Such a node is shown as "cannot be determined" and is not
 | Findings | MAP-004 Indices with field count close to the mapping limit / MAP-005 fielddata enabled on text fields / MAP-006 nested field count close to the limit |
 | Evidence basis | Official / Tool threshold |
 | Possible severities | Warning, Info |
-| Thresholds | `mapping_fields_near_limit_pct` = 90 ([Tool] Field count against total_fields.limit)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Thresholds | `mapping_fields_near_limit_pct` = 90 ([Tool] Field count against total_fields.limit)<br>`nested_fields_near_limit_pct` = 80 ([Tool] Nested field count against nested_fields.limit)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (mapping.json) |
 | Source files | mapping.json / mapping.json / settings.json |
 | References | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit)<br>[fielddata mapping parameter](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/text#fielddata-mapping-param) |
@@ -1859,7 +1888,7 @@ Field count >= total_fields.limit × mapping_fields_near_limit_pct → Warning (
 Indices without ignore_dynamic_beyond_limit are listed first because they are the ones that can fail indexing; the table also shows
 who manages the data stream template (Fleet package or Elastic), since integration templates usually set the ignore option.
 Searchable snapshot mounts are skipped because they are read-only.
-text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × 80% → Warning (MAP-006).
+text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × nested_fields_near_limit_pct → Warning (MAP-006). The default limit is 100 for indices created on 9.3 or later and 50 before.
 
 ### VEC-005: High-dimension float vectors in live indices are not quantized
 
@@ -2174,7 +2203,10 @@ No logs/ directory → Info (LOG-000). If the bundle was collected in local/remo
 
 **Decision logic**
 
-vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: target process is java/elasticsearch → Critical, any other process → Warning (SYS-004); no entry → OK.
+OS settings of the host where diagnostics ran (SYS-001 to SYS-004).
+
+vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation, in the docs since 8.15 to 8.17; 262144 before) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: target process is java/elasticsearch → Critical, any other process → Warning (SYS-004); no entry → OK.
+When every node runs in development mode (loopback transport or single-node discovery), bootstrap checks are not enforced, so the Critical results of SYS-001 and SYS-003 drop to Warning.
 
 ## Trend (--baseline comparison mode)
 
@@ -2333,16 +2365,16 @@ Official default, kind, meaning and effect of change for each setting used by SE
 
 | Setting | Default | Kind | Scope | Meaning | Effect of change | Risk (up/down) | Docs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `action.auto_create_index` | true | dynamic | cluster | Whether indexing into a nonexistent index creates it automatically (patterns can be specified). | Restricting it prevents indices created by typos, but indexing fails for any ingest target that is not in the allowed patterns. If data stream or system index patterns are missing, features can stop working. | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `action.destructive_requires_name` | true | dynamic | cluster | Prevents deleting indices with wildcards or _all (default true since 8.0). | With false, a single request such as DELETE * can delete every index. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `bootstrap.memory_lock` | false | static | node | Locks the heap in RAM (prevents swapping). | With true, swapping is prevented. If the OS memlock limit is too low, the bootstrap check fails at startup. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `action.auto_create_index` | true | dynamic | cluster | Whether indexing into a nonexistent index creates it automatically (patterns can be specified). | Restricting it prevents indices created by typos, but indexing fails for any ingest target that is not in the allowed patterns. If data stream or system index patterns are missing, features can stop working. | INFO | [Index management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-management-settings) |
+| `action.destructive_requires_name` | true | dynamic | cluster | Prevents deleting indices with wildcards or _all (default true since 8.0). | With false, a single request such as DELETE * can delete every index. | WARNING | [Index management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-management-settings) |
+| `bootstrap.memory_lock` | false (from the Elasticsearch source; not in the docs) | static | node | Locks the heap in RAM (prevents swapping). | With true, swapping is prevented. If the OS memlock limit is too low, the bootstrap check fails at startup. | - | [Disable swapping](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/setup-configuration-memory) |
 | `cluster.blocks.read_only` | false | dynamic | cluster | Makes the whole cluster read-only. | With true, all writes and metadata changes are rejected. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.blocks.read_only_allow_delete` | false | dynamic | cluster | Makes the whole cluster read-only (deletes are still allowed). | With true, all writes except index deletion are rejected. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `cluster.indices.close.enable` | true | dynamic | cluster | Whether the close index API is allowed. | With false, indices cannot be closed (some environments block it because closed indices are hard to manage for replication and snapshots). | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `cluster.indices.close.enable` | true | dynamic | cluster | Whether the close index API is allowed. | With false, indices cannot be closed (some environments block it because closed indices are hard to manage for replication and snapshots). | INFO | [Index management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-management-settings) |
 | `cluster.info.update.interval` | 30s | dynamic | cluster | How often disk usage is checked. | ↑ Rapid disk growth is detected later.<br>↓ The master gets slightly more load. | WARNING / INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
-| `cluster.max_shards_per_node` | 1000 | dynamic | cluster | Open shard limit per non-frozen data node (cluster limit = value x number of nodes). | ↑ The limit is reached later, but the costs of oversharding that the limit was holding back (heap, cluster state, master load) pile up unchecked.<br>↓ Creating new indices and rollover fail sooner. | WARNING / INFO | [Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
-| `cluster.max_shards_per_node.frozen` | 3000 | dynamic | cluster | Shard limit per frozen-only node. | ↑ Metadata load on frozen nodes increases.<br>↓ Fewer indices can be mounted. | INFO / INFO | [Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
-| `cluster.metadata.display_name` | (none) | dynamic | cluster | Display name of the cluster (Elastic Cloud metadata). | No effect on behavior. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `cluster.max_shards_per_node` | 1000 | dynamic | cluster | Open shard limit per non-frozen data node (cluster limit = value x number of nodes). | ↑ The limit is reached later, but the costs of oversharding that the limit was holding back (heap, cluster state, master load) pile up unchecked.<br>↓ Creating new indices and rollover fail sooner. | WARNING / INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `cluster.max_shards_per_node.frozen` | 3000 | dynamic | cluster | Shard limit per frozen-only node. | ↑ Metadata load on frozen nodes increases.<br>↓ Fewer indices can be mounted. | INFO / INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `cluster.metadata.display_name` | (none) | dynamic | cluster | User-defined cluster metadata (ECH stores the deployment name here). Not an Elasticsearch setting, so it has no default. | No effect on behavior. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.persistent_tasks.allocation.enable` | all | dynamic | cluster | Allows persistent task allocation (ML jobs, transforms, and so on). | With none, new persistent tasks are not allocated. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.routing.allocation.allow_rebalance` | always | dynamic | cluster | When rebalancing may start (default always for the desired balance allocator, indices_all_active for the legacy allocator). | A stricter condition (indices_primaries_active / indices_all_active) postpones rebalancing until recovery finishes, so the uneven distribution is resolved later. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.awareness.attributes` | (none) | dynamic | cluster | Node attributes used to place primaries and replicas in different zones (zone, rack). | When set, copies of the same shard are placed in different zones. If the zones have different numbers of nodes, some copies can stay unassigned. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
@@ -2364,65 +2396,65 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `cluster.routing.allocation.same_shard.host` | false | dynamic | cluster | Prevents copies of the same shard from being placed on multiple nodes of the same host. | true is a safeguard needed when several nodes run on one server. With false on a single-node or single-host setup, a host failure can take out the primary and its replica together. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.total_shards_per_node` | -1 | dynamic | cluster | Upper limit on the total number of shards per node (-1 = unlimited). | ↓ Shards that hit the limit stay unassigned. After a node failure they cannot move to the remaining nodes, which can turn the cluster red. | - / WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.rebalance.enable` | all | dynamic | cluster | Which shards are allowed to be rebalanced. | Rebalancing is restricted, so shards do not move to new nodes even after you add nodes, and the uneven distribution stays. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
-| `cluster.routing.use_adaptive_replica_selection` | true | dynamic | cluster | Distributes search requests across copies based on response time and queue length (adaptive replica selection, ARS). | With false, requests are distributed round-robin, and a single slow node raises the p99 of all searches. | WARNING | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
+| `cluster.routing.use_adaptive_replica_selection` | true | dynamic | cluster | Distributes search requests across copies based on response time and queue length (adaptive replica selection, ARS). | With false, requests are distributed round-robin, and a single slow node raises the p99 of all searches. | WARNING | [Search shard routing](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-shard-routing) |
 | `http.max_content_length` | 100mb | static | node | Maximum size of an HTTP request body. | ↑ Large bulk requests and documents are allowed, which raises the risk of heap spikes (the Lucene limit of about 2GB still applies).<br>↓ Large bulk requests are rejected with 413. | WARNING / INFO | [Networking settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/networking-settings) |
 | `index.auto_expand_replicas` | false | dynamic | index | Adjusts the replica count automatically to the number of data nodes. | On a large index, adding nodes automatically adds replicas, and disk and recovery load spike. | INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.blocks.read_only` | false | dynamic | index | Read-only. | With true, writes and metadata changes are rejected. | WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.blocks.read_only_allow_delete` | false | dynamic | index | Read-only (deletes allowed). Set automatically at flood stage. | With true, indexing is rejected. Clear it after freeing disk space (on 8.x it is cleared automatically once space recovers). | WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.blocks.write` | false | dynamic | index | Blocks writes. | With true, indexing is rejected. | WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
+| `index.blocks.read_only` | false | dynamic | index | Read-only. | With true, writes and metadata changes are rejected. | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
+| `index.blocks.read_only_allow_delete` | false | dynamic | index | Read-only (deletes allowed). Set automatically at flood stage. | With true, indexing is rejected. Clear it after freeing disk space (on 8.x it is cleared automatically once space recovers). | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
+| `index.blocks.write` | false | dynamic | index | Blocks writes. | With true, indexing is rejected. | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
 | `index.codec` | default(LZ4) | static | index | Compression method for stored fields (logsdb and time_series modes default to best_compression). | best_compression saves storage but adds decompression cost when fetching documents. It is a static setting, so it can only be changed on a closed index, and existing segments pick it up after a merge. | INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.highlight.max_analyzed_offset` | 1000000 | dynamic | index | Maximum number of characters analyzed for highlighting. | ↑ Highlighting large documents uses a lot of CPU and heap.<br>↓ Highlights of long documents are truncated or fail. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.mapping.depth.limit` | 20 | dynamic | index | Maximum object nesting depth. | ↑ Deeply nested documents are allowed.<br>↓ Indexing may be rejected. | INFO / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
-| `index.mapping.nested_fields.limit` | 50 | dynamic | index | Limit on the number of nested type fields. | ↑ Nested fields create hidden documents, which are expensive to store and search.<br>↓ Mappings are rejected. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
+| `index.mapping.nested_fields.limit` | 100 (50 for indices created before 9.3) | dynamic | index | Limit on the number of nested type fields. | ↑ Nested fields create hidden documents, which are expensive to store and search.<br>↓ Mappings are rejected. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
 | `index.mapping.nested_objects.limit` | 10000 | dynamic | index | Limit on the number of nested objects per document. | ↑ A single document can expand into tens of thousands of hidden documents and take most of the heap and disk.<br>↓ Indexing is rejected. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
 | `index.mapping.total_fields.limit` | 1000 | dynamic | index | Maximum number of fields per index (guards against mapping explosion). | ↑ More fields mean more cluster state and heap usage and more master load (a sign of mapping explosion).<br>↓ Indexing fails when a new field arrives. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
 | `index.max_docvalue_fields_search` | 100 | dynamic | index | Maximum number of docvalue_fields per request. | ↑ Response generation costs more.<br>↓ Those requests are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_inner_result_window` | 100 | dynamic | index | Maximum value of from + size for inner_hits and top_hits. | ↑ Aggregation responses get larger and heap usage increases.<br>↓ Those queries are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_ngram_diff` | 1 | dynamic | index | Allowed difference between min and max for the ngram tokenizer. | ↑ The number of tokens grows sharply, which strongly affects index size and speed.<br>↓ Analyzer definitions are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.max_refresh_listeners` | 1000 | dynamic | index | Maximum number of waiters for refresh=wait_for. | ↑ Waiting requests use more heap.<br>↓ Requests over the limit force a refresh. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
+| `index.max_refresh_listeners` | 1000 (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum number of waiters for refresh=wait_for. | ↑ Waiting requests use more heap.<br>↓ Requests over the limit force a refresh. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_regex_length` | 1000 | dynamic | index | Maximum length of a regexp query. | ↑ Complex regular expressions can take most of the CPU.<br>↓ Those queries are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_result_window` | 10000 | dynamic | index | Maximum value of from + size. | ↑ Deep paging is allowed. Each shard collects from+size hits, so heap usage grows with page depth.<br>↓ Deep page requests are rejected. | WARNING / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_script_fields` | 32 | dynamic | index | Maximum number of script_fields per request. | ↑ Search CPU usage increases.<br>↓ Those requests are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_shingle_diff` | 3 | dynamic | index | Allowed difference between min and max for the shingle filter. | ↑ The number of tokens grows sharply.<br>↓ Analyzer definitions are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_terms_count` | 65536 | dynamic | index | Maximum number of terms in a terms query. | ↑ Large terms queries use a lot of CPU and heap.<br>↓ Those queries are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.merge.policy.max_merged_segment` | 5gb | dynamic | index | Maximum size of a segment produced by a merge. | ↑ Fewer segments make search faster (kNN in particular), but each merge does more I/O.<br>↓ Segments pile up and search gets slower. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.segments_per_tier` | 10 | dynamic | index | Number of segments allowed per tier. | ↑ Fewer merges, but more segments.<br>↓ Merges run more often and I/O increases. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merged_segment` | 5gb (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum size of a segment produced by a merge. | ↑ Fewer segments make search faster (kNN in particular), but each merge does more I/O.<br>↓ Segments pile up and search gets slower. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.segments_per_tier` | 10 (from the Elasticsearch source; not in the docs) | dynamic | index | Number of segments allowed per tier. | ↑ Fewer merges, but more segments.<br>↓ Merges run more often and I/O increases. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
 | `index.number_of_replicas` | 1 | dynamic | index | Number of replicas per shard. | ↑ Availability and search throughput increase, but disk and indexing cost grow in proportion to the replica count.<br>↓ With 0, the failure of a single node can lose data. | INFO / WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.queries.cache.enabled` | true | static | index | Use of the node query (filter) cache. | With false, repeated filters are recomputed every time. | INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
 | `index.refresh_interval` | 1s (search idle applies when not set) | dynamic | index | How often new documents become visible to search. | ↑ Indexing throughput increases and merge load decreases, but documents become searchable later. -1 stops refresh.<br>↓ Segments are created more often, which increases CPU and merge load. Setting it explicitly turns off the search idle optimization. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.requests.cache.enable` | true | dynamic | index | Use of the shard request cache. | With false, repeated aggregations are recomputed every time. | INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
-| `index.routing.allocation.total_shards_per_node` | -1 | dynamic | index | Upper limit on the number of shards of this index per node (prevents hot spots). | ↓ If it is too small, shards have nowhere to go when a node fails and stay unassigned. | - / WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
+| `index.requests.cache.enable` | true | dynamic | index | Use of the shard request cache. | With false, repeated aggregations are recomputed every time. | INFO | [The shard request cache](https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-request-cache) |
+| `index.routing.allocation.total_shards_per_node` | -1 | dynamic | index | Upper limit on the number of shards of this index per node (prevents hot spots). | ↓ If it is too small, shards have nowhere to go when a node fails and stay unassigned. | - / WARNING | [Total shards per node](https://www.elastic.co/docs/reference/elasticsearch/index-settings/total-shards-per-node) |
 | `index.search.idle.after` | 30s | dynamic | index | How long without searches before periodic refresh is skipped. | ↑ The benefit of skipping refresh starts later.<br>↓ Search idle starts sooner, so an occasional first search has to wait for a refresh. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.translog.durability` | request | dynamic | index | Whether the translog is fsynced on every request (request) or periodically (async). | With async, indexing is faster, but an unclean node shutdown can lose acknowledged writes from the last sync_interval. | WARNING | [Translog settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog) |
 | `index.translog.sync_interval` | 5s | dynamic | index | Translog fsync interval in async mode. | ↑ The window in which data can be lost in async mode gets longer.<br>↓ fsync runs more often. | INFO / INFO | [Translog settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog) |
-| `index.unassigned.node_left.delayed_timeout` | 1m | dynamic | index | How long replica reallocation is delayed after a node leaves. | ↑ The cluster stays yellow longer while waiting for the node to come back, but unnecessary re-replication is reduced.<br>↓ Even a brief restart starts full re-replication (0 means immediately). | INFO / WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
+| `index.unassigned.node_left.delayed_timeout` | 1m | dynamic | index | How long replica reallocation is delayed after a node leaves. | ↑ The cluster stays yellow longer while waiting for the node to come back, but unnecessary re-replication is reduced.<br>↓ Even a brief restart starts full re-replication (0 means immediately). | INFO / WARNING | [Delaying allocation when a node leaves](https://www.elastic.co/docs/deploy-manage/distributed-architecture/shard-allocation-relocation-recovery/delaying-allocation-when-node-leaves) |
 | `indices.breaker.fielddata.limit` | 40% | dynamic | cluster | Limit for loading fielddata (relative to heap). | ↑ Aggregations on text fields and similar operations eat into heap and increase GC pressure.<br>↓ Aggregations are rejected sooner. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.breaker.request.limit` | 60% | dynamic | cluster | Memory limit per request (for aggregations and so on). | ↑ A large aggregation can take most of the heap.<br>↓ Aggregations are rejected sooner. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
-| `indices.breaker.total.limit` | 95% | dynamic | cluster | Parent breaker limit (95% when use_real_memory=true, 70% when false). | ↑ Requests are accepted until just before OOM, which raises the risk that the node dies with OutOfMemoryError.<br>↓ Even normal requests are rejected with CircuitBreakingException. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
+| `indices.breaker.total.limit` | 95% (70% when indices.breaker.total.use_real_memory is false) | dynamic | cluster | Parent breaker limit (95% when use_real_memory=true, 70% when false). | ↑ Requests are accepted until just before OOM, which raises the risk that the node dies with OutOfMemoryError.<br>↓ Even normal requests are rejected with CircuitBreakingException. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.breaker.total.use_real_memory` | true | static | node | The parent breaker decides based on actual heap usage. | With false, it uses estimates (default limit 70%), which can diverge from actual heap usage. | WARNING | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.fielddata.cache.size` | unbounded | static | node | Upper limit of the fielddata cache (unlimited by default; the effective limit is the fielddata breaker). | With a limit, evictions occur and those aggregations reload fielddata every time. | INFO | [Field data cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/field-data-cache-settings) |
-| `indices.lifecycle.poll_interval` | 10m | dynamic | cluster | How often ILM conditions are checked. | ↑ Rollover and deletion run late, so shard sizes and disk usage grow beyond plan.<br>↓ Master load increases. Do not lower it except for testing. | INFO / WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `indices.lifecycle.poll_interval` | 10m | dynamic | cluster | How often ILM conditions are checked. | ↑ Rollover and deletion run late, so shard sizes and disk usage grow beyond plan.<br>↓ Master load increases. Do not lower it except for testing. | INFO / WARNING | [Index lifecycle management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-lifecycle-management-settings) |
 | `indices.memory.index_buffer_size` | 10% | static | node | Indexing buffer (relative to heap), shared by the shards that are being written to. | ↑ Bulk indexing is more efficient, but less heap is left for search and aggregations.<br>↓ Flushes become more frequent and small segments increase. | INFO / INFO | [Indexing buffer settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/indexing-buffer-settings) |
 | `indices.queries.cache.size` | 10% | static | node | Size of the node query (filter) cache (relative to heap). | ↑ More heap stays occupied, which increases GC pressure.<br>↓ The filter cache hit rate drops. | INFO / INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
-| `indices.recovery.max_bytes_per_sec` | 40mb | dynamic | cluster | Recovery bandwidth limit per node (dedicated cold/frozen nodes get a value calculated automatically from memory). | ↑ Recovery is faster, but recovery traffic can take I/O away from the service.<br>↓ Recovery after a node replacement or restart is slower, so the cluster stays yellow longer. | INFO / WARNING | [Index recovery settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-recovery-settings) |
-| `indices.requests.cache.size` | 1% | static | node | Size of the shard request cache (relative to heap). | ↑ More heap stays occupied.<br>↓ The aggregation result cache helps less. | INFO / INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
-| `ingest.geoip.downloader.enabled` | true | dynamic | cluster | Automatic download of the GeoIP database. | false is normal in an air-gapped environment. In that case you must distribute the database manually for the geoip processor to work. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `indices.recovery.max_bytes_per_sec` | 40mb (dedicated cold/frozen nodes: 40mb to 250mb by total memory) | dynamic | cluster | Recovery bandwidth limit per node (dedicated cold/frozen nodes get a value calculated automatically from memory). | ↑ Recovery is faster, but recovery traffic can take I/O away from the service.<br>↓ Recovery after a node replacement or restart is slower, so the cluster stays yellow longer. | INFO / WARNING | [Index recovery settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-recovery-settings) |
+| `indices.requests.cache.size` | 1% | static | node | Size of the shard request cache (relative to heap). | ↑ More heap stays occupied.<br>↓ The aggregation result cache helps less. | INFO / INFO | [Shard request cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/shard-request-cache-settings) |
+| `ingest.geoip.downloader.enabled` | true | dynamic | cluster | Automatic download of the GeoIP database. | false is normal in an air-gapped environment. In that case you must distribute the database manually for the geoip processor to work. | - | [GeoIP processor](https://www.elastic.co/docs/reference/enrich-processor/geoip-processor) |
 | `network.breaker.inflight_requests.limit` | 100% | dynamic | cluster | Size limit for in-flight requests (transport/HTTP). | ↑ Large bulk requests arriving together can spike heap.<br>↓ Large requests are rejected. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `node.processors` | Number of available processors (automatic) | static | node | Number of CPUs that ES sees (the basis for thread pool sizing). | Setting it too high creates too many threads, and too low leaves CPU unused. Use it to match the CPU limit in a container. | INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
-| `node.store.allow_mmap` | true | static | node | Use of mmap for Lucene files. | With false, files are read through NIO instead of mmap, which can reduce search performance (for environments that cannot raise vm.max_map_count). | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `script.max_compilations_rate` | 150/5m | dynamic | cluster | Rate limit for script compilation. | Raising it hides misuse (sending a different script each time instead of using params) and increases CPU and memory load. | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `search.allow_expensive_queries` | true | dynamic | cluster | Whether expensive queries such as script, wildcard, regexp, and fuzzy are allowed. | With false, those queries are rejected (as a protection). Some Kibana features can be affected. | INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
-| `search.default_search_timeout` | -1 | dynamic | cluster | Search timeout applied when the request has no timeout (-1 = unlimited). | A short value makes heavy queries end with partial results. With unlimited, a runaway query can hold resources indefinitely. | INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
-| `search.low_level_cancellation` | true | dynamic | cluster | Applies search cancellation requests quickly at segment level. | With false, a cancelled search stops late and uses resources longer. | INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
+| `node.store.allow_mmap` | true | static | node | Use of mmap for Lucene files. | With false, files are read through NIO instead of mmap, which can reduce search performance (for environments that cannot raise vm.max_map_count). | INFO | [Store (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/store) |
+| `script.max_compilations_rate` | 150/5m | dynamic | cluster | Rate limit for script compilation. | Raising it hides misuse (sending a different script each time instead of using params) and increases CPU and memory load. | INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
+| `search.allow_expensive_queries` | true | dynamic | cluster | Whether expensive queries such as script, wildcard, regexp, and fuzzy are allowed. | With false, those queries are rejected (as a protection). Some Kibana features can be affected. | INFO | [Query DSL](https://www.elastic.co/docs/reference/query-languages/querydsl) |
+| `search.default_search_timeout` | -1 | dynamic | cluster | Search timeout applied when the request has no timeout (-1 = unlimited). | A short value makes heavy queries end with partial results. With unlimited, a runaway query can hold resources indefinitely. | INFO | [The search API](https://www.elastic.co/docs/solutions/search/the-search-api) |
+| `search.low_level_cancellation` | true (from the Elasticsearch source; not in the docs) | dynamic | cluster | Applies search cancellation requests quickly at segment level. | With false, a cancelled search stops late and uses resources longer. | INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
 | `search.max_buckets` | 65536 | dynamic | cluster | Maximum number of aggregation buckets in a single response. | ↑ Large aggregations are allowed, which raises the risk of heap pressure on the coordinating node and circuit breaker trips.<br>↓ Existing dashboard aggregations can fail. | WARNING / INFO | [Search settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/search-settings) |
-| `slm.retention_schedule` | 0 30 1 * * ? | dynamic | cluster | How often the SLM retention policy (deletion of old snapshots) runs. | The run time changes. If it is too infrequent, the snapshot repository grows beyond plan. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `slm.retention_schedule` | 0 30 1 * * ? | dynamic | cluster | How often the SLM retention policy (deletion of old snapshots) runs. | The run time changes. If it is too infrequent, the snapshot repository grows beyond plan. | - | [Snapshot and restore settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/snapshot-restore-settings) |
 | `thread_pool.search.queue_size` | Calculated automatically (observed on 9.4.4: number of search threads x 1000, 1000 per the documentation for 8.x and earlier) | static | node | Queue size of the search thread pool. | ↑ Fewer rejections, but search latency and heap usage increase.<br>↓ Rejections start sooner. | WARNING / INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
 | `thread_pool.search.size` | int((cores x 3) / 2) + 1 (automatic) | static | node | Number of search threads. | Arbitrary changes cause CPU contention or lower throughput. | WARNING | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
-| `thread_pool.write.queue_size` | 10000 | static | node | Queue size of the write thread pool. | ↑ Fewer rejections, but requests wait longer in the queue, which adds latency and heap usage. It also hides the root cause (overload).<br>↓ Rejections (429) start sooner. | WARNING / INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
+| `thread_pool.write.queue_size` | 10000 (9.2+: max(10000, allocated processors x 750)) | static | node | Queue size of the write thread pool. | ↑ Fewer rejections, but requests wait longer in the queue, which adds latency and heap usage. It also hides the root cause (overload).<br>↓ Rejections (429) start sooner. | WARNING / INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
 | `thread_pool.write.size` | Number of CPU cores (automatic) | static | node | Number of write threads. | Setting it above the core count only adds context switching and does not increase throughput. | WARNING | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
-| `transport.compress` | indexing_data | dynamic | cluster | What is compressed in node-to-node transport. | true compresses all transport and uses more CPU. false does not even compress indexing data, so network usage grows. | INFO | [Networking settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/networking-settings) |
-| `xpack.ml.max_machine_memory_percent` | 30 | dynamic | cluster | Share of node memory that ML can use. | ↑ ML processes take memory away from the filesystem cache and other processes.<br>↓ ML jobs may fail to be allocated. | INFO / INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `xpack.monitoring.collection.enabled` | false | dynamic | cluster | Legacy internal monitoring collection. | With true, monitoring data is indexed into the cluster itself, which adds load. Use a separate cluster for production monitoring. | INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
+| `transport.compress` | indexing_data | static | node | What is compressed in node-to-node transport. | true compresses all transport and uses more CPU. false does not even compress indexing data, so network usage grows. | INFO | [Networking settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/networking-settings) |
+| `xpack.ml.max_machine_memory_percent` | 30 | dynamic | cluster | Share of node memory that ML can use. | ↑ ML processes take memory away from the filesystem cache and other processes.<br>↓ ML jobs may fail to be allocated. | INFO / INFO | [Machine learning settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/machine-learning-settings) |
+| `xpack.monitoring.collection.enabled` | false | dynamic | cluster | Legacy internal monitoring collection. Deprecated; the monitoring plugin is removed in 10.0. | With true, monitoring data is indexed into the cluster itself, which adds load. Use a separate cluster for production monitoring. | INFO | [Monitoring settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/monitoring-settings) |
 | `cluster.routing.allocation.exclude.*` | (none) | dynamic | cluster | Moves shards off the specified nodes (by name, IP, host, or attribute). | No shards are placed on those nodes. If you do not remove the setting after maintenance, shards pile up on other nodes even though capacity is free. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.include.*` | (none) | dynamic | cluster | Allows shard placement only on the specified nodes. | Shards are not placed on nodes that do not match, which can cause uneven distribution or unassigned shards. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.require.*` | (none) | dynamic | cluster | Places shards only on nodes that meet all the specified conditions. | If too few nodes meet the conditions, shards stay unassigned. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
@@ -2436,7 +2468,8 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | --- | --- | --- |
 | `heap_used_pct_warn` | 75 | [Tool] Heap usage at collection time |
 | `heap_used_pct_crit` | 85 | [Tool] Heap usage at collection time |
-| `heap_max_bytes_crit` | 32GiB | [Official] Compressed oops boundary (below 32GB recommended) |
+| `heap_max_bytes_crit` | 30GiB | [Official] Compressed oops boundary can be as high as about 30GB (used when the JVM flag is missing) |
+| `heap_oops_safe_bytes` | 26GiB | [Official] 26GB is safe on most systems (used when the JVM flag is missing) |
 | `heap_vs_ram_pct_warn` | 50 | [Official] Heap <= 50% of total memory |
 | `heap_vs_ram_tolerance_pct` | 2 | [Tool] Tolerance for rounding and adjusted_total error |
 | `old_gc_time_ratio_warn` | 0.02 | [Tool] Cumulative old GC time / uptime |
@@ -2449,6 +2482,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `fd_used_pct_warn` | 70 | [Tool] Open files / maximum (official minimum limit is 65,535) |
 | `cgroup_throttle_ratio_warn` | 0.01 | [Tool] throttled / elapsed periods |
 | `cgroup_throttle_ratio_crit` | 0.05 | [Tool] throttled / elapsed periods |
+| `dedicated_master_data_nodes` | 10 | [Tool] Field guideline: data node count from which dedicated masters are expected |
 | `uptime_short_hours` | 6 | [Tool] Treats the node as recently restarted |
 | `node_compare_min_uptime_hours` | 24 | [Tool] Nodes up for less than this are left out of node-to-node comparisons |
 | `disk_watermark_low_default` | 85% | [Official] ES default (used only when no settings file is present) |
@@ -2463,6 +2497,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `shards_per_gb_heap_warn` | 20 | [Official] 20 shards per 1GB of heap (versions before 8.3 only) |
 | `shards_per_gb_heap_crit` | 30 | [Tool] Versions before 8.3 only |
 | `max_shards_per_node_headroom_pct_warn` | 80 | [Tool] Usage against cluster.max_shards_per_node |
+| `max_shards_per_node_crit_pct` | 95 | [Tool] Usage against cluster.max_shards_per_node that becomes Critical |
 | `shard_size_gb_warn` | 50 | [Official] Shards of 10-50GB |
 | `shard_size_gb_crit` | 200 | [Tool] Upper bound based on recovery time |
 | `small_shard_mb` | 1,024 | [Tool] Small shard threshold |
@@ -2545,6 +2580,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `logsdb_shard_gb_high` | 30 | [Tool] Upper end of the logsdb shard range (official upper bound is 50GB) |
 | `logsdb_shard_gb_low` | 10 | [Official] Lower end of the 10-50GB shard range |
 | `logsdb_rows_max` | 100 | [Tool] Maximum indices listed in the logsdb shard size table |
+| `nested_fields_near_limit_pct` | 80 | [Tool] Nested field count against nested_fields.limit |
 | `mapping_fields_near_limit_pct` | 90 | [Tool] Field count against total_fields.limit |
 | `ilm_rollover_max_shard_gb` | 50 | [Official] Recommended upper bound for shard size at rollover |
 | `ilm_implicit_max_shard_docs` | 200,000,000 | [Official] Rollover always runs at 200M docs per shard; higher values have no effect |

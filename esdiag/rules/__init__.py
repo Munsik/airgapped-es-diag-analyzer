@@ -54,7 +54,7 @@ REQUIRES = {
     "r_total_shards_per_node": [_SET, _IDX], "r_index_buffer": [_NODES, _SH],
     "r_open_contexts": [_STATS], "r_search_timeout": [_CS], "r_replica_throughput": [_SET, _IDX, _SH],
     "r_store_preload": [_SET], "r_remote_storage": [_STATS],
-    "r_codec": [_SET, _IDX], "r_source_mode": [_SET], "r_dynamic_mapping": [["index_templates.json"]],
+    "r_codec": [_SET, _IDX], "r_source_mode": [_SET + ["mapping.json"]], "r_dynamic_mapping": [["index_templates.json"]],
     "r_vector_memory": [_IDX, _STATS], "r_vector_quantization": [["index_templates.json"]],
     "r_vector_segments": [_IDX, _SH],
     # hotspot

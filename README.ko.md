@@ -175,7 +175,7 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 | 항목 | 값 |
 | --- | --- |
 | 판정 기준 Elasticsearch 버전 | **9.4** |
-| 공식 문서 대조 시점 | 2026-09 |
+| 공식 문서 대조 시점 | 2026-10 |
 | 실번들 검증 | 9.4.4(ECH, 3노드 단일 tier) · 9.5.3(ECH, 14노드 hot/warm/cold/frozen) — api 모드 |
 | 검증된 수집 모드 | **api**(위 두 번들) · **local**(diagnostics 9.4.1 로 수집한 self-managed ES 8.19.21 단일 노드, Rocky Linux 9). **remote 와 다중 노드 local 은 미검증** |
 | 대형 번들 검증 | 9.5.3 번들(인덱스 2,494개, cluster\_state 190MB, mapping 178MB): 분석 7초, 최대 메모리 약 0.9GB |
@@ -214,9 +214,9 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 
 | 구분 | 의미 | 판정 ID 수 |
 | --- | --- | --- |
-| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 69 |
+| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 68 |
 | 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 56 |
-| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 57 |
+| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 58 |
 | 비교 계산 | 두 번들 간 증가분·증가율·선형 외삽 | DIF-001~013 |
 
 고객에게 전달할 때 "공식 기준·사실 보고" 는 근거로, "도구 판단" 은 권고로 제시하십시오.
@@ -409,7 +409,7 @@ python3 analyze.py --print-thresholds > my.json   # 기본값 추출
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 132개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
+임계값 136개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
 
 ---
 
@@ -451,14 +451,15 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 929개, 문제 0 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 938개, 문제 0 |
 | `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현. 한국어·영어 두 언어로 실행 | 110개 통과 |
-| `tests/drive_branches.py` | 시나리오 58개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 58개 통과, 미실행 판정 분기 0 |
+| `tests/drive_branches.py` | 시나리오 61개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 61개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
 | `tools/gen_rules_doc.py --check` | 임계값·docstring 정합성 | 문제 0 |
 | `tests/test_local_mode.py` | local/remote 모드 전용 처리(logs/ 오탐·gz·이중 집계, syscalls/ 분기, 수집 실패 안내)를 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_logsdb.py` | 문서 수 한도·logsdb·force merge 판정(SHD-008·013·014·015, IDX-013, ILM-007·008·009)의 모든 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_write_path.py` | 쓰기 경로·운영 판정(PERF-012, OS-007, SHD-016, IDX-014·015, CLU-017, MAP-004, DIF-013)의 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
+| `tests/test_doc_audit.py` | 공식 문서 재대조로 고친 부분(JVM-002 oops 플래그, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom 조건, 개발 모드, 상황에 따라 달라지는 설정 기본값)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_bottleneck_cost.py` | 병목 요약, 최근 재시작 노드의 비교 제외(HOT-001·002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001~004 를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
 | `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |
@@ -523,6 +524,7 @@ bash tests/run_all.sh diagnostic.zip
 │   ├── test_logsdb.py          # 문서 수 한도·logsdb·force merge 판정 검증(합성 데이터)
 │   ├── test_write_path.py      # 쓰기 경로·운영 판정 검증(합성 데이터)
 │   ├── test_bottleneck_cost.py # 병목 요약·스토리지 비용 판정 검증(합성 데이터)
+│   ├── test_doc_audit.py       # 공식 문서 재대조 수정 사항 검증(합성 데이터)
 │   └── make_broken_bundle.py   # 장애 주입 번들 생성
 ├── docs/STYLE.md              # 문체·용어 규칙
 ├── README.md / README.ko.md

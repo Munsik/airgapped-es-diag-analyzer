@@ -9,7 +9,7 @@ from ..util import dig, fmt_bytes, fmt_ms, fmt_num, pct, dicts, num, items
 
 CAT = "node"
 DOC_HEAP = (N_("rules.nodes._.01"),
-            "https://www.elastic.co/docs/deploy-manage/deploy/self-managed/important-settings-configuration")
+            "https://www.elastic.co/docs/reference/elasticsearch/jvm-settings")
 DOC_DISK = (N_("rules.nodes._.02"),
             "https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings")
 DOC_TP = (N_("rules.nodes._.03"),
@@ -54,29 +54,48 @@ def r_heap_usage(ctx):
 
 
 def r_heap_sizing(ctx):
-    """heap_max >= heap_max_bytes_crit (32GiB) or using_compressed_ordinary_object_pointers=false → Warning (JVM-002). heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → Warning (JVM-003). heap_init (Xms) != heap_max (Xmx) → Warning (JVM-004)."""
+    """Compressed oops, heap versus RAM, and Xms versus Xmx (JVM-002 to 004).
+
+    JVM-002 rests on the flag the JVM reports (nodes.json jvm.using_compressed_ordinary_object_pointers): false → Warning, true → fine
+    whatever the heap size. Only when the flag is missing is the heap size used: the official docs say 26GB is safe on most systems
+    and the boundary can be as high as about 30GB, so heap >= heap_max_bytes_crit (30GiB) → Warning and >= heap_oops_safe_bytes
+    (26GiB) → Info.
+    heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → Warning (JVM-003). heap_init (Xms) != heap_max (Xmx) → Warning (JVM-004).
+    """
     out, rows = [], []
-    oops_off, oversize, mismatch, too_big_vs_ram = [], [], [], []
+    oops_off, oversize, near, mismatch, too_big_vs_ram = [], [], [], [], []
     for n in ctx.nodes:
         hm, ram, hi = n.heap_max, n.ram_total, n.heap_init
         oops = dig(n.info, "jvm", "using_compressed_ordinary_object_pointers")
         ratio = pct(hm, ram)
         rows.append([n.name, fmt_bytes(hm), fmt_bytes(hi), fmt_bytes(ram),
                      "%.0f%%" % ratio if ratio else "-", str(oops)])
-        if hm and hm >= ctx.t["heap_max_bytes_crit"]:
-            oversize.append(n.name)
-        if str(oops).lower() == "false":
+        flag = str(oops).lower() if oops is not None else ""
+        if flag == "false":
             oops_off.append(n.name)
+        elif flag != "true" and hm:
+            if hm >= ctx.t["heap_max_bytes_crit"]:
+                oversize.append(n.name)
+            elif hm >= ctx.t["heap_oops_safe_bytes"]:
+                near.append(n.name)
         if hm and hi and hm != hi:
             mismatch.append(n.name)
         if ratio and ratio > ctx.t["heap_vs_ram_pct_warn"] + ctx.t["heap_vs_ram_tolerance_pct"]:
             too_big_vs_ram.append(n.name)
     ev = table(["node", "heap_max", "heap_init(Xms)", "RAM", "heap/RAM", "compressed_oops"], rows)
-    if oops_off or oversize:
-        targets = sorted(set(oops_off) | set(oversize))
+    if oops_off or oversize or near:
+        targets = sorted(set(oops_off) | set(oversize) | set(near))
+        obs = []
+        if oops_off:
+            obs.append(T("rules.nodes.r_heap_sizing.12") % ", ".join(oops_off))
+        if oversize:
+            obs.append(T("rules.nodes.r_heap_sizing.13") % (fmt_bytes(ctx.t["heap_max_bytes_crit"]), ", ".join(oversize)))
+        if near:
+            obs.append(T("rules.nodes.r_heap_sizing.14") % (fmt_bytes(ctx.t["heap_oops_safe_bytes"]), ", ".join(near)))
         out.append(Finding(
-            "JVM-002", CAT, Severity.WARNING, T("rules.nodes.r_heap_sizing.01"),
-            observed=T("rules.nodes.r_heap_sizing.02") % ", ".join(targets),
+            "JVM-002", CAT, Severity.WARNING if (oops_off or oversize) else Severity.INFO,
+            T("rules.nodes.r_heap_sizing.01"),
+            observed=" / ".join(obs),
             impact=T("rules.nodes.r_heap_sizing.03"),
             recommend=T("rules.nodes.r_heap_sizing.04"),
             evidence=ev, affected=targets, refs=[DOC_HEAP], source="nodes.json / nodes_stats.json"))

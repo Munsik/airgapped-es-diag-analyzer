@@ -239,6 +239,20 @@ Limits of the diagnostics bundle: `cluster_settings_defaults` does not hold pure
 | Search thread wait time in hot threads ("other") as an I/O signal | Not used | It also counts time waiting on locks, so it does not identify storage waits |
 | Load average above the core count as I/O wait | Not used | Inside a container the load can be the host's (OS-001) |
 
+### 10-4. Official documentation re-check (2026-10)
+
+Every finding labeled Official, every version gate and every settings default was checked again against the current docs, and against the Elasticsearch source where the docs are silent. The changes are listed in CHANGELOG 0.14.0 under "Official documentation audit".
+
+| Item | Status | Rule |
+| --- | --- | --- |
+| Compressed oops: 26GB safe on most systems, up to about 30GB (JVM settings) | Implemented | JVM-002 (the JVM flag decides first) |
+| Closed indices do not count toward the shard limit; frozen indices have their own limit (Miscellaneous cluster settings) | Implemented | CLU-015 |
+| `"_source": {"enabled": false}` disables _source (_source field) | Implemented | DISK-007 |
+| Default max_headroom applies from 8.5 and only when the watermark is not set explicitly | Implemented | DISK-001 to DISK-005 |
+| Bootstrap checks apply only in production mode | Implemented | SYS-001, SYS-003 |
+| Dedicated master nodes "once a cluster has more than a handful of nodes" | Tool threshold | CLU-007 (10 data nodes, field guideline) |
+| ERU consumption | Not implemented | The docs give no formula and say billing depends on the contract |
+
 ---
 
 ## 11. Troubleshooting documents (operational criteria)
