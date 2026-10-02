@@ -540,7 +540,9 @@ tier 가 다르면 스펙이 다른 것이 정상 설계이므로 tier 간 차�
 
 노드별 flush, refresh, merge 평균 시간(nodes_stats indices.flush/refresh/merges 의 total_time / total).
 
-쓰기 대상 shard 가 있는 노드만 판정한다. warm·cold 노드는 ILM force merge 를 하므로 merge 가 긴 것이 정상이다.
+쓰기 대상 shard 가 있는 노드만 판정한다. 쓰기 대상이 없는 노드의 merge 는 force merge(ILM forcemerge,
+searchable_snapshot 이 기본으로 앞 단계에서 하는 force merge, 수동 _forcemerge)이거나 rollover 직후 마무리 merge 다.
+큰 segment 를 합치므로 평균이 긴 것이 스토리지가 느리다는 뜻은 아니다.
 작업 수가 write_latency_min_ops 미만인 항목은 제외한다.
 평균 >= *_avg_ms_warn → 주의, >= *_avg_ms_info → 참고(PERF-012). 공식 수치가 아닌 현장 기준값이며,
 노드 시작 이후 누적 평균이다. flush·merge 가 느리면 대개 스토리지가 따라가지 못하는 것이므로

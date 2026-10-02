@@ -273,7 +273,9 @@ def r_os(ctx):
 def r_write_latency(ctx):
     """Average flush, refresh and merge time per node (nodes_stats indices.flush/refresh/merges total_time / total).
 
-    Only nodes that hold write-target shards are rated: warm and cold nodes run ILM force merges, whose long merges are expected.
+    Only nodes that hold write-target shards are rated. On a node without them, merges come from a force merge (ILM forcemerge,
+    the force merge that searchable_snapshot runs in the preceding phase by default, or a manual _forcemerge) or from merges
+    finishing after rollover. Those merge large segments, so a long average there does not mean slow storage.
     Any metric with fewer than write_latency_min_ops operations is skipped.
     Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
     and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;

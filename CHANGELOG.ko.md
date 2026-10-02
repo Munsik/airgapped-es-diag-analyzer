@@ -23,7 +23,7 @@
 - CLU-017: 5분 이상 task 를 모두 주의로 표시 → action 별로 묶어 task 수와 가장 긴 실행 시간을 표시. 1시간 이상이면 주의, 5분 이상이면 참고. 모니터링·내부 task(`cluster:monitor/*`, `indices:monitor/*`, `internal:*`)는 24시간을 넘을 때만 보고. 쓰기 경로(bulk, reindex, update/delete by query, forcemerge, shrink/split/clone)를 구분해 표시. 실행 시간 정렬이 문자열 순으로 되던 문제도 수정
 - MAP-004: ignore_dynamic_beyond_limit 가 없어 색인이 실패할 수 있는 인덱스를 표 앞에 표시(같은 사용률이면 integration 인덱스가 15행을 채워 가려지던 것), data stream template 관리 주체(`fleet:<package>` / `elastic`) 열 추가
 - 14노드 9.5.3 실번들에서 확인한 오탐 정리
-  - PERF-012: warm 노드의 merge 평균(40초)이 ILM force merge 때문에 길게 나오던 것 → 쓰기 대상 shard 가 있는 노드만 판정
+  - PERF-012: 쓰기 대상이 없는 warm 노드의 merge 평균(26~41초)이 Warning 으로 나오던 것 → 쓰기 대상 shard 가 있는 노드만 판정. 쓰기가 없는 노드의 merge 는 force merge(ILM forcemerge, cold·frozen 의 searchable_snapshot 이 기본으로 앞 단계 tier 에서 하는 force merge, 수동 _forcemerge)나 rollover 직후 마무리 merge 라서 큰 segment 를 합치며, 평균이 긴 것이 스토리지가 느리다는 뜻이 아님. warm tier 라고 자동으로 force merge 를 하는 것은 아님
   - OS-001: ECH master 노드처럼 CPU 사용률 0% 인데 load average 가 높은 컨테이너 노드를 치명으로 판정하던 것 → 컨테이너 안의 load 는 호스트 값일 수 있으므로 cpu% 20% 미만이면 참고로만 표시
   - MAP-001·MAP-004: 읽기 전용인 searchable snapshot mount 가 표 앞을 차지하던 것 → 제외
   - PERF-001: 스냅샷 저장소에서 읽는 partial mount(frozen) 인덱스의 검색 지연을 판정하던 것 → 제외(FRZ-001 에서 다룸)

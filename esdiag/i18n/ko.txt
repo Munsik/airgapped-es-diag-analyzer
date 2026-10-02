@@ -1115,7 +1115,7 @@ rules.nodes.r_ingest_failures.02 = "실패 건수가 있는 노드 %d대, 실패
 rules.nodes.r_ingest_failures.03 = "파이프라인 실패는 문서 누락 또는 원본 그대로 저장되는 결과를 낳아, 필드 파싱이 필요한 대시보드/탐지룰이 조용히 오동작합니다."
 rules.nodes.r_ingest_failures.04 = "실패 파이프라인의 on_failure 처리와 입력 데이터 형식을 확인합니다."
 doc.rules.nodes.r_node_heterogeneity = "같은 tier(데이터 역할 조합) 안에서 heap 또는 CPU 수가 다르면 주의(NODE-001/002).\n\ntier 가 다르면 스펙이 다른 것이 정상 설계이므로 tier 간 차이는 판정하지 않고, tier 별 스펙 표만 참고로 보고한다\n(NODE-003). 같은 tier 에서는 샤드가 균등 분배되므로 작은 노드가 먼저 포화되어 그 tier 의 처리 한계가 된다."
-doc.rules.nodes.r_write_latency = "노드별 flush, refresh, merge 평균 시간(nodes_stats indices.flush/refresh/merges 의 total_time / total).\n\n쓰기 대상 shard 가 있는 노드만 판정한다. warm·cold 노드는 ILM force merge 를 하므로 merge 가 긴 것이 정상이다.\n작업 수가 write_latency_min_ops 미만인 항목은 제외한다.\n평균 >= *_avg_ms_warn → 주의, >= *_avg_ms_info → 참고(PERF-012). 공식 수치가 아닌 현장 기준값이며,\n노드 시작 이후 누적 평균이다. flush·merge 가 느리면 대개 스토리지가 따라가지 못하는 것이므로\nIDX-005(merge throttling), IDX-014(indexing throttle)와 함께 본다."
+doc.rules.nodes.r_write_latency = "노드별 flush, refresh, merge 평균 시간(nodes_stats indices.flush/refresh/merges 의 total_time / total).\n\n쓰기 대상 shard 가 있는 노드만 판정한다. 쓰기 대상이 없는 노드의 merge 는 force merge(ILM forcemerge,\nsearchable_snapshot 이 기본으로 앞 단계에서 하는 force merge, 수동 _forcemerge)이거나 rollover 직후 마무리 merge 다.\n큰 segment 를 합치므로 평균이 긴 것이 스토리지가 느리다는 뜻은 아니다.\n작업 수가 write_latency_min_ops 미만인 항목은 제외한다.\n평균 >= *_avg_ms_warn → 주의, >= *_avg_ms_info → 참고(PERF-012). 공식 수치가 아닌 현장 기준값이며,\n노드 시작 이후 누적 평균이다. flush·merge 가 느리면 대개 스토리지가 따라가지 못하는 것이므로\nIDX-005(merge throttling), IDX-014(indexing throttle)와 함께 본다."
 rules.nodes.r_node_heterogeneity.01 = "%s(%d대)"
 rules.nodes.r_node_heterogeneity.02 = "%s코어(%d대)"
 rules.nodes.r_node_heterogeneity.03 = "같은 tier 안에서 노드 스펙 불균일"
