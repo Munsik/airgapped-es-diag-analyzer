@@ -107,6 +107,9 @@ class Bundle(object):
                            "fs": {"total": {"total_in_bytes": 1000 * GB, "available_in_bytes": avail,
                                             "free_in_bytes": avail}},
                            "thread_pool": {"force_merge": {"threads": 1, "queue": 3, "active": 1, "rejected": 0}}}
+            nstats[nid]["jvm"]["uptime_in_millis"] = 10 ** 8
+            nstats[nid]["fs"]["io_stats"] = {"devices": [{"device_name": "d"}], "total": {
+                "io_time_in_millis": [-2 * 10 ** 8, 9 * 10 ** 7, 10 ** 7][i], "read_operations": 1, "write_operations": 1}}
         w(root, "nodes.json", {"nodes": nodes})
         w(root, "nodes_stats.json", {"nodes": nstats})
         w(root, "indices.json", self.shards)
@@ -146,11 +149,20 @@ def build_main():
                              action_time_millis=COLLECTED_MS - 30 * 3600 * 1000,
                              step_time_millis=COLLECTED_MS - 29 * 3600 * 1000)  # ILM-009
 
-    # logs-small-default (logsdb only in data_stream.json): rolled over at 3GB on max_age → SHD-015
-    small = [".ds-logs-small-default-2026.09.01-000001", ".ds-logs-small-default-2026.09.02-000002"]
-    b.index(small[0], 3 * GB, 40 * M, "logsdb", policy="logs-hot-warm", set_mode=False)
-    b.index(small[1], 1 * GB, 10 * M, "logsdb", policy="logs-hot-warm", set_mode=False)
+    # logs-small-default (logsdb only in data_stream.json): 5 rollovers at 1-3GB on max_age → SHD-015 (per data stream)
+    small = [".ds-logs-small-default-2026.09.0%d-00000%d" % (i, i) for i in range(1, 8)]
+    for i, name in enumerate(small[:-2]):
+        b.index(name, (1 + i % 3) * GB, (10 + i) * M, "logsdb", policy="logs-hot-warm", set_mode=False)
+    b.index(small[5], 0, 0, "logsdb", policy="logs-hot-warm", set_mode=False)               # empty: left to SHD-011
+    b.index(small[6], 1 * GB, 10 * M, "logsdb", policy="logs-hot-warm", set_mode=False)     # write index
     b.stream("logs-small-default", small, policy="logs-hot-warm", index_mode="logsdb", write_mode_only_in_ds=True)
+
+    # logs-few-default: only 2 small rollovers → below ds_min_backing_indices, not SHD-015
+    few = [".ds-logs-few-default-2026.09.01-000001", ".ds-logs-few-default-2026.09.02-000002",
+           ".ds-logs-few-default-2026.09.03-000003"]
+    for name in few:
+        b.index(name, 2 * GB, 5 * M, "logsdb", policy="logs-hot-warm")
+    b.stream("logs-few-default", few, policy="logs-hot-warm", index_mode="logsdb")
 
     # logs-old-default (standard, upgraded from 8.x): IDX-013; 35GB standard shard is not SHD-014
     old = [".ds-logs-old-default-2025.01.01-000001", ".ds-logs-old-default-2025.01.02-000002"]
@@ -166,6 +178,9 @@ def build_main():
     # standalone index over 200M → SHD-008; partially mounted logsdb index is skipped
     b.index("legacy-big", 20 * GB, 250 * M, None)
     b.index("partial-.ds-logs-app-default-2026.01.01-000001", 40 * GB, 100 * M, "logsdb", partial=True, node="frozen-1")
+    # mounted index outside any data stream, just above 200M: no writes, so not SHD-008
+    b.index("partial-restored-.ds-logs-gone-default-2026.01.01-000001", 9 * GB, 201 * M, "logsdb", partial=True,
+            node="frozen-1")
     return b
 
 
@@ -212,13 +227,16 @@ def run_lang(lang, tmp):
         check(pre + "SHD-014 shows the data stream", row[1] == "logs-app-default", row)
         check(pre + "SHD-014 shows bytes per doc", row[4].endswith("B") and row[4] != "-", row)
 
+    check(pre + "SHD-008 skips a mounted index just above 200M",
+          not any(r.startswith("partial-restored-") for r in rows_of(s8)), rows_of(s8))
+
     s15 = f.get("SHD-015")
     check(pre + "SHD-015 info raised (mode from data_stream.json)", s15 is not None and s15.severity == Severity.INFO)
-    check(pre + "SHD-015 lists the 3GB rolled-over index", ".ds-logs-small-default-2026.09.01-000001" in rows_of(s15), rows_of(s15))
-    check(pre + "SHD-015 skips the write index", ".ds-logs-small-default-2026.09.02-000002" not in rows_of(s15))
+    check(pre + "SHD-015 is per data stream", rows_of(s15) == ["logs-small-default"], rows_of(s15))
     if s15:
-        trig = s15.evidence["rows"][0][5]
-        check(pre + "SHD-015 rollover condition estimated as max_age", "max_age" in trig and "30d" in trig, trig)
+        row = s15.evidence["rows"][0]
+        check(pre + "SHD-015 counts 5 small of 6 finished (empty one counted as finished only)", row[1] == "5 / 6", row)
+        check(pre + "SHD-015 rollover condition estimated as max_age", "max_age" in row[4] and "30d" in row[4], row)
 
     i13 = f.get("IDX-013")
     check(pre + "IDX-013 info raised", i13 is not None and i13.severity == Severity.INFO)
@@ -240,6 +258,14 @@ def run_lang(lang, tmp):
     i9 = f.get("ILM-009")
     check(pre + "ILM-009 info raised", i9 is not None and i9.severity == Severity.INFO)
     check(pre + "ILM-009 lists the index in forcemerge", app % (3, 3) in rows_of(i9), rows_of(i9))
+
+    d8 = f.get("DISK-008")
+    check(pre + "DISK-008 rates the 90% node", d8 is not None and d8.severity == Severity.WARNING and "warm-1" in (d8.observed or ""),
+          d8 and d8.observed)
+    if d8:
+        bad = [r for r in d8.evidence["rows"] if r[0] == "hot-1"]
+        check(pre + "DISK-008 negative counter shown as not determined", bad and not bad[0][2].endswith("%"), bad)
+        check(pre + "DISK-008 negative counter not rated", "hot-1" not in (d8.observed or ""))
 
     # Rendering in this language
     try:

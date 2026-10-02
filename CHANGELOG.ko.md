@@ -9,7 +9,7 @@
 
 - SHD-013(주의, 도구 판단): 롤오버가 끝난 인덱스의 샤드가 2억건을 5% 넘게 초과하면 rollover 지연으로 보고. 원인 후보(ILM 정지·오류, poll_interval, `min_*` 조건, lifecycle 미연결)를 권고에 표시
 - SHD-014(참고, 도구 판단): logsdb 인덱스의 최대 primary shard 가 30GB 이상 50GB 미만. 인덱스별로 data stream, 최대 shard 크기, 문서 수, 문서당 크기, 추정 rollover 조건, ILM 정책을 표로 보여 줌. 30GB 는 공식 수치가 아니라 Elastic 내부 논의를 따른 값이며, 근거(암묵 2억건 rollover, index sorting 의 merge 비용, force merge 여유 공간, 복구 시간)를 판정에 함께 표시
-- SHD-015(참고, 공식 하한): logsdb 인덱스가 10GB 미만, 2억건 미만에서 롤오버됨(max_age 등으로 끝난 인덱스)
+- SHD-015(참고, 공식 하한): logsdb data stream 에서 10GB 미만, 2억건 미만으로 롤오버된 인덱스가 5개 이상(max_age 등으로 끝난 인덱스). data stream 별로 작게 롤오버된 수, 중앙값 크기·문서 수, 가장 많은 rollover 조건을 표시(인덱스별로 보여 주면 실번들에서 1,000건이 넘어 data stream 단위로 묶음). 빈 인덱스는 SHD-011 에 맡김
 - IDX-013(참고): 9.0 이상에서 write index 가 logsdb 가 아닌 `logs-*-*` data stream(8.x 에서 업그레이드하기 전부터 있던 data stream)
 - ILM-007(참고): `max_primary_shard_docs` 가 2억건 초과(효과 없음)
 - ILM-008(주의): 1 segment force merge(forcemerge `max_num_segments=1`, searchable_snapshot `force_merge_index`)를 하는 tier 의 여유 디스크가 가장 큰 primary shard 의 3배 미만
@@ -23,7 +23,12 @@
 - SHD-008: 2억건 이상이면 모두 주의 → write index 와 rollover 를 쓰지 않는 인덱스만 주의. 롤오버가 끝난 인덱스는 5% 이내 초과면 판정하지 않음(rollover 는 2억건에서 항상 실행되고 ILM 은 10m 마다 확인하므로 조금 넘는 것은 정상, 공식 ILM rollover 문서)
 - SHD-008 권고: "max_primary_shard_docs 를 함께 지정" → ILM 적용 시 2억건에서 자동 rollover 됨을 안내(지정하지 않아도 암묵 적용되므로)
 - ILM-004 권고: 문서 수 조건은 지정하지 않아도 2억건이 암묵 적용됨을 추가
+- SHD-008: searchable snapshot mount(restored-, partial-)는 쓰기가 없으므로 롤오버된 인덱스와 같이 판정(SHD-013 기준)
 - 단일 번들 판정 룰 110개, 두 번들 비교 룰 9개(판정 ID 171개 + 비교 DIF-001~012)
+
+### 수정
+
+- DISK-008: 장치 카운터가 JVM uptime 과 맞지 않아 평균 사용률이 음수나 100% 초과로 나오던 것(실번들의 ECH hot·frozen 노드에서 -131%, -198%) → "확인 불가"로 표시하고 판정에서 제외
 
 ## [0.11.0] - 2026-10-01
 

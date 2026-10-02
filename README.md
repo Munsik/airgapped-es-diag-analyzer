@@ -288,10 +288,10 @@ Rollover always runs once a shard reaches 200M documents, whatever the other con
 
 | Finding | Criterion |
 | --- | --- |
-| SHD-008 | A shard of a write index, or of an index without rollover, has 200M documents or more (official) |
+| SHD-008 | A shard of a write index, or of an index without rollover, has 200M documents or more (official). Searchable snapshot mounts take no writes and are rated like SHD-013 |
 | SHD-013 | A shard of a rolled-over index is more than 5% above 200M: rollover ran late (tool threshold) |
 | SHD-014 | The largest primary shard of a logsdb index is 30GB or more and under 50GB (tool threshold, Info) |
-| SHD-015 | A logsdb index rolled over under 10GB and under 200M documents (official lower bound, Info) |
+| SHD-015 | A logsdb data stream with 5 or more indices rolled over under 10GB and under 200M documents (official lower bound, Info, one row per data stream) |
 | IDX-013 | On 9.0 or later, a `logs-*-*` data stream whose write index is not in logsdb mode (Info) |
 | ILM-007 | `max_primary_shard_docs` above 200M (no effect, official) |
 | ILM-008 | Free disk on the tier that runs a one-segment force merge is under 3 times the largest primary shard (official) |
@@ -435,8 +435,8 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 841 strings, 0 problems |
-| `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases | 55 passed |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 842 strings, 0 problems |
+| `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 51 scenarios and checks the severity too | 51 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
 | `tools/gen_rules_doc.py --check` | Consistency of thresholds and docstrings | 0 problems |

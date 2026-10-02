@@ -484,6 +484,8 @@ def r_disk_io_utilization(ctx):
 
     io_time is the cumulative time the devices spent handling I/O since ES started. >= disk_io_busy_pct_warn → Warning (DISK-008), otherwise Info.
     With several devices the values add up and can exceed 100%, so the result is divided by the device count. This is a cumulative average, so short saturation spikes can be hidden.
+    A result below 0% or above 100% means the device counter does not line up with the JVM uptime (for example a counter reset
+    on a hosted instance). Such a node is shown as "cannot be determined" and is not rated.
     """
     rows, busy = [], []
     for n in ctx.data_nodes:
@@ -494,9 +496,10 @@ def r_disk_io_utilization(ctx):
         if not t or not up:
             continue
         util = t / float(up) / devs * 100.0
-        rows.append([n.name, ctx.tier_of(n) or "-", "%.1f%%" % util, fmt_num(num(io, "total", "read_operations")),
-                     fmt_num(num(io, "total", "write_operations")), devs])
-        if util >= ctx.t["disk_io_busy_pct_warn"]:
+        valid = 0 <= util <= 100
+        rows.append([n.name, ctx.tier_of(n) or "-", ("%.1f%%" % util) if valid else T("rules.deep.r_disk_io_utilization.11"),
+                     fmt_num(num(io, "total", "read_operations")), fmt_num(num(io, "total", "write_operations")), devs])
+        if valid and util >= ctx.t["disk_io_busy_pct_warn"]:
             busy.append(n.name)
     if not rows:
         return []

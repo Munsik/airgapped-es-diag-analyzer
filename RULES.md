@@ -1004,7 +1004,8 @@ The Lucene limit (2,147,483,519) applies to maxDoc, which includes deleted docum
 so the index deleted count divided by the number of primaries is added (shown as an estimate).
 Rollover always runs once a shard reaches 200M documents, and ILM checks the condition every poll_interval (10m by default),
 so a rolled-over index normally ends a little above 200M. Rolled-over indices are reported only when they exceed 200M by more
-than docs_rollover_overshoot_pct (SHD-013, rollover ran late). The write index and indices without rollover keep SHD-008.
+than docs_rollover_overshoot_pct (SHD-013, rollover ran late). Searchable snapshot mounts take no writes and are rated the same way.
+The write index and indices without rollover keep SHD-008.
 
 ### SHD-014, SHD-015: logsdb shards above the tool's recommended range
 
@@ -1014,9 +1015,9 @@ than docs_rollover_overshoot_pct (SHD-013, rollover ran late). The write index a
 | Findings | SHD-014 logsdb shards above the tool's recommended range / SHD-015 logsdb indices rolled over below the official shard size range |
 | Evidence basis | Official / Tool threshold |
 | Possible severities | Info |
-| Thresholds | `ilm_implicit_max_shard_docs` = 200,000,000 ([Official] Rollover always runs at 200M docs per shard; higher values have no effect)<br>`logsdb_rows_max` = 100 ([Tool] Maximum indices listed in the logsdb shard size table)<br>`logsdb_shard_gb_high` = 30 ([Tool] Upper end of the logsdb shard range (official upper bound is 50GB))<br>`logsdb_shard_gb_low` = 10 ([Official] Lower end of the 10-50GB shard range)<br>`shard_size_gb_warn` = 50 ([Official] Shards of 10-50GB) |
+| Thresholds | `ds_min_backing_indices` = 5 ([Tool] Minimum backing index count for the data stream rating)<br>`ilm_implicit_max_shard_docs` = 200,000,000 ([Official] Rollover always runs at 200M docs per shard; higher values have no effect)<br>`logsdb_rows_max` = 100 ([Tool] Maximum indices listed in the logsdb shard size table)<br>`logsdb_shard_gb_high` = 30 ([Tool] Upper end of the logsdb shard range (official upper bound is 50GB))<br>`logsdb_shard_gb_low` = 10 ([Official] Lower end of the 10-50GB shard range)<br>`shard_size_gb_warn` = 50 ([Official] Shards of 10-50GB) |
 | Required input | (indices.json or shards.json or cat_shards.txt) and (settings.json or data_stream.json) |
-| Source files | indices.json / settings.json / commercial/data_stream.json / indices.json / settings.json / commercial/ilm_policies.json |
+| Source files | indices.json / settings.json / commercial/data_stream.json / indices.json / settings.json / commercial/data_stream.json / commercial/ilm_policies.json |
 | References | [Rollover (ILM): max_primary_shard_docs](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[Configure a logs data stream](https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream-configure)<br>[Index sorting settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/sorting)<br>[Force merge API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge)<br>[Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
 
 **Decision logic**
@@ -1030,9 +1031,11 @@ and large shards take longer to recover (official). The 30GB upper end is not an
 internal discussion that 10-30GB suits logsdb and TSDB. The official 10-50GB range and SHD-003 (50GB and above) still apply.
 
 Partially mounted (frozen) indices are skipped because their size is the cache size. Per index, the largest primary
-shard is rated. logsdb_shard_gb_high <= largest primary < shard_size_gb_warn → SHD-014 (Info). A rolled-over index whose
-largest primary is below logsdb_shard_gb_low with fewer than 200M documents → SHD-015 (Info): it was ended by max_age
-or a small size condition, not by the document limit. The rollover condition shown is an estimate.
+shard is rated. logsdb_shard_gb_high <= largest primary < shard_size_gb_warn → SHD-014 (Info, listed per index).
+SHD-015 (Info) is rated per data stream: a data stream with ds_min_backing_indices or more finished backing indices
+(rolled over or mounted) whose largest primary is below logsdb_shard_gb_low with 1 to 200M documents. Those indices were
+ended by max_age or a small size condition, not by the document limit. Empty indices are left to SHD-011.
+The rollover condition shown is an estimate (the most common one per data stream for SHD-015).
 
 ### IDX-013: logs-*-* data streams not in logsdb mode
 
@@ -1627,6 +1630,8 @@ Average disk utilization of data nodes = fs.io_stats.total.io_time_in_millis / J
 
 io_time is the cumulative time the devices spent handling I/O since ES started. >= disk_io_busy_pct_warn → Warning (DISK-008), otherwise Info.
 With several devices the values add up and can exceed 100%, so the result is divided by the device count. This is a cumulative average, so short saturation spikes can be hidden.
+A result below 0% or above 100% means the device counter does not line up with the JVM uptime (for example a counter reset
+on a hosted instance). Such a node is shown as "cannot be determined" and is not rated.
 
 ### MAP-004, MAP-005, MAP-006: Indices with field count close to the mapping limit
 

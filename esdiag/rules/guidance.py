@@ -230,7 +230,8 @@ def r_docs_per_shard(ctx):
     so the index deleted count divided by the number of primaries is added (shown as an estimate).
     Rollover always runs once a shard reaches 200M documents, and ILM checks the condition every poll_interval (10m by default),
     so a rolled-over index normally ends a little above 200M. Rolled-over indices are reported only when they exceed 200M by more
-    than docs_rollover_overshoot_pct (SHD-013, rollover ran late). The write index and indices without rollover keep SHD-008.
+    than docs_rollover_overshoot_pct (SHD-013, rollover ran late). Searchable snapshot mounts take no writes and are rated the same way.
+    The write index and indices without rollover keep SHD-008.
     """
     pri_count = collections.Counter()
     for s in ctx.shards:
@@ -253,7 +254,7 @@ def r_docs_per_shard(ctx):
         if est >= ctx.t["docs_per_shard_crit"]:
             crit.append(row)
         elif docs >= limit:
-            if ctx.rolled_over(idx):
+            if ctx.rolled_over(idx) or ctx.is_searchable_snapshot(idx):
                 if docs > late_limit:
                     ds = ctx.data_stream_of(idx)
                     late.append([idx, s.get("shard"), fmt_num(docs), "+%.1f%%" % ((docs / float(limit) - 1) * 100),
@@ -318,9 +319,11 @@ def r_logsdb_shard_size(ctx):
     internal discussion that 10-30GB suits logsdb and TSDB. The official 10-50GB range and SHD-003 (50GB and above) still apply.
 
     Partially mounted (frozen) indices are skipped because their size is the cache size. Per index, the largest primary
-    shard is rated. logsdb_shard_gb_high <= largest primary < shard_size_gb_warn → SHD-014 (Info). A rolled-over index whose
-    largest primary is below logsdb_shard_gb_low with fewer than 200M documents → SHD-015 (Info): it was ended by max_age
-    or a small size condition, not by the document limit. The rollover condition shown is an estimate.
+    shard is rated. logsdb_shard_gb_high <= largest primary < shard_size_gb_warn → SHD-014 (Info, listed per index).
+    SHD-015 (Info) is rated per data stream: a data stream with ds_min_backing_indices or more finished backing indices
+    (rolled over or mounted) whose largest primary is below logsdb_shard_gb_low with 1 to 200M documents. Those indices were
+    ended by max_age or a small size condition, not by the document limit. Empty indices are left to SHD-011.
+    The rollover condition shown is an estimate (the most common one per data stream for SHD-015).
     """
     hi, lo = ctx.t["logsdb_shard_gb_high"] * GB, ctx.t["logsdb_shard_gb_low"] * GB
     top = ctx.t["shard_size_gb_warn"] * GB
@@ -344,15 +347,31 @@ def r_logsdb_shard_size(ctx):
     if not logsdb:
         return []
     writes = ctx.write_targets()
-    big, small = [], []
+    big = []
+    small_by_ds = collections.defaultdict(list)
+    done_by_ds = collections.Counter()
     for idx in logsdb:
         b, docs = biggest[idx]
         is_write = idx in writes
+        ds = ctx.data_stream_of(idx)
+        ds_name = str(ds.get("name")) if ds and ds.get("name") else None
+        finished = not is_write and (ctx.rolled_over(idx) or ctx.is_searchable_snapshot(idx))
+        if ds_name and finished:
+            done_by_ds[ds_name] += 1
         if hi <= b < top:
             big.append((b, idx, docs, is_write))
-        elif b < lo and not is_write and ctx.rolled_over(idx) and \
-                (docs is None or docs < ctx.t["ilm_implicit_max_shard_docs"]):
-            small.append((b, idx, docs, is_write))
+        elif ds_name and finished and b < lo and docs and docs < ctx.t["ilm_implicit_max_shard_docs"]:
+            small_by_ds[ds_name].append((b, idx, docs))
+    small = []
+    for name, lst in small_by_ds.items():
+        if len(lst) < ctx.t["ds_min_backing_indices"]:
+            continue
+        sizes = sorted(x[0] for x in lst)
+        dcs = sorted(x[2] for x in lst)
+        trig = collections.Counter(_rollover_trigger(ctx, i, d, bb, False) for bb, i, d in lst).most_common(1)[0][0]
+        pol = collections.Counter(ctx.ilm_policy_of(i) or "-" for _, i, _ in lst).most_common(1)[0][0]
+        small.append((len(lst), name, [name, "%d / %d" % (len(lst), done_by_ds[name]), fmt_bytes(sizes[len(sizes) // 2]),
+                                       fmt_num(dcs[len(dcs) // 2]), trig, pol]))
     lic = (ctx.license.get("type") or "-") if isinstance(ctx.license, dict) else "-"
     cols = ["index", "data stream", T("rules.guidance.r_logsdb_shard_size.01"), T("rules.guidance.r_logsdb_shard_size.02"),
             T("rules.guidance.r_logsdb_shard_size.03"), T("rules.guidance.r_logsdb_shard_size.04"), "ILM policy"]
@@ -378,14 +397,19 @@ def r_logsdb_shard_size(ctx):
             refs=[D_ROLLOVER, D_LOGSDB, D_SORT, D_FORCEMERGE, D_SHARDS],
             source="indices.json / settings.json / commercial/data_stream.json"))
     if small:
-        small.sort(key=lambda r: r[0])
+        small.sort(key=lambda r: (-r[0], r[1]))
+        n_ds = len(set(str(n) for n in (((ctx.data_stream_of(i) or {}).get("name")) for i in logsdb) if n))
         out.append(Finding(
             "SHD-015", SIZ, Severity.INFO, T("rules.guidance.r_logsdb_shard_size.09"),
-            observed=T("rules.guidance.r_logsdb_shard_size.10") % (len(logsdb), len(small), ctx.t["logsdb_shard_gb_low"]),
+            observed=T("rules.guidance.r_logsdb_shard_size.10")
+                     % (n_ds, len(small), ctx.t["logsdb_shard_gb_low"], ctx.t["ds_min_backing_indices"]),
             impact=T("rules.guidance.r_logsdb_shard_size.11"),
             recommend=T("rules.guidance.r_logsdb_shard_size.12"),
-            evidence=table(cols, rows(small)), affected=[r[1] for r in small],
-            refs=[D_SHARDS, D_ROLLOVER], source="indices.json / settings.json / commercial/ilm_policies.json"))
+            evidence=table(["data stream", T("rules.guidance.r_logsdb_shard_size.13"), T("rules.guidance.r_logsdb_shard_size.14"),
+                            T("rules.guidance.r_logsdb_shard_size.15"), T("rules.guidance.r_logsdb_shard_size.16"), "ILM policy"],
+                           [r[2] for r in small[: ctx.t["logsdb_rows_max"]]]),
+            affected=[r[1] for r in small],
+            refs=[D_SHARDS, D_ROLLOVER], source="indices.json / settings.json / commercial/data_stream.json / commercial/ilm_policies.json"))
     return out
 
 

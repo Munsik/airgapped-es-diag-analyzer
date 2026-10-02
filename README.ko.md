@@ -288,10 +288,10 @@ rollover 는 샤드 문서 수가 2억건에 닿으면 조건과 관계없이 �
 
 | 판정 | 기준 |
 | --- | --- |
-| SHD-008 | write index 나 rollover 를 쓰지 않는 인덱스의 샤드가 2억건 이상(공식) |
+| SHD-008 | write index 나 rollover 를 쓰지 않는 인덱스의 샤드가 2억건 이상(공식). searchable snapshot mount 는 쓰기가 없으므로 SHD-013 기준으로 판정 |
 | SHD-013 | 롤오버가 끝난 인덱스의 샤드가 2억건을 5% 넘게 초과: rollover 지연(도구 판단) |
 | SHD-014 | logsdb 인덱스의 최대 primary shard 가 30GB 이상 50GB 미만(도구 판단, 참고) |
-| SHD-015 | logsdb 인덱스가 10GB 미만, 2억건 미만에서 롤오버됨(공식 하한, 참고) |
+| SHD-015 | logsdb data stream 에서 10GB 미만, 2억건 미만으로 롤오버된 인덱스가 5개 이상(공식 하한, 참고, data stream 별 표) |
 | IDX-013 | 9.0 이상에서 write index 가 logsdb 가 아닌 `logs-*-*` data stream(참고) |
 | ILM-007 | `max_primary_shard_docs` 가 2억건 초과(효과 없음, 공식) |
 | ILM-008 | 1 segment force merge 를 하는 tier 의 여유 디스크가 가장 큰 primary shard 의 3배 미만(공식) |
@@ -434,8 +434,8 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 841개, 문제 0 |
-| `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현 | 55개 통과 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 842개, 문제 0 |
+| `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현. 한국어·영어 두 언어로 실행 | 110개 통과 |
 | `tests/drive_branches.py` | 시나리오 51개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 51개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
 | `tools/gen_rules_doc.py --check` | 임계값·docstring 정합성 | 문제 0 |

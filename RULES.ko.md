@@ -1004,7 +1004,8 @@ Lucene 한계(2,147,483,519)는 삭제 문서를 포함한 maxDoc 기준이다. 
 인덱스 삭제 수를 primary 수로 나눈 값을 더한다(추정치임을 표기).
 rollover 는 샤드 문서 수가 2억건에 닿으면 항상 실행되고, ILM 은 poll_interval(기본 10m)마다 조건을 확인하므로
 롤오버가 끝난 인덱스는 보통 2억건을 조금 넘는다. 롤오버된 인덱스는 2억건을 docs_rollover_overshoot_pct 보다 크게
-넘었을 때만 보고한다(SHD-013, rollover 지연). write index 와 rollover 를 쓰지 않는 인덱스는 SHD-008 로 판정한다.
+넘었을 때만 보고한다(SHD-013, rollover 지연). searchable snapshot mount 도 쓰기가 없으므로 같게 판정한다.
+write index 와 rollover 를 쓰지 않는 인덱스는 SHD-008 로 판정한다.
 
 ### SHD-014, SHD-015 — 도구 권장 범위보다 큰 logsdb shard
 
@@ -1014,9 +1015,9 @@ rollover 는 샤드 문서 수가 2억건에 닿으면 항상 실행되고, ILM 
 | 판정 항목 | SHD-014 도구 권장 범위보다 큰 logsdb shard / SHD-015 공식 권장 범위보다 작게 롤오버되는 logsdb 인덱스 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
 | 가능 심각도 | 참고 |
-| 임계값 | `ilm_implicit_max_shard_docs` = 200,000,000 — [공식] 샤드당 2억건이면 rollover 가 항상 실행됨. 더 큰 값은 효과 없음<br>`logsdb_rows_max` = 100 — [도구] logsdb shard 크기 표에 보여 줄 최대 인덱스 수<br>`logsdb_shard_gb_high` = 30 — [도구] logsdb shard 범위 상한(공식 상한은 50GB)<br>`logsdb_shard_gb_low` = 10 — [공식] 10~50GB 범위의 하한<br>`shard_size_gb_warn` = 50 — [공식] 샤드 10~50GB |
+| 임계값 | `ds_min_backing_indices` = 5 — [도구] 데이터 스트림 판정 최소 백킹 수<br>`ilm_implicit_max_shard_docs` = 200,000,000 — [공식] 샤드당 2억건이면 rollover 가 항상 실행됨. 더 큰 값은 효과 없음<br>`logsdb_rows_max` = 100 — [도구] logsdb shard 크기 표에 보여 줄 최대 인덱스 수<br>`logsdb_shard_gb_high` = 30 — [도구] logsdb shard 범위 상한(공식 상한은 50GB)<br>`logsdb_shard_gb_low` = 10 — [공식] 10~50GB 범위의 하한<br>`shard_size_gb_warn` = 50 — [공식] 샤드 10~50GB |
 | 필요 입력 | (indices.json 또는 shards.json 또는 cat_shards.txt) 그리고 (settings.json 또는 data_stream.json) |
-| 근거 파일 | indices.json / settings.json / commercial/data_stream.json / indices.json / settings.json / commercial/ilm_policies.json |
+| 근거 파일 | indices.json / settings.json / commercial/data_stream.json / indices.json / settings.json / commercial/data_stream.json / commercial/ilm_policies.json |
 | 참고 문서 | [Rollover (ILM): max_primary_shard_docs](https://www.elastic.co/docs/reference/elasticsearch/index-lifecycle-actions/ilm-rollover)<br>[Configure a logs data stream](https://www.elastic.co/docs/manage-data/data-store/data-streams/logs-data-stream-configure)<br>[Index sorting settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/sorting)<br>[Force merge API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-forcemerge)<br>[Size your shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
 
 **판정 로직**
@@ -1030,9 +1031,11 @@ logsdb 인덱스의 primary shard 크기를 10~30GB 범위와 비교한다(도�
 SHD-003(50GB 이상)은 그대로 적용한다.
 
 partial mount(frozen) 인덱스는 크기가 캐시 크기라 제외한다. 인덱스마다 가장 큰 primary shard 로 판정한다.
-logsdb_shard_gb_high <= 최대 primary < shard_size_gb_warn → SHD-014(참고). 롤오버가 끝났고 최대 primary 가
-logsdb_shard_gb_low 미만이며 문서가 2억건 미만 → SHD-015(참고): 문서 수 한도가 아니라 max_age 나 작은 크기 조건으로
-끝난 인덱스다. 표의 rollover 조건은 추정치다.
+logsdb_shard_gb_high <= 최대 primary < shard_size_gb_warn → SHD-014(참고, 인덱스별 표).
+SHD-015(참고)는 data stream 단위로 판정한다: 끝난 backing index(롤오버 또는 mount) 중 최대 primary 가
+logsdb_shard_gb_low 미만이고 문서가 1건 이상 2억건 미만인 인덱스가 ds_min_backing_indices 개 이상인 data stream. 이 인덱스들은
+문서 수 한도가 아니라 max_age 나 작은 크기 조건으로 끝났다. 빈 인덱스는 SHD-011 에서 다룬다.
+표의 rollover 조건은 추정치다(SHD-015 는 data stream 별로 가장 많은 조건).
 
 ### IDX-013 — logsdb 가 적용되지 않은 logs-*-* data stream
 
@@ -1627,6 +1630,8 @@ runtime_mappings·script_fields)의 사용 비중이 search_expensive_share_warn
 
 io_time 은 ES 기동 이후 장치가 I/O 를 처리한 누적 시간이다. >= disk_io_busy_pct_warn → 주의(DISK-008), 그 외 참고.
 여러 장치를 쓰면 합계라 100% 를 넘을 수 있어 장치 수로 나눈 값을 쓴다. 누적 평균이므로 순간 포화는 가려질 수 있다.
+0% 미만이나 100% 초과는 장치 카운터가 JVM uptime 과 맞지 않는 경우다(예: 호스팅 인스턴스의 카운터 초기화).
+이런 노드는 "확인 불가"로 표시하고 판정하지 않는다.
 
 ### MAP-004, MAP-005, MAP-006 — 필드 수가 매핑 한도에 근접한 인덱스
 

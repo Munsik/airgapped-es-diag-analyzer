@@ -11,7 +11,7 @@ Each entry is written as "previous behavior → current behavior (reason)". Use 
 
 - SHD-013 (Warning, tool threshold): a shard of a rolled-over index more than 5% above 200M documents is reported as a late rollover. The recommendation lists the likely causes (ILM stopped or failing, poll_interval, `min_*` conditions, no lifecycle attached)
 - SHD-014 (Info, tool threshold): the largest primary shard of a logsdb index is 30GB or more and under 50GB. The table shows, per index, the data stream, largest shard size, document count, bytes per document, estimated rollover condition and ILM policy. 30GB is not an official number; it follows an Elastic internal discussion, and the finding states the reasons (implicit 200M rollover, merge cost of index sorting, free space for force merge, recovery time)
-- SHD-015 (Info, official lower bound): a logsdb index rolled over under 10GB and under 200M documents (ended by max_age or similar)
+- SHD-015 (Info, official lower bound): a logsdb data stream with 5 or more indices rolled over under 10GB and under 200M documents (ended by max_age or similar). One row per data stream with the count of small rollovers, median size and documents, and the most common rollover condition (a per-index list ran past 1,000 rows on a real bundle). Empty indices are left to SHD-011
 - IDX-013 (Info): on 9.0 or later, `logs-*-*` data streams whose write index is not in logsdb mode (streams that existed before an upgrade from 8.x)
 - ILM-007 (Info): `max_primary_shard_docs` above 200M (no effect)
 - ILM-008 (Warning): free disk on the tier that runs a one-segment force merge (forcemerge `max_num_segments=1`, searchable_snapshot `force_merge_index`) is under 3 times the largest primary shard
@@ -25,7 +25,12 @@ Each entry is written as "previous behavior → current behavior (reason)". Use 
 - SHD-008: every shard at 200M documents or more was a Warning → only write indices and indices without rollover. A rolled-over index within 5% of 200M is not reported (rollover always runs at 200M and ILM checks every 10m, so ending a little above is normal; official ILM rollover docs)
 - SHD-008 recommendation: "also set max_primary_shard_docs" → explains that rollover runs on its own at 200M under ILM (the limit applies even when not set)
 - ILM-004 recommendation: notes that the 200M document condition applies even when not set
+- SHD-008: searchable snapshot mounts (restored-, partial-) take no writes, so they are rated like rolled-over indices (SHD-013)
 - 110 single-bundle rules and 9 bundle-comparison rules (171 finding IDs plus comparison DIF-001~012)
+
+### Fixed
+
+- DISK-008: when the device counter did not line up with the JVM uptime, average utilization came out negative or above 100% (-131% and -198% on ECH hot and frozen nodes in a real bundle) → shown as "cannot be determined" and not rated
 
 ## [0.11.0] - 2026-10-01
 
