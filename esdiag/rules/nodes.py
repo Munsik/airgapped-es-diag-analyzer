@@ -240,7 +240,7 @@ def r_os(ctx):
             recommend=T("rules.nodes.r_os.18"),
             evidence=table(["node", T("rules.nodes.r_os.19"), T("rules.nodes.r_os.20")],
                            [[n, "%.2f%%" % (r * 100), fmt_num(t)] for n, r, t in throttle]),
-            source="nodes_stats.json"))
+            affected=[n for n, _r, _t in throttle], source="nodes_stats.json"))
     # File descriptors
     fd_rows, fd_bad = [], []
     for n in ctx.nodes:
@@ -506,7 +506,7 @@ def r_breakers(ctx):
             impact=T("rules.nodes.r_breakers.03"),
             recommend=T("rules.nodes.r_breakers.04"),
             evidence=table(["node", "breaker", "tripped", "estimated", "limit", T("rules.nodes.r_breakers.05")], tripped),
-            source="nodes_stats.json"))
+            affected=sorted(set(r[0] for r in tripped)), source="nodes_stats.json"))
     if rows:
         out.append(Finding(
             "BRK-002", CAT, Severity.WARNING, T("rules.nodes.r_breakers.06"),
@@ -514,7 +514,7 @@ def r_breakers(ctx):
             impact=T("rules.nodes.r_breakers.08"),
             recommend=T("rules.nodes.r_breakers.09"),
             evidence=table(["node", "breaker", "tripped", "estimated", "limit", T("rules.nodes.r_breakers.05")], rows),
-            source="nodes_stats.json"))
+            affected=sorted(set(r[0] for r in rows)), source="nodes_stats.json"))
     return out
 
 
@@ -537,7 +537,7 @@ def r_indexing_pressure(ctx):
         impact=T("rules.nodes.r_indexing_pressure.02"),
         recommend=T("rules.nodes.r_indexing_pressure.03"),
         evidence=table(["node", "rejections", "current", "limit"], rows),
-        source="nodes_stats.json")]
+        affected=[r[0] for r in rows], source="nodes_stats.json")]
 
 
 def r_fielddata(ctx):
@@ -560,7 +560,7 @@ def r_fielddata(ctx):
             impact=T("rules.nodes.r_fielddata.03"),
             recommend=T("rules.nodes.r_fielddata.04"),
             evidence=table(["node", "fielddata", T("rules.nodes.r_fielddata.05"), "evictions"], rows),
-            source="nodes_stats.json"))
+            affected=[r[0] for r in rows], source="nodes_stats.json"))
     # Top consumers per field
     top = []
     for r in dicts(ctx.fielddata_cat):
@@ -670,7 +670,8 @@ def r_search_pool_wait(ctx):
     active search threads >= search_pool_busy_share of the pool size (nodes.json thread_pool.search.size) and node CPU% <
     search_io_cpu_pct_max. Threads that are busy without using CPU are usually waiting, most often on storage reads (frozen shared
     cache, remote storage) and sometimes on locks or other nodes. Queued searches on such a node → Warning, otherwise Info.
-    This is a single moment, so read it with hot threads (RT-001) and the storage findings (FRZ-002, PERF-009, DISK-008).
+    On frozen-only nodes, searches read from the snapshot repository by design, so a busy pool there counts only when searches
+    are also queued. This is a single moment, so read it with hot threads (RT-001) and the storage findings (FRZ-002, PERF-009, DISK-008).
     """
     rows, warn = [], False
     for n in ctx.data_nodes:
@@ -685,6 +686,8 @@ def r_search_pool_wait(ctx):
             continue
         if active >= size * ctx.t["search_pool_busy_share"] and n.cpu_pct < ctx.t["search_io_cpu_pct_max"]:
             q = num(sp, "queue")
+            if not q and ctx.is_frozen_only(n):
+                continue
             warn = warn or q > 0
             rows.append([n.name, ctx.tier_of(n) or "-", "%d / %d" % (active, size), fmt_num(q),
                          fmt_num(num(sp, "rejected")), "%s%%" % n.cpu_pct])

@@ -736,7 +736,7 @@ def r_remote_storage(ctx):
         impact=T("rules.guidance.r_remote_storage.03"),
         recommend=T("rules.guidance.r_remote_storage.04"),
         evidence=table(["node", "mount", "type", T("rules.guidance.r_remote_storage.05")], rows),
-        refs=[D_INDEX, D_SEARCH], source="nodes_stats.json")]
+        affected=sorted(set(r[0] for r in rows)), refs=[D_INDEX, D_SEARCH], source="nodes_stats.json")]
 
 
 # ============================================================

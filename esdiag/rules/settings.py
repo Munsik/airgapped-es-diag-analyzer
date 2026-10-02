@@ -224,23 +224,30 @@ def r_node_setting_changes(ctx):
 def r_node_setting_consistency(ctx):
     """Checks whether settings that should match across nodes (indexing buffer, caches, thread pools, search, transport, etc.) differ between nodes or are set on only some nodes.
 
-    The scope is explicitly set keys under _CONSISTENCY_PREFIX, minus node-specific settings. Only data nodes are compared with each other (all nodes if no data nodes are identified;
-    differences between nodes with different roles can be normal). A setting missing on some nodes counts as a difference. Any mismatch → Warning.
+    The scope is explicitly set keys under _CONSISTENCY_PREFIX, minus node-specific settings. Data nodes are compared only with
+    nodes of the same data tier (all nodes if no data nodes are identified): tiers usually run on different hardware, so values
+    such as node.processors differ between tiers by design. A setting missing on some nodes counts as a difference. Any mismatch → Warning.
     """
     dn = ctx.data_nodes or ctx.nodes
     if len(dn) < 2:
         return []
-    values = collections.defaultdict(dict)
+    groups = collections.OrderedDict()
     for n in dn:
-        for k, v in _node_settings(n).items():
-            if k.startswith(_CONSISTENCY_PREFIX) and not k.startswith(_NODE_SPECIFIC):
-                values[k][n.name] = str(v)
+        groups.setdefault((ctx.tier_of(n) or "-") if ctx.data_nodes else "-", []).append(n)
+    missing = T("rules.settings.r_node_setting_consistency.01")
     rows = []
-    names = [n.name for n in dn]
-    for k, m in sorted(values.items()):
-        distinct = set(m.get(nm, T("rules.settings.r_node_setting_consistency.01")) for nm in names)
-        if len(distinct) > 1:
-            rows.append([k, ", ".join("%s=%s" % (nm, m.get(nm, T("rules.settings.r_node_setting_consistency.01"))) for nm in names)[:300]])
+    for tier, nodes in groups.items():
+        if len(nodes) < 2:
+            continue
+        values = collections.defaultdict(dict)
+        for n in nodes:
+            for k, v in _node_settings(n).items():
+                if k.startswith(_CONSISTENCY_PREFIX) and not k.startswith(_NODE_SPECIFIC):
+                    values[k][n.name] = str(v)
+        names = [n.name for n in nodes]
+        for k, m in sorted(values.items()):
+            if len(set(m.get(nm, missing) for nm in names)) > 1:
+                rows.append([k, tier, ", ".join("%s=%s" % (nm, m.get(nm, missing)) for nm in names)[:300]])
     if not rows:
         return []
     return [Finding(
@@ -248,7 +255,8 @@ def r_node_setting_consistency(ctx):
         observed=T("rules.settings.r_node_setting_consistency.03") % len(rows),
         impact=T("rules.settings.r_node_setting_consistency.04"),
         recommend=T("rules.settings.r_node_setting_consistency.05"),
-        evidence=table([T("rules.settings.r_node_setting_consistency.06"), T("rules.settings.r_node_setting_consistency.07")], rows[: ctx.t["top_n"] * 2]),
+        evidence=table([T("rules.settings.r_node_setting_consistency.06"), "tier", T("rules.settings.r_node_setting_consistency.07")],
+                       rows[: ctx.t["top_n"] * 2]),
         refs=_refs(), source="nodes.json")]
 
 

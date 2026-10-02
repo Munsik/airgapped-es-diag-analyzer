@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 """Checks for 0.14.0: bottleneck summary, recently restarted nodes left out of node comparisons, frozen shared cache on a
 network filesystem (FRZ-002), busy search pool with low CPU (PERF-013), ingest failure ratio (ING-001) and the storage cost
-findings (COST-001 to COST-004). No external bundle needed (synthetic data). Every case runs in both languages.
+findings (COST-001 to COST-006), and the fixes from the review of a real 14-node bundle (bottleneck causes scoped to the
+symptom tiers, PERF-013 on frozen nodes, DIF-008 per tier, DIF-014 interval checks, SET-005 per tier, node change table cells,
+COST-004 landing tier). No external bundle needed (synthetic data). Every case runs in both languages.
 
     python3 tests/test_bottleneck_cost.py
 """
@@ -378,12 +380,139 @@ def run_variants(tmp):
     check("HTML has the text filter", "id='fq'" in out and "qi.addEventListener" in out)
 
 
+def run_review(tmp):
+    """Cases from the review of a real 14-node bundle."""
+    from esdiag import diff as diff_mod
+    set_lang("en")
+
+    # bottleneck: a cause on another tier does not explain the symptom
+    root = os.path.join(tmp, "scope")
+    build(root)
+    ns = load(root, "nodes_stats.json")
+    for st in ns["nodes"].values():
+        st["jvm"]["mem"]["heap_used_percent"] = 95 if st["name"] == "warm-1" else 40
+    w(root, "nodes_stats.json", ns)
+    res = analyze(root)
+    f = findings(res)
+    rows = dict((r["id"], r) for r in res.bottleneck())
+    check("review: JVM-001 names warm-1 only", f.get("JVM-001") is not None and f["JVM-001"].affected == ["warm-1"],
+          f.get("JVM-001") and f["JVM-001"].affected)
+    check("review: warm heap is not an ingest cause for hot rejections", "JVM-001" not in rows["ingest"]["causes"], rows["ingest"])
+    check("review: nor a search cause for frozen queueing", "JVM-001" not in rows["search"]["causes"], rows["search"])
+    check("review: same-tier cause still counts (PERF-012 on hot-2)", "PERF-012" in rows["ingest"]["causes"], rows["ingest"])
+    ns = load(root, "nodes_stats.json")
+    for st in ns["nodes"].values():
+        if st["name"] == "frozen-1":
+            st["jvm"]["mem"]["heap_used_percent"] = 95
+    w(root, "nodes_stats.json", ns)
+    rows = dict((r["id"], r) for r in analyze(root).bottleneck())
+    check("review: frozen heap is a search cause for frozen queueing", "JVM-001" in rows["search"]["causes"], rows["search"])
+
+    # PERF-013: a busy frozen pool without queued searches is how frozen works
+    root = os.path.join(tmp, "frz")
+    build(root, symptoms=False, restart_hot2=False)
+    ns = load(root, "nodes_stats.json")
+    for st in ns["nodes"].values():
+        if st["name"] == "frozen-1":
+            st["os"]["cpu"]["percent"] = 5
+            st["thread_pool"]["search"] = {"threads": 13, "active": 13, "queue": 0, "rejected": 0}
+    w(root, "nodes_stats.json", ns)
+    check("review: no PERF-013 on a frozen node without a queue", "PERF-013" not in findings(analyze(root)))
+    for st in ns["nodes"].values():
+        if st["name"] == "frozen-1":
+            st["thread_pool"]["search"]["queue"] = 3
+    w(root, "nodes_stats.json", ns)
+    p13 = findings(analyze(root)).get("PERF-013")
+    check("review: PERF-013 on a frozen node with a queue", p13 is not None and p13.severity == Severity.WARNING, p13)
+
+    # SET-005 compares nodes of the same tier only
+    root = os.path.join(tmp, "set5")
+    build(root, symptoms=False, restart_hot2=False)
+    ni = load(root, "nodes.json")
+    procs = {"hot-1": "4.0", "hot-2": "4.0", "warm-1": "2.0", "frozen-1": "0.5"}
+    for info in ni["nodes"].values():
+        info["settings"] = dict(info.get("settings") or {}, node={"processors": procs[info["name"]]})
+    w(root, "nodes.json", ni)
+    check("review: SET-005 not raised for different tiers", "SET-005" not in findings(analyze(root)))
+    for info in ni["nodes"].values():
+        if info["name"] == "hot-2":
+            info["settings"]["node"]["processors"] = "3.0"
+    w(root, "nodes.json", ni)
+    s5 = findings(analyze(root)).get("SET-005")
+    check("review: SET-005 raised within the hot tier", s5 is not None and rows_of(s5) and rows_of(s5)[0][1] == "hot",
+          s5 and rows_of(s5))
+
+    # DIF-008: data moving between nodes of one tier is not growth
+    base = os.path.join(tmp, "d8b")
+    build(base, symptoms=False, restart_hot2=False)
+    w(base, "manifest.json", dict(load(base, "manifest.json"), collectionDate="2026-09-30T12:00:00Z"))
+    cur = os.path.join(tmp, "d8c")
+    build(cur, symptoms=False, restart_hot2=False)
+    ns = load(cur, "nodes_stats.json")
+    nb = load(base, "nodes_stats.json")
+    for doc, delta in ((nb, 0), (ns, 1)):
+        for st in doc["nodes"].values():
+            if st["name"] in ("hot-1", "hot-2"):
+                avail = 500 * GB + (1 if st["name"] == "hot-1" else -1) * delta * 200 * GB
+                st["fs"]["total"] = {"total_in_bytes": 1000 * GB, "available_in_bytes": avail, "free_in_bytes": avail}
+    w(base, "nodes_stats.json", nb)
+    w(cur, "nodes_stats.json", ns)
+    d8 = findings(analyze(cur, baseline=base)).get("DIF-008")
+    check("review: DIF-008 judges the tier total (one hot node up, one down)", d8 is not None and d8.severity == Severity.INFO
+          and "hot no growth" in d8.observed, d8 and (d8.severity, d8.observed))
+    check("review: DIF-008 keeps the node rows and adds a tier row", d8 is not None and any(r[0] == "hot-2" for r in rows_of(d8))
+          and any(r[0] == "hot tier total" for r in rows_of(d8)), d8 and rows_of(d8))
+
+    # node change table: equal display means no arrow
+    pct = lambda v: "%.0f%%" % v
+    check("review: 1.2% vs 1.1% shows '='", diff_mod._cell(1.2, 1.1, pct, 5) == "1% =", diff_mod._cell(1.2, 1.1, pct, 5))
+    check("review: shard count shows as an integer", diff_mod._cell(0, 0, lambda v: str(v), 5) == "0 =")
+
+    # COST-004: a write target on warm does not make warm a landing tier when hot exists
+    root = os.path.join(tmp, "land")
+    b = Bundle()
+    b.index(".ds-logs-h-default-2026.09.29-000001", 50 * GB, M, node="hot-1")
+    b.stream("logs-h-default", [".ds-logs-h-default-2026.09.29-000001"])
+    b.index(".ds-logs-w-default-2026.09.01-000001", GB, M, node="warm-1")
+    b.stream("logs-w-default", [".ds-logs-w-default-2026.09.01-000001"])
+    b.index("seed", GB, M, node="hot-1")
+    for name, c in ((".ds-logs-h-default-2026.09.29-000001", COLLECTED_MS - 2 * DAY),
+                    (".ds-logs-w-default-2026.09.01-000001", COLLECTED_MS - 30 * DAY), ("seed", COLLECTED_MS - 30 * DAY)):
+        b.settings[name]["settings"]["index"]["creation_date"] = str(c)
+    b.write(root)
+    c4 = findings(analyze(root)).get("COST-004")
+    check("review: COST-004 landing tier is hot only", c4 is not None and "Landing tier hot (" in c4.observed,
+          c4 and c4.observed)
+
+    # DIF-014: an interval from another cluster or with few matching nodes is not rated
+    b0 = os.path.join(tmp, "s0")
+    shutil.copytree(os.path.join(tmp, "s1"), b0)
+    w(b0, "manifest.json", dict(load(b0, "manifest.json"), collectionDate="2026-09-29T20:00:00Z"))
+    ni = load(b0, "nodes.json")
+    ns = load(b0, "nodes_stats.json")
+    for doc in (ni, ns):
+        for v in doc["nodes"].values():
+            if v["name"] != "hot-1":
+                v["name"] = "other-" + v["name"]
+    w(b0, "nodes.json", ni)
+    w(b0, "nodes_stats.json", ns)
+    res = analyze(os.path.join(tmp, "s3"), baseline=[os.path.join(tmp, "s2"), os.path.join(tmp, "s1"), b0])
+    d14 = findings(res).get("DIF-014")
+    check("review: DIF-014 shows the unmatched interval as not rated", d14 is not None
+          and any(r[0].startswith("09-29 20:00") and r[2] == "-" for r in rows_of(d14)), d14 and rows_of(d14))
+    check("review: DIF-014 says one interval was not rated", d14 is not None and "1 interval not rated" in d14.observed,
+          d14 and d14.observed)
+    check("review: unmatched interval is not the off-peak", d14 is not None and "lowest 09-29" not in d14.observed,
+          d14 and d14.observed)
+
+
 def main():
     tmp = tempfile.mkdtemp()
     try:
         for lang in ("ko", "en"):
             run_lang(lang, tmp)
         run_variants(tmp)
+        run_review(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         set_lang("ko")

@@ -7,6 +7,10 @@
 Each question looks for symptoms first (rejections, queues, throttling, high latency). Only when a symptom exists does it walk the
 cause groups in a fixed order and name the first group that has a finding; the other groups with findings are listed as well.
 For search, a busy search pool with low CPU (PERF-013) moves storage to the front, because it shows threads waiting.
+When the symptom is tied to nodes (a queue or rejections on some nodes, PERF-013 nodes), the scope is those nodes plus the other
+nodes of their data tiers (a bulk write waits for the replicas on the other nodes of the tier, a search waits for every shard copy it
+hits). A cause finding that names nodes counts only if it names one in scope: high heap on a frozen node does not explain a write
+queue on a hot node. Findings that name no node (cluster wide, or indices) always count.
 The groups reuse the findings in the report, so the summary never contradicts the body. It is a reading aid: the order is the
 tool's judgment of where to look first, not an official decision tree.
 """
@@ -53,36 +57,50 @@ def _match(fid, pattern):
     return fid == pattern or fid.startswith(pattern + ".")
 
 
-def _hits(findings, patterns):
-    """Finding ids among patterns that are Critical/Warning (or an Info cause), in pattern order, without duplicates."""
+def _scoped(f, scope, known):
+    """False when the finding names nodes and none of them is in scope. scope None means no node scoping."""
+    if not scope:
+        return True
+    nodes = set(a for a in (f.affected or []) if a in known)
+    return not nodes or bool(nodes & scope)
+
+
+def _hits(findings, patterns, scope=None, known=()):
+    """Finding ids among patterns that are Critical/Warning (or an Info cause), in pattern order, without duplicates.
+    With a node scope, findings that name only other nodes are skipped."""
     out = []
     for p in patterns:
         for f in findings:
-            if f.id in out or not _match(f.id, p):
+            if f.id in out or not _match(f.id, p) or not _scoped(f, scope, known):
                 continue
             if f.severity in ACTIVE or (f.severity == Severity.INFO and any(_match(f.id, x) for x in INFO_CAUSES)):
                 out.append(f.id)
     return out
 
 
-def _walk(findings, groups):
+def _walk(findings, groups, scope=None, known=()):
     """[(group, [ids])] for every group with a hit, in group order."""
     out = []
     for name, patterns in groups:
-        ids = _hits(findings, patterns)
+        ids = _hits(findings, patterns, scope, known)
         if ids:
             out.append((name, ids))
     return out
 
 
 def _pool_sums(ctx, pools):
+    """(rejected, queued, names of nodes with either)."""
     rej = queue = 0
+    where = set()
     for n in ctx.nodes:
         for pool, st in items(dig(n.stats, "thread_pool")):
             if pool in pools:
-                rej += num(st, "rejected")
-                queue += num(st, "queue")
-    return rej, queue
+                r, q = num(st, "rejected"), num(st, "queue")
+                rej += r
+                queue += q
+                if r or q:
+                    where.add(n.name)
+    return rej, queue, where
 
 
 def _row(qid, state, verdict, basis, causes, nxt, worst=None):
@@ -96,9 +114,17 @@ def _worst(findings, ids):
     return min(sev, key=lambda s: Severity.ORDER.get(s, 9)) if sev else None
 
 
-def _causal(qid, findings, groups, symptoms):
-    """Walk the cause groups once a symptom exists."""
-    found = _walk(findings, groups)
+def _tier_scope(ctx, scope):
+    """The symptom nodes plus every node of their data tiers."""
+    if not scope:
+        return scope
+    tiers = set(ctx.tier_of(n) for n in ctx.nodes if n.name in scope) - set([None])
+    return set(scope) | set(n.name for n in ctx.nodes if tiers and ctx.tier_of(n) in tiers)
+
+
+def _causal(qid, findings, groups, symptoms, scope=None, known=()):
+    """Walk the cause groups once a symptom exists, limited to the symptom scope when one is given."""
+    found = _walk(findings, groups, scope, known)
     ids = [i for _g, xs in found for i in xs]
     if not found:
         return _row(qid, "symptom", "unknown", symptoms, [], True)
@@ -113,46 +139,59 @@ def _causal(qid, findings, groups, symptoms):
 def _ingest(ctx, findings):
     if not sum(num(n.stats, "indices", "indexing", "index_total") for n in ctx.data_nodes):
         return _row("ingest", "idle", "idle", [], [], False)
-    sym = []
-    rej, queue = _pool_sums(ctx, ("write", "write_coordination"))
+    sym, wide = [], False
+    rej, queue, scope = _pool_sums(ctx, ("write", "write_coordination"))
     if rej:
         sym.append(T("btl.s.write_rejected") % fmt_num(rej))
     if queue:
         sym.append(T("btl.s.write_queue") % fmt_num(queue))
-    ip = sum(num(v) for n in ctx.nodes
-             for k, v in items(dig(n.stats, "indexing_pressure", "memory", "total")) if k.endswith("rejections"))
+    ip = 0
+    for n in ctx.nodes:
+        v = sum(num(x) for k, x in items(dig(n.stats, "indexing_pressure", "memory", "total")) if k.endswith("rejections"))
+        if v:
+            ip += v
+            scope.add(n.name)
     if ip:
         sym.append(T("btl.s.pressure") % fmt_num(ip))
     thr = [f for f in findings if f.id == "IDX-014" and f.severity in ACTIVE]
     if thr:
         sym.append(T("btl.s.throttled"))
+        wide = True             # throttling is reported per index, so it does not point at nodes
     if not sym:
         return _row("ingest", "clear", "clear", [], [], True)
-    return _causal("ingest", findings, INGEST_CAUSES, sym)
+    known = set(n.name for n in ctx.nodes)
+    return _causal("ingest", findings, INGEST_CAUSES, sym, None if wide else _tier_scope(ctx, scope), known)
 
 
 def _search(ctx, findings):
     if not sum(num(n.stats, "indices", "search", "query_total") for n in ctx.data_nodes):
         return _row("search", "idle", "idle", [], [], False)
-    sym = []
-    rej, queue = _pool_sums(ctx, ("search",))
+    sym, wide = [], False
+    rej, queue, scope = _pool_sums(ctx, ("search",))
     if rej:
         sym.append(T("btl.s.search_rejected") % fmt_num(rej))
     if queue:
         sym.append(T("btl.s.search_queue") % fmt_num(queue))
     slow = _hits(findings, ("PERF-001", "PERF-002"))
+    known = set(n.name for n in ctx.nodes)
     if slow:
         sym.append(T("btl.s.search_slow") % ", ".join(slow))
+        named = set(a for f in findings if f.id in slow for a in (f.affected or []) if a in known)
+        if named:
+            scope |= named
+        else:
+            wide = True
     busy = _hits(findings, ("PERF-013",))
     if busy:
         sym.append(T("btl.s.search_busy"))
+        scope |= set(a for f in findings if f.id in busy for a in (f.affected or []) if a in known)
     if not sym:
         return _row("search", "clear", "clear", [], [], True)
     groups = SEARCH_CAUSES
     if busy:
         # Threads that are busy without CPU are a direct observation of waiting, so storage is checked first.
         groups = [g for g in SEARCH_CAUSES if g[0] == "storage"] + [g for g in SEARCH_CAUSES if g[0] != "storage"]
-    return _causal("search", findings, groups, sym)
+    return _causal("search", findings, groups, sym, None if wide else _tier_scope(ctx, scope), known)
 
 
 def _storage(findings):

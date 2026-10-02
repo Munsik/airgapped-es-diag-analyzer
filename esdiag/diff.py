@@ -114,7 +114,7 @@ def _cell(b, c, fmt, noise):
     if b is None:
         return fmt(c)
     base = abs(b) if b else 0.0
-    if (b == c) or (base and abs(c - b) / base * 100.0 < noise) or (not base and not c):
+    if (b == c) or (base and abs(c - b) / base * 100.0 < noise) or (not base and not c) or fmt(b) == fmt(c):
         return "%s =" % fmt(c)
     return "%s → %s %s" % (fmt(b), fmt(c), "▲" if c > b else "▼")
 
@@ -131,7 +131,7 @@ def node_changes(base, cur, hours, t):
     rows = []
     for n in cur.nodes:
         b = bm.get(n.name)
-        tier = cur.tier_of(n) or ("master" if n.is_master_eligible else "-")
+        tier = cur.tier_of(n) or ("master" if n.is_master_eligible else ("ml" if n.is_ml else "-"))
         if b is None:
             rows.append([n.name, tier, T("diff.node.new")] + ["-"] * 9)
             continue
@@ -154,7 +154,7 @@ def node_changes(base, cur, hours, t):
             _cell(b.cpu_pct, n.cpu_pct, pct, noise),
             _cell(b.load15, n.load15, plain, noise),
             _cell(b.disk_used_pct, n.disk_used_pct, pct, noise),
-            _cell(float(bs.get(n.name, 0)), float(cs.get(n.name, 0)), plain, noise),
+            _cell(bs.get(n.name, 0), cs.get(n.name, 0), plain, noise),
             rate(("indices", "indexing", "index_total")),
             rate(("indices", "search", "query_total")),
             T("diff.node.restarted") if reset else ("+%s" % fmt_num(max(0, rej_c - rej_b))),
@@ -351,45 +351,62 @@ def r_breaker_delta(base, cur, hours, t):
 
 
 def r_disk_projection(base, cur, hours, t):
-    """Estimates when the watermark is reached from the disk growth rate."""
+    """Estimates when each data tier reaches the high watermark from the disk growth rate between the two bundles (DIF-008).
+
+    Within a tier, ILM moves and rebalancing put shards on whichever node has room, so over a few hours one node can grow fast
+    while another shrinks. The tier total is what fills up: days = sum of the bytes left before the high watermark on the tier's
+    nodes / sum of their growth per hour. Nodes are still listed one by one. Tier days <= 7 → Critical, <= disk_projection_days_warn
+    → Warning, otherwise Info. Frozen-only nodes pre-allocate the shared cache, so they are left out.
+    """
     if not hours or hours < t["diff_min_hours_for_projection"]:
         return []
     bm, cm = _node_map(base), _node_map(cur)
-    rows, soon = [], []
+    rows = []
+    tiers = collections.OrderedDict()
     for name, n in cm.items():
         if name not in bm or not n.is_data or cur.is_frozen_only(n):
-            continue        # frozen-only nodes pre-allocate the shared cache, so growth rate extrapolation does not apply
+            continue
         ba = bm[name].fs_avail
         ct, ca = n.fs_total, n.fs_avail
         if not ct or ba is None or ca is None:
             continue
-        growth = (ba - ca)                      # shrinking free space
-        rate = growth / hours                   # bytes/hour
+        rate = (ba - ca) / hours                # bytes/hour of shrinking free space
         used_pct = (1 - ca / float(ct)) * 100
         high = cur.watermark_used_pct("high", ct) or 90.0
         head = (high / 100.0 * ct) - (ct - ca)  # bytes left until high
-        if head <= 0:
-            label, days = T("diff.r_disk_projection.01"), None
-        elif rate > 0:
-            days = head / rate / 24.0
-            label = T("diff.r_disk_projection.02") % days
-        else:
-            label, days = T("diff.r_disk_projection.03"), None
-        rows.append([name, "%.1f%%" % used_pct, fmt_bytes(rate) + "/h", label, "%.0f%%" % high])
-        if days is not None and days <= t["disk_projection_days_warn"]:
-            soon.append((name, days))
+        tier = cur.tier_of(n) or "-"
+        agg = tiers.setdefault(tier, [0.0, 0.0])
+        agg[0] += max(0.0, head)
+        agg[1] += rate
+        rows.append([name, tier, "%.1f%%" % used_pct, fmt_bytes(rate) + "/h", _days_label(head, rate), "%.0f%%" % high])
     if not rows:
         return []
-    sev = Severity.CRITICAL if any(d <= 7 for _, d in soon) else (
-        Severity.WARNING if soon else Severity.INFO)
+    summary, soon = [], []
+    for tier, (head, rate) in tiers.items():
+        label = _days_label(head, rate)
+        summary.append("%s %s" % (tier, label))
+        rows.append([T("diff.r_disk_projection.14") % tier, tier, "", fmt_bytes(rate) + "/h", label, ""])
+        if head <= 0:
+            soon.append(0.0)
+        elif rate > 0 and head / rate / 24.0 <= t["disk_projection_days_warn"]:
+            soon.append(head / rate / 24.0)
+    sev = Severity.CRITICAL if any(d <= 7 for d in soon) else (Severity.WARNING if soon else Severity.INFO)
     return [Finding(
         "DIF-008", CAT, sev, T("diff.r_disk_projection.04"),
-        observed=T("diff.r_disk_projection.05") % (
-            ", ".join("%s %s" % (r[0], r[3]) for r in rows) or T("diff.r_disk_projection.06")),
+        observed=T("diff.r_disk_projection.05") % (", ".join(summary) or T("diff.r_disk_projection.06")),
         impact=T("diff.r_disk_projection.07"),
         recommend=T("diff.r_disk_projection.08"),
-        evidence=table(["node", T("diff.r_disk_projection.09"), T("diff.r_disk_projection.10"), T("diff.r_disk_projection.11"), T("diff.r_disk_projection.12")], rows),
+        evidence=table(["node", "tier", T("diff.r_disk_projection.09"), T("diff.r_disk_projection.10"),
+                        T("diff.r_disk_projection.11"), T("diff.r_disk_projection.12")], rows),
         source=T("diff.r_disk_projection.13"))]
+
+
+def _days_label(head, rate):
+    if head <= 0:
+        return T("diff.r_disk_projection.01")
+    if rate > 0:
+        return T("diff.r_disk_projection.02") % (head / rate / 24.0)
+    return T("diff.r_disk_projection.03")
 
 
 def r_throughput(base, cur, hours, t):
@@ -495,16 +512,25 @@ def r_interval_rates(series, t):
 
     The bundles are sorted by collection time and every consecutive pair is one interval. For each interval the increase in
     index_total and query_total of the data nodes is turned into operations per second (replica work included). A node whose uptime
-    went down in the interval restarted, so it is left out of that interval. The busiest interval by indexing rate is the peak,
+    went down in the interval restarted, so it is left out of that interval. An interval between two different clusters (the
+    DIF-013 test), or where fewer than half of the later bundle's data nodes appear in the earlier one, is shown but not rated:
+    its rate would not describe this cluster. The busiest interval by indexing rate is the peak,
     the quietest the off-peak, and their ratio is shown. The per data node rate at the peak is what sizing needs.
     Info only.
     """
-    rows, rates = [], []
+    rows, rates, dropped = [], [], 0
     for a, b in zip(series, series[1:]):
         hours = _elapsed_hours(a, b)
         if not hours:
             continue
+        label = "%s → %s" % (a.collection_time.strftime("%m-%d %H:%M"), b.collection_time.strftime("%m-%d %H:%M"))
         am = _node_map(a)
+        matched = sum(1 for n in b.data_nodes if n.name in am)
+        if r_cluster_identity(a, b, hours, t) or matched * 2 < len(b.data_nodes):
+            dropped += 1
+            rows.append([label, "%.1f" % hours, "-", "-", "-", "-", "%d / %d" % (matched, len(b.data_nodes)),
+                         T("diff.r_interval_rates.14")])
+            continue
         di = dq = 0
         nodes, skipped = 0, 0
         for n in b.data_nodes:
@@ -521,7 +547,6 @@ def r_interval_rates(series, t):
             continue
         sec = hours * 3600.0
         ir, qr = di / sec, dq / sec
-        label = "%s → %s" % (a.collection_time.strftime("%m-%d %H:%M"), b.collection_time.strftime("%m-%d %H:%M"))
         rates.append((ir, qr, label, nodes))
         rows.append([label, "%.1f" % hours, "%.0f" % ir, "%.0f" % (ir / nodes), "%.0f" % qr, "%.0f" % (qr / nodes),
                      nodes, skipped])
@@ -531,11 +556,14 @@ def r_interval_rates(series, t):
     low = min(rates, key=lambda r: r[0])
     ratio = (peak[0] / low[0]) if low[0] else None
     qpeak = max(rates, key=lambda r: r[1])
+    obs = T("diff.r_interval_rates.02") % (
+        len(rates), peak[2], peak[0], peak[0] / peak[3], low[2], low[0],
+        ("%.1f" % ratio) if ratio else "-", qpeak[2], qpeak[1], qpeak[1] / qpeak[3])
+    if dropped:
+        obs += T("diff.r_interval_rates.15") % dropped
     return [Finding(
         "DIF-014", CAT, Severity.INFO, T("diff.r_interval_rates.01"),
-        observed=T("diff.r_interval_rates.02") % (
-            len(rates), peak[2], peak[0], peak[0] / peak[3], low[2], low[0],
-            ("%.1f" % ratio) if ratio else "-", qpeak[2], qpeak[1], qpeak[1] / qpeak[3]),
+        observed=obs,
         impact=T("diff.r_interval_rates.03"),
         recommend=T("diff.r_interval_rates.04"),
         evidence=table([T("diff.r_interval_rates.05"), T("diff.r_interval_rates.06"), T("diff.r_interval_rates.07"),

@@ -270,7 +270,7 @@ Settings that differ from the default are reported with the **original default /
 | SET-002 | Settings explicitly set to the same value as the default (they do not follow a new default after an upgrade) |
 | SET-003 | elasticsearch.yml values that are ignored because an API setting overrides them |
 | SET-004 | Node settings (yml, including static) that differ from the default |
-| SET-005 | Settings that differ between data nodes |
+| SET-005 | Settings that differ between data nodes of the same tier |
 | SET-006 | User index settings that differ from the default |
 
 The official precedence applies (transient > persistent > elasticsearch.yml > default).
@@ -313,7 +313,7 @@ logsdb stores data efficiently, so it usually reaches 200M documents before 50GB
 | DIF-002 to DIF-003 | Node restart (uptime went backward), nodes that left or joined |
 | DIF-004 to DIF-005 | Rejection increase and hourly rate (with no increase, classified as past history) |
 | DIF-006 to DIF-007 | Share of old GC in the interval, increase in circuit breaker trips |
-| DIF-008 | Disk growth rate and the expected date of reaching the high watermark (linear extrapolation, frozen excluded) |
+| DIF-008 | Disk growth rate and the expected date of reaching the high watermark, judged per tier (linear extrapolation, frozen excluded) |
 | DIF-009 to DIF-011 | Throughput and its distribution in the interval, index growth, index creation and deletion |
 | DIF-012 | Change in findings (new / worse / resolved) |
 | DIF-013 | Warns when the two bundles come from different clusters (cluster_uuid differs, for example). Treat the comparison findings as reference only |
@@ -345,7 +345,7 @@ The HTML report (single file) has this order. Markdown and console output contai
 | Do restarts or recoveries skew the numbers? | none | OS-007 → DIF-002 → OS-006 → CLU-020, REC-001, HOT-003 |
 | Capacity or concentration? | none | tier CPU (HOT-005) → disk (DISK-001 to 003, DIF-008, COST-004) → concentration (HOT-001, HOT-002, SHD-006, SHD-016, NODE-001) |
 
-A cause counts when its finding is Critical or Warning (PERF-013 also at Info). The first group with a finding is the verdict, and the other groups with findings are listed after it. With no symptom the row says so and names no cause, and if symptoms exist but no group has a finding, the row points outside Elasticsearch (clients, queries). The order is the tool's judgment of where to look first, not an official decision tree. The summary is left out when `--only` runs part of the rules. It is also in the Markdown, console, JSON (`bottleneck`) and Support summary output.
+A cause counts when its finding is Critical or Warning (PERF-013 also at Info). When the symptom is on certain nodes (a queue or rejections there, PERF-013 nodes), a finding that names nodes counts only if it names one of them or another node of the same data tier, so high heap on a frozen node is not named for a write queue on a hot node. The first group with a finding is the verdict, and the other groups with findings are listed after it. With no symptom the row says so and names no cause, and if symptoms exist but no group has a finding, the row points outside Elasticsearch (clients, queries). The order is the tool's judgment of where to look first, not an official decision tree. The summary is left out when `--only` runs part of the rules. It is also in the Markdown, console, JSON (`bottleneck`) and Support summary output.
 
 ### Health check areas
 
@@ -455,7 +455,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 979 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 985 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 63 scenarios and checks the severity too | 63 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
@@ -464,7 +464,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_logsdb.py` | Every branch of the document limit, logsdb and force merge findings (SHD-008, 013, 014, 015, IDX-013, ILM-007, 008, 009) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_write_path.py` | Every branch of the write path and operations findings (PERF-012, OS-007, SHD-016, IDX-014, 015, CLU-017, MAP-004, DIF-013) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_doc_audit.py` | Fixes from the official documentation audit: JVM-002 oops flag, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom conditions, development mode, and context-dependent settings defaults, on synthetic data, in both languages. No external bundle needed | 0 failures |
-| `tests/test_bottleneck_cost.py` | Bottleneck summary, recently restarted nodes left out of comparisons (HOT-001, 002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001 and COST-001 to 004 on synthetic data, in both languages. No external bundle needed | 0 failures |
+| `tests/test_bottleneck_cost.py` | Bottleneck summary, recently restarted nodes left out of comparisons (HOT-001, 002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001 to 006, bottleneck causes scoped to the symptom tiers, DIF-008 per tier, DIF-014 interval checks and SET-005 per tier on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |
 

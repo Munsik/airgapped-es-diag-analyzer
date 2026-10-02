@@ -631,7 +631,7 @@ def r_disk_io_utilization(ctx):
         impact=T("rules.deep.r_disk_io_utilization.05"),
         recommend=T("rules.deep.r_disk_io_utilization.06"),
         evidence=table(["node", "tier", T("rules.deep.r_disk_io_utilization.07"), T("rules.deep.r_disk_io_utilization.08"), T("rules.deep.r_disk_io_utilization.09"), T("rules.deep.r_disk_io_utilization.10")], rows),
-        source="nodes_stats.json (fs.io_stats)")]
+        affected=busy, source="nodes_stats.json (fs.io_stats)")]
 
 
 # Query types and search components that the official docs call expensive

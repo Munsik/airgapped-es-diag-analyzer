@@ -334,8 +334,9 @@ A static setting needs a yml edit and a restart on every target node.
 
 Checks whether settings that should match across nodes (indexing buffer, caches, thread pools, search, transport, etc.) differ between nodes or are set on only some nodes.
 
-The scope is explicitly set keys under _CONSISTENCY_PREFIX, minus node-specific settings. Only data nodes are compared with each other (all nodes if no data nodes are identified;
-differences between nodes with different roles can be normal). A setting missing on some nodes counts as a difference. Any mismatch → Warning.
+The scope is explicitly set keys under _CONSISTENCY_PREFIX, minus node-specific settings. Data nodes are compared only with
+nodes of the same data tier (all nodes if no data nodes are identified): tiers usually run on different hardware, so values
+such as node.processors differ between tiers by design. A setting missing on some nodes counts as a difference. Any mismatch → Warning.
 
 ### SET-006: Index settings changed from the default
 
@@ -586,7 +587,8 @@ Search thread pool busy while the node CPU is low (PERF-013), from the point-in-
 active search threads >= search_pool_busy_share of the pool size (nodes.json thread_pool.search.size) and node CPU% <
 search_io_cpu_pct_max. Threads that are busy without using CPU are usually waiting, most often on storage reads (frozen shared
 cache, remote storage) and sometimes on locks or other nodes. Queued searches on such a node → Warning, otherwise Info.
-This is a single moment, so read it with hot threads (RT-001) and the storage findings (FRZ-002, PERF-009, DISK-008).
+On frozen-only nodes, searches read from the snapshot repository by design, so a busy pool there counts only when searches
+are also queued. This is a single moment, so read it with hot threads (RT-001) and the storage findings (FRZ-002, PERF-009, DISK-008).
 
 ## Shards and indices
 
@@ -1680,7 +1682,9 @@ How many days of ingest the landing tier can still take before the high watermar
 
 Daily ingest = store size (replicas included) of user indices created in the last ingest_window_days, plus the part of older write
 indices that falls in the window (size x window / age), divided by the window (shorter if the cluster is younger). Searchable
-snapshot mounts and system indices are left out. Landing tier = tiers holding shards of write targets (frozen excluded).
+snapshot mounts and system indices are left out. Landing tier = tiers holding shards of write targets (frozen excluded); when
+one of them is a hot tier, only the hot tiers count, because new data stream indices go to hot by default and a write target
+elsewhere is usually a small index whose policy moves it without rollover.
 Headroom = sum over those nodes of (bytes allowed at the high watermark - bytes used). Days = headroom / daily ingest.
 This assumes nothing is moved or deleted. Days <= disk_projection_days_warn while more than half of the window's data has no ILM
 phase after hot (no move, no delete) → Warning; otherwise Info. Comparison mode (DIF-008) measures real growth instead.
@@ -2347,7 +2351,12 @@ Increase in breaker tripped > 0 -> critical.
 
 **Decision logic**
 
-Estimates when the watermark is reached from the disk growth rate.
+Estimates when each data tier reaches the high watermark from the disk growth rate between the two bundles (DIF-008).
+
+Within a tier, ILM moves and rebalancing put shards on whichever node has room, so over a few hours one node can grow fast
+while another shrinks. The tier total is what fills up: days = sum of the bytes left before the high watermark on the tier's
+nodes / sum of their growth per hour. Nodes are still listed one by one. Tier days <= 7 → Critical, <= disk_projection_days_warn
+→ Warning, otherwise Info. Frozen-only nodes pre-allocate the shared cache, so they are left out.
 
 ### DIF-009: Throughput in the interval and distribution across nodes
 
@@ -2397,7 +2406,9 @@ Throughput per interval when three or more bundles are given (DIF-014): peak and
 
 The bundles are sorted by collection time and every consecutive pair is one interval. For each interval the increase in
 index_total and query_total of the data nodes is turned into operations per second (replica work included). A node whose uptime
-went down in the interval restarted, so it is left out of that interval. The busiest interval by indexing rate is the peak,
+went down in the interval restarted, so it is left out of that interval. An interval between two different clusters (the
+DIF-013 test), or where fewer than half of the later bundle's data nodes appear in the earlier one, is shown but not rated:
+its rate would not describe this cluster. The busiest interval by indexing rate is the peak,
 the quietest the off-peak, and their ratio is shown. The per data node rate at the peak is what sizing needs.
 Info only.
 

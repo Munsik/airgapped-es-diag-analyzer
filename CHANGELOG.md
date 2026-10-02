@@ -39,6 +39,18 @@ A bottleneck summary at the top of every report, recently restarted nodes left o
 - Console: column alignment counts Hangul as two columns
 - 122 single-bundle rules and 11 bundle-comparison rules (184 finding IDs plus comparison DIF-001~014)
 
+### Review against a real bundle
+
+A 14-node hot/warm/cold/frozen cluster was analyzed with this version, alone and as a series of bundles. These results were wrong or misleading and are fixed:
+
+- Bottleneck summary: any Critical or Warning in a cause group counted, so high heap on a frozen node or a breaker on a warm node was named as a cause of a write queue on a hot node → when the symptom is on certain nodes, a cause that names nodes counts only if it names one of those nodes or another node of the same data tier (a bulk write waits for the replicas, a search for every shard copy). Findings that name no node still count. BRK-001, BRK-002, OS-003, DISK-008, FD-001, IP-001, HOT-005 and PERF-009 now record the nodes they are about
+- PERF-013: two of two search threads busy on a 1-core frozen node was enough → on frozen-only nodes it needs searches waiting in the queue as well, because frozen searches read from the snapshot repository by design
+- DIF-008: each node was extrapolated alone, so a warm node that received ILM moves for 17 hours read as "full in 3.7 days" (Critical) while another node of the tier shrank → the tier total decides (bytes left before the high watermark over the tier / growth per hour of the tier). Node rows stay, with a total row per tier
+- DIF-014: an interval where only 1 of 10 data nodes matched by name produced the "lowest" rate → an interval between different clusters, or where fewer than half of the data nodes match, is shown as not rated and left out of the peak and lowest
+- SET-005: node.processors differed between tiers (4, 2, 1 core) and raised a Warning → data nodes are compared within their tier only
+- COST-004: a write target on a warm node made warm part of the landing tier and doubled the headroom → when a hot tier receives writes, only hot tiers count (new data stream indices go to hot by default)
+- Change per node table: "1% → 1% ▼" when the rounded values were equal, and shard counts as "0.00" → equal display shows "=", shard counts are integers, ML nodes show "ml"
+
 ### Official documentation audit
 
 Every finding labeled Official, every version gate and the defaults in the settings knowledge base were checked again against the current docs (9.x), and against the Elasticsearch source where the docs are silent or disagree between versions.

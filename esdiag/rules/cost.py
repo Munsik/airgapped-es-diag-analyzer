@@ -244,7 +244,9 @@ def r_ingest_headroom(ctx):
 
     Daily ingest = store size (replicas included) of user indices created in the last ingest_window_days, plus the part of older write
     indices that falls in the window (size x window / age), divided by the window (shorter if the cluster is younger). Searchable
-    snapshot mounts and system indices are left out. Landing tier = tiers holding shards of write targets (frozen excluded).
+    snapshot mounts and system indices are left out. Landing tier = tiers holding shards of write targets (frozen excluded); when
+    one of them is a hot tier, only the hot tiers count, because new data stream indices go to hot by default and a write target
+    elsewhere is usually a small index whose policy moves it without rollover.
     Headroom = sum over those nodes of (bytes allowed at the high watermark - bytes used). Days = headroom / daily ingest.
     This assumes nothing is moved or deleted. Days <= disk_projection_days_warn while more than half of the window's data has no ILM
     phase after hot (no move, no delete) → Warning; otherwise Info. Comparison mode (DIF-008) measures real growth instead.
@@ -293,6 +295,8 @@ def r_ingest_headroom(ctx):
     for sh in ctx.shards:
         if sh.get("index") in writes and sh.get("node") and tiers.get(sh["node"]) and tiers[sh["node"]] != "frozen":
             landing.add(tiers[sh["node"]])
+    if any("hot" in x for x in landing):
+        landing = set(x for x in landing if "hot" in x)
     if not landing:
         landing = set(t for t in tiers.values() if t and ("hot" in t or t in ("content", "data(generic)")))
     head, nodes = 0.0, 0

@@ -280,7 +280,7 @@ def r_tier_saturation(ctx):
                 impact=T("rules.hotspot.r_tier_saturation.03"),
                 recommend=T("rules.hotspot.r_tier_saturation.04"),
                 evidence=table(["tier", "node", T("rules.hotspot.r_tier_saturation.05"), "cpu%", "load15/cpu", "throttled", T("rules.hotspot.r_tier_saturation.06")], rows),
-                refs=[D_HOT], source="nodes_stats.json"))
+                affected=[n.name for n in nodes], refs=[D_HOT], source="nodes_stats.json"))
     return out
 
 
