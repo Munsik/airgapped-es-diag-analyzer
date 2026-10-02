@@ -9,6 +9,10 @@ Each entry is written as "previous behavior → current behavior (reason)". Use 
 
 A bottleneck summary at the top of every report, recently restarted nodes left out of node comparisons, frozen shared cache on network storage, storage cost and sizing findings, throughput per interval across several bundles, a per node comparison table, a text filter in the HTML report, and fixes from a full check against the official docs. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.
 
+### Renamed
+
+- The package `esdiag` is now `esdoctor` (esdiag is the name of an official Elastic tool). The package folder is `esdoctor/`, the single-file build is `dist/esdoctor.pyz`, the standalone build is `dist/esdoctor`, and the language variable is `ESDOCTOR_LANG`. `python3 analyze.py` works as before
+
 ### Added
 
 - Bottleneck summary in every output (HTML, Markdown, console, JSON `bottleneck`, Support summary): five questions (is ingest keeping up, is search slow, is storage the limit, do restarts or recoveries skew the numbers, capacity or concentration). Each looks at symptoms first (rejections, queues, throttling, latency) and names a cause only when a symptom exists, by walking cause groups in a fixed order over the findings in the report. The order is the tool's judgment, not an official decision tree. It is left out when `--only` runs part of the rules
