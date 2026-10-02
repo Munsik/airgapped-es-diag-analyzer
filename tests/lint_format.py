@@ -27,7 +27,8 @@ from esdiag.i18n import parse  # noqa: E402
 SPEC = re.compile(r"%(\([^)]*\))?[#0\- +]*(\*|\d+)?(\.(\*|\d+))?[diouxXeEfFgGcrsa%]")
 MARKER = re.compile(r"\[[^\[\]|%]*\|[^\[\]|%]*\]")
 # Keys built at run time ("sev." + id, "cat." + id ...) and keys read by tools/gen_rules_doc.py.
-DYNAMIC_PREFIXES = ("sev.", "cat.", "grade.", "area.", "status.", "basis.", "doc.", "th.", "gen.", "kb.")
+DYNAMIC_PREFIXES = ("sev.", "cat.", "grade.", "area.", "status.", "basis.", "doc.", "th.", "gen.", "kb.",
+                    "btl.q.", "btl.g.", "btl.c.", "btl.v.", "btl.n.")
 
 
 def bad_percents(fmt):

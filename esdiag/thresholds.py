@@ -26,6 +26,7 @@ DEFAULTS = {
     "cgroup_throttle_ratio_warn": 0.01,              # [Tool] throttled / elapsed periods
     "cgroup_throttle_ratio_crit": 0.05,              # [Tool] throttled / elapsed periods
     "uptime_short_hours": 6,                         # [Tool] Treats the node as recently restarted
+    "node_compare_min_uptime_hours": 24,             # [Tool] Nodes up for less than this are left out of node-to-node comparisons
 
     # --- Disk ---
     "disk_watermark_low_default": "85%",             # [Official] ES default (used only when no settings file is present)
@@ -149,6 +150,17 @@ DEFAULTS = {
     "forcemerge_stuck_hours": 24,                   # [Tool] Time in the forcemerge action before it is reported
     "disk_io_busy_pct_warn": 60,                    # [Tool] Average disk utilization since startup
     "search_expensive_share_warn": 10,              # [Tool] Share of expensive query types in all searches (%)
+    "search_pool_busy_share": 0.8,                  # [Tool] Active search threads / pool size counted as busy
+    "search_io_cpu_pct_max": 50,                    # [Tool] Busy search pool with node CPU below this suggests threads waiting
+    "ingest_fail_ratio_warn": 0.01,                 # [Tool] Failed / processed documents of a pipeline
+
+    # --- Cost ---
+    "hot_rolled_days_info": 30,                     # [Tool] Days since rollover for an index still in the ILM hot phase
+    "cost_replicas_min": 2,                         # [Tool] Replica count at which an index with no searches is listed
+    "tier_hot_used_pct": 70,                        # [Tool] Hot tier disk usage at which colder tiers are compared
+    "tier_gap_pct": 30,                             # [Tool] Disk usage gap (percentage points) between hot and a colder tier
+    "tier_idle_used_pct": 20,                       # [Tool] Colder tier disk usage below this is reported as mostly empty
+    "ingest_window_days": 7,                        # [Tool] Days of recent indices used to estimate daily ingest volume
 
     # --- Bundle comparison (diff) ---
     "diff_min_hours_for_projection": 1.0,            # [Tool] No extrapolation for intervals shorter than this

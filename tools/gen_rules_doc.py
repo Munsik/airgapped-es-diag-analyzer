@@ -29,7 +29,7 @@ from esdiag.i18n import LANGS, T, catalog, set_lang, tr           # noqa: E402
 from esdiag.model import Severity                                 # noqa: E402
 from esdiag.thresholds import DEFAULTS                            # noqa: E402
 
-MODULES = ["cluster", "settings", "nodes", "shards", "sharding", "guidance", "hotspot", "ops", "deep",
+MODULES = ["cluster", "settings", "nodes", "shards", "sharding", "guidance", "hotspot", "cost", "ops", "deep",
            "runtime", "syscalls", "diff"]
 OUT_FILES = {"en": "RULES.md", "ko": "RULES.ko.md"}
 

@@ -3,6 +3,38 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.14.0] - 2026-10-02
+
+모든 리포트 맨 위에 병목 요약을 넣고, 최근 재시작한 노드를 노드 간 비교에서 빼고, 네트워크 스토리지 위의 frozen shared cache 와 스토리지 비용 판정을 추가했습니다. 공식 수치가 없는 임계값은 모두 `[도구]` 로 표기하고 `--thresholds` 로 바꿀 수 있습니다.
+
+### 추가
+
+- 병목 요약(HTML, Markdown, 콘솔, JSON `bottleneck`, Support 팀 요약): 색인이 따라가는가, 검색이 느린가, 스토리지가 한계인가, 재시작이나 복구가 수치를 왜곡하는가, 용량 부족인가 편중인가의 다섯 가지 질문. 증상(거부, 큐, throttle, 지연)을 먼저 보고, 증상이 있을 때만 리포트의 판정을 정해진 순서의 원인 그룹으로 훑어 원인을 짚음. 순서는 도구 판단이며 공식 판단 트리가 아님. `--only` 로 일부 룰만 돌리면 빠짐
+- FRZ-002(주의, 도구 판단): frozen shared cache 가 있는 노드의 data path 가 네트워크 파일시스템(nfs, cifs, smb, fuse, glusterfs, ceph). shared cache 가 있는 노드는 data path 를 하나만 가질 수 있으므로 캐시 파일이 그 파일시스템에 있음. 표에 캐시 파일을 읽는 hot thread 수와 search 큐·거부를 함께 보여 줌. 서버 로그에 "Direct buffer memory" 오류가 있으면 치명
+- PERF-013(도구 판단): 수집 시점에 노드 CPU 가 50% 미만인데 search thread pool 이 바쁨(활성 >= 풀 크기의 80%). 대기 중인 검색이 있으면 주의, 아니면 참고
+- COST-001(참고): 롤오버 후 30일 이상 지나도 ILM hot phase 에 있는 인덱스. 정책별로 묶어 다음 phase 와 min_age 를 표시. warm, cold, frozen tier 가 있을 때만
+- COST-002(참고): replica 가 2개 이상인데 샤드 시작 이후 검색이 없는 인덱스와 replica 1개로 줄일 때 확보되는 공간. data 노드가 replica + 1 개 이상 가용 영역에 걸쳐 있으면 제외
+- COST-003(참고): tier 간 디스크 사용. hot 이 70% 이상인데 warm·cold tier 가 30 포인트 이상 비어 있거나, warm·cold tier 가 20% 미만. frozen 은 보여 주기만 하고 비교하지 않음
+- COST-004(참고, 주의): 번들 하나로 계산한, 수집 대상 tier 가 high watermark 까지 더 받을 수 있는 수집 일수. 하루 수집량은 최근 7일 안에 만들어진 인덱스로 추정. 30일 이하이면서 그 데이터의 절반 넘게 hot 다음 ILM phase 가 없으면 주의
+- 자원·용량 영역에 "스토리지 비용" 분류, `--only` 용 `cost` 모듈
+- `tests/test_bottleneck_cost.py`, `tests/drive_branches.py` 시나리오 7개
+- 임계값 10개: `node_compare_min_uptime_hours`, `search_pool_busy_share`, `search_io_cpu_pct_max`, `ingest_fail_ratio_warn`, `hot_rolled_days_info`, `cost_replicas_min`, `tier_hot_used_pct`, `tier_gap_pct`, `tier_idle_used_pct`, `ingest_window_days`
+
+### 변경
+
+- HOT-001: 방금 재시작한 노드가 한가해 보여 heap·CPU 편차를 만들었음 → uptime 24시간 미만 노드는 heap·CPU 비교에서 빼고 판정에 이름을 적음. 디스크 사용량은 재시작해도 그대로라 계속 비교
+- HOT-002: 누적 합계를 비교해 오래 떠 있던 노드가 유리했음 → 시간당 값으로 비교하고 uptime 24시간 미만 노드는 뺌
+- PERF-012: 누적 index_total 로 색인 노드를 골라 최근 재시작한 쓰기 노드가 빠졌음 → 시간당 색인량으로 고름
+- DIF-009: 모든 노드를 한 평균에 넣어 전용 master 노드가 평균을 끌어내렸음 → data 노드만, tier 별로 편중을 보고, 두 번들 사이에 재시작한 노드는 표에만 두고 합계에서 뺌
+- ING-001: 실패가 하나라도 있으면 주의 → 파이프라인별로 노드 전체 실패를 합해 실패율을 계산. 1% 이상이면 주의, 아니면 참고. 근거 구분은 도구 판단으로 바뀜
+- 콘솔: 한글을 두 칸으로 계산해 열을 맞춤
+- 단일 번들 판정 룰 120개, 두 번들 비교 룰 10개(판정 ID 182개 + 비교 DIF-001~013)
+
+### 검토했지만 넣지 않은 것
+
+- hot threads 의 대기 시간("other")을 I/O 신호로 보기: 락 대기 시간도 포함됨
+- 코어 수보다 높은 load average 를 I/O 대기로 보기: 컨테이너 안에서는 load 가 호스트 값일 수 있음(OS-001 참고)
+
 ## [0.13.0] - 2026-10-02
 
 다른 진단 도구의 판정 기준과 비교해 빠져 있던 쓰기 경로·운영 판정을 추가했습니다. 공식 수치가 없는 임계값은 모두 `[도구]` 로 표기하고 `--thresholds` 로 바꿀 수 있습니다.

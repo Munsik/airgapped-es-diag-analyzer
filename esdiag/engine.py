@@ -4,6 +4,7 @@
 import collections
 import traceback
 
+from . import bottleneck as btl_mod
 from . import diff as diff_mod
 from . import ES_BASELINE, DOCS_CHECKED, SUPPORTED_MIN, __version__
 from .basis import basis_of, label as basis_label
@@ -50,7 +51,7 @@ class Result(object):
     # Area and category ids are language-neutral; labels come from the catalog (area.<id>, cat.<id>).
     AREAS = [
         ("availability", ["cluster"]),
-        ("capacity", ["node", "hotspot"]),
+        ("capacity", ["node", "hotspot", "cost"]),
         ("structure", ["shard", "vector"]),
         ("performance", ["perf", "runtime"]),
         ("protection", ["ops"]),
@@ -106,6 +107,10 @@ class Result(object):
 
     def actionable(self):
         return self.actionable_sorted()
+
+    def bottleneck(self):
+        """Bottleneck summary rows (see bottleneck.py). OK findings hidden by --no-ok are included."""
+        return btl_mod.summarize(self.ctx, list(self.findings) + self.hidden_ok)
 
     # Findings that share a root cause. The first one present in a group leads and the rest are attached
     # as related findings. The body keeps every finding; only the action priority list drops the duplicates.
@@ -206,6 +211,8 @@ class Result(object):
             },
             "facts": self.facts(),
             "areas": self.area_summary(),
+            "bottleneck": [dict((k, r[k]) for k in ("id", "question", "state", "verdict_id", "verdict", "basis", "causes", "next"))
+                           for r in self.bottleneck()],
             "priority": [{"id": f.id, "severity": f.severity, "title": f.title,
                           "related": [r.id for r in rel]} for f, rel in self.priority()],
             "diff": self.diff_summary,
@@ -305,6 +312,7 @@ def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None, bund
         raise ValueError(T("engine.analyze.01")
                          % (", ".join(CORE_FILES), path))
     ctx = Context(bundle, t)
+    ctx.only_modules = only
     findings, errors = _run_rules(ctx, only, False)
 
     diff_summary = None

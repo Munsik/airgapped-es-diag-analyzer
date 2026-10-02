@@ -314,40 +314,57 @@ def r_disk_projection(base, cur, hours, t):
 
 
 def r_throughput(base, cur, hours, t):
-    """Converts the per-node increase in index_total / query_total over the interval to throughput per second (replica work included). Max node / average >= workload_skew_ratio_warn -> warning, otherwise info."""
+    """Converts the per-node increase in index_total / query_total over the interval to throughput per second (replica work included).
+
+    Only data nodes are counted. The skew is compared within each tier: busiest node / tier average >= workload_skew_ratio_warn -> warning,
+    otherwise info. A node that restarted during the interval (uptime went down) has reset counters, so it is shown but left out of
+    the totals and the skew.
+    """
     if not hours:
         return []
-    bm, cm = _node_map(base), _node_map(cur)
-    rows = []
+    bm = _node_map(base)
+    rows, skews, restarted = [], [], []
     tot_idx = tot_qry = 0
-    for name, n in cm.items():
+    per_tier = collections.OrderedDict()
+    for n in cur.data_nodes:
+        name = n.name
         if name not in bm:
             continue
+        bu, cu = bm[name].uptime_ms, n.uptime_ms
+        reset = bool(bu and cu and cu < bu)
         bi = num(bm[name].stats, "indices", "indexing", "index_total")
         ci = num(n.stats, "indices", "indexing", "index_total")
         bq = num(bm[name].stats, "indices", "search", "query_total")
         cq = num(n.stats, "indices", "search", "query_total")
         di, dq = max(0, ci - bi), max(0, cq - bq)
+        tier = cur.tier_of(n) or "-"
+        if reset:
+            restarted.append(name)
+            rows.append([name, tier, "-", "-", "-", "-"])
+            continue
         tot_idx += di
         tot_qry += dq
-        rows.append([name, fmt_num(di), "%.0f/s" % (di / (hours * 3600)),
+        per_tier.setdefault(tier, []).append(di)
+        rows.append([name, tier, fmt_num(di), "%.0f/s" % (di / (hours * 3600)),
                      fmt_num(dq), "%.0f/s" % (dq / (hours * 3600))])
     if not rows or (tot_idx + tot_qry) == 0:
         return []
-    avg_i = tot_idx / float(len(rows))
-    skew = (max(int(str(r[1]).replace(",", "")) for r in rows) / avg_i) if avg_i else 0
+    for tier, vals in per_tier.items():
+        avg = sum(vals) / float(len(vals)) if len(vals) >= 2 else 0
+        if avg and max(vals) / avg >= t["workload_skew_ratio_warn"]:
+            skews.append(T("diff.r_throughput.11") % (tier, max(vals) / avg))
+    note = (T("diff.r_throughput.12") % ", ".join(restarted)) if restarted else ""
     return [Finding(
         "DIF-009", CAT,
-        Severity.WARNING if skew >= t["workload_skew_ratio_warn"] else Severity.INFO,
+        Severity.WARNING if skews else Severity.INFO,
         T("diff.r_throughput.01"),
         observed=T("diff.r_throughput.02") % (
             fmt_num(tot_idx), tot_idx / (hours * 3600),
             fmt_num(tot_qry), tot_qry / (hours * 3600),
-            (T("diff.r_throughput.03") % skew)
-            if skew >= t["workload_skew_ratio_warn"] else ""),
+            (" " + " / ".join(skews)) if skews else "") + note,
         impact=T("diff.r_throughput.04"),
         recommend=T("diff.r_throughput.05"),
-        evidence=table(["node", T("diff.r_throughput.06"), T("diff.r_throughput.07"), T("diff.r_throughput.08"), T("diff.r_throughput.09")], rows),
+        evidence=table(["node", "tier", T("diff.r_throughput.06"), T("diff.r_throughput.07"), T("diff.r_throughput.08"), T("diff.r_throughput.09")], rows),
         source=T("diff.r_throughput.10"))]
 
 

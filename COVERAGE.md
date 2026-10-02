@@ -225,6 +225,20 @@ Limits of the diagnostics bundle: `cluster_settings_defaults` does not hold pure
 | Whether the compared bundles are from the same cluster | Implemented | DIF-013 |
 | Disk read/write latency (ms/op) | Cannot be evaluated | nodes stats `fs.io_stats` has no read or write time fields |
 
+### 10-3. Bottleneck summary, restarts and storage cost
+
+| Item | Status | Rule |
+| --- | --- | --- |
+| Where to look first when ingest or search is slow | Tool judgment | Bottleneck summary (symptoms first, then cause groups in a fixed order) |
+| Recently restarted nodes have cold caches and short counters | Tool threshold | Left out of HOT-001 (heap, CPU), HOT-002 and DIF-009 for 24 hours; PERF-012 picks indexing nodes by hourly rate |
+| Nodes with a shared cache can only have a single data path; the cache is cleared on restart (Searchable snapshots) | Used | FRZ-002 (cache file location, recommendation) |
+| Frozen shared cache on a network filesystem | Tool threshold | FRZ-002 |
+| Search threads busy while CPU is low | Tool threshold | PERF-013 (point in time) |
+| Ingest pipeline failure ratio | Tool threshold | ING-001 |
+| Rolled-over data on hot, idle extra replicas, tier disk use, ingest headroom | Tool threshold | COST-001 to COST-004 (Info, COST-004 can be Warning) |
+| Search thread wait time in hot threads ("other") as an I/O signal | Not used | It also counts time waiting on locks, so it does not identify storage waits |
+| Load average above the core count as I/O wait | Not used | Inside a container the load can be the host's (OS-001) |
+
 ---
 
 ## 11. Troubleshooting documents (operational criteria)

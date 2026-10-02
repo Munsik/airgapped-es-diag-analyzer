@@ -2,7 +2,7 @@
 
 English · [한국어](README.ko.md)
 
-**Version 0.13.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
+**Version 0.14.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
 
 esdiag analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
 
@@ -39,7 +39,9 @@ It makes no network calls and uses only the Python standard library.
 
 - **Built for air-gapped networks**: no external communication, CDN, fonts or package installs. Copy the repository in and run it
 - **No dependencies**: Python 3.8 or later, standard library only
-- **124 rules**: 114 for a single bundle and 10 for comparing two bundles
+- **130 rules**: 120 for a single bundle and 10 for comparing two bundles
+- **Bottleneck summary**: five questions at the top of the report (is ingest keeping up, is search slow, is storage the limit, do restarts skew the numbers, capacity or concentration), each answered from symptoms first and then from the findings that explain them
+- **Storage cost**: rolled-over data kept on hot, replicas nobody searches, uneven disk use across tiers, and how many days of ingest the landing tier can still hold
 - **Action priority by root cause**: findings that come from the same cause (for example yellow status, unassigned shards, allocation explain and replicas above the node count) are grouped under one representative finding, and the rest are shown as related findings
 - **Evidence basis on every finding**: Official / Reported fact / Tool threshold / Computed
 - **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 94 settings)
@@ -88,7 +90,7 @@ On an air-gapped network, download the repository as a zip, carry it in, unzip i
 | `--mask-map FILE` | Path of the alias-to-original-name mapping JSON (default: summary file name + `.mask-map.json`). Use with `--support-summary` |
 | `--lang both\|ko\|en\|auto` | Output language (default `both`). `both` writes Korean and English and adds `.ko` / `.en` to the file name (`report.html` becomes `report.ko.html` and `report.en.html`). `ko` and `en` write one language and use the name exactly as given. `auto` follows the locale. The environment variable `ESDIAG_LANG` also sets it |
 | `--no-ok` | Hide OK findings |
-| `--only MODULE` | Run only the given rule modules (`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `ops` `deep` `runtime` `syscalls`). Can be repeated |
+| `--only MODULE` | Run only the given rule modules (`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `cost` `ops` `deep` `runtime` `syscalls`). Can be repeated |
 | `--thresholds FILE` | JSON file that overrides thresholds (unknown keys are ignored with a warning) |
 | `--print-thresholds` | Print the default thresholds |
 | `--fail-on critical\|warning` | Exit with code 1 if a finding of that severity exists |
@@ -213,8 +215,8 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 | Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
 | Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 69 |
-| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 57 |
-| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 50 |
+| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 56 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 57 |
 | Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-013 |
 
 When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
@@ -320,21 +322,34 @@ logsdb stores data efficiently, so it usually reaches 200M documents before 50GB
 The HTML report (single file) has this order. Markdown and console output contain the same content.
 
 1. Header: cluster, version, deployment type, collection time and mode, tool version and baseline, overall result, severity counts
-2. **Results by area**: status and counts for Availability / Capacity / Data structure / Performance / Data protection and operations / Security / Configuration
-3. Changes since the earlier bundle (when `--baseline` is given)
-4. Action priority: list of Critical and Warning findings, each linking to its finding
-5. Node status at a glance: bars for heap, CPU, load, disk and shard count
-6. Top indices by storage
-7. Filter: severity × category
-8. Findings, in health check area order: Observed / Impact / Recommendation / Evidence table / Source file / Reference docs, with the evidence basis
-9. Explanation of evidence basis, and items that could not be checked (input not collected, tool error)
+2. **Bottleneck summary**: five questions with a verdict, the symptoms and findings it rests on, and where to look next (see below)
+3. Action priority: list of Critical and Warning findings, each linking to its finding
+4. **Results by area**: status and counts for Availability / Capacity / Data structure / Performance / Data protection and operations / Security / Configuration
+5. Changes since the earlier bundle (when `--baseline` is given)
+6. Node status at a glance: bars for heap, CPU, load, disk and shard count
+7. Top indices by storage
+8. Filter: severity × category
+9. Findings, in health check area order: Observed / Impact / Recommendation / Evidence table / Source file / Reference docs, with the evidence basis
+10. Explanation of evidence basis, and items that could not be checked (input not collected, tool error)
+
+### Bottleneck summary
+
+| Question | Symptoms checked first | Causes checked in this order once a symptom exists |
+| --- | --- | --- |
+| Is ingest keeping up? | write rejections, write queue, indexing pressure rejections, indexing throttled now | storage (IDX-005, PERF-012, IDX-014, DISK-008, IDX-015, PERF-009) → memory (JVM-001, JVM-005, BRK-*, IP-001) → CPU (HOT-005, OS-001, OS-003) → uneven write load (SHD-016, HOT-002, HOT-001, SHD-006, SHD-012) → ingest pipeline (ING-002, ING-001) → index settings (IDX-007, PERF-004) |
+| Is search slow? | search rejections, search queue, high latency (PERF-001, 002), busy search pool with low CPU (PERF-013) | memory → CPU → storage (PERF-013, FRZ-*, DISK-008, PERF-009, PERF-003) → query cost (PERF-011, PERF-010, PERF-005, GEN-001) → shard count (SHD-001, OVS-*, SHD-004, SHD-009) → uneven search load. PERF-013 moves storage to the front |
+| Is storage the limit? | none | IDX-005, PERF-012, IDX-014, DISK-008, PERF-013, FRZ-002, FRZ-001, PERF-009, IDX-015 |
+| Do restarts or recoveries skew the numbers? | none | OS-007 → DIF-002 → OS-006 → CLU-020, REC-001, HOT-003 |
+| Capacity or concentration? | none | tier CPU (HOT-005) → disk (DISK-001 to 003, DIF-008, COST-004) → concentration (HOT-001, HOT-002, SHD-006, SHD-016, NODE-001) |
+
+A cause counts when its finding is Critical or Warning (PERF-013 also at Info). The first group with a finding is the verdict, and the other groups with findings are listed after it. With no symptom the row says so and names no cause, and if symptoms exist but no group has a finding, the row points outside Elasticsearch (clients, queries). The order is the tool's judgment of where to look first, not an official decision tree. The summary is left out when `--only` runs part of the rules. It is also in the Markdown, console, JSON (`bottleneck`) and Support summary output.
 
 ### Health check areas
 
 | Area | Categories | Representative findings |
 | --- | --- | --- |
 | Availability | Cluster | Status, unassigned shards, master quorum, shard limit, node shutdown, voting exclusion |
-| Capacity | Node, Hot spots and balancing | heap, GC, CPU, disk, watermarks, thread pools, circuit breakers, tier saturation, skew |
+| Capacity | Node, Hot spots and balancing, Storage cost | heap, GC, CPU, disk, watermarks, thread pools, circuit breakers, tier saturation, skew, data kept on hot, idle replicas, ingest headroom |
 | Data structure | Shards and indices, Vector search | Shard size, oversharding, mapping limits, write blocks, vector memory |
 | Performance | Performance baselines, Runtime | Expensive search patterns, caches, ingest, hot threads, logs |
 | Data protection and operations | Operations | Snapshot RPO, SLM, ILM, license, monitoring, ML |
@@ -373,7 +388,7 @@ Limits: values shorter than 6 characters can overlap ordinary words, so they are
 
 | Document | Contents |
 | --- | --- |
-| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 124 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
+| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 130 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
 | [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) | Which official doc items are covered, and why some items cannot be judged |
 | [CHANGELOG.md](CHANGELOG.md) ([한국어](CHANGELOG.ko.md)) | Change history: previous behavior → current behavior, and the reason |
 
@@ -394,7 +409,7 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 122 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 132 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
@@ -437,14 +452,15 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 868 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 929 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
-| `tests/drive_branches.py` | Forces every finding branch to run with 51 scenarios and checks the severity too | 51 passed, 0 finding branches not run |
+| `tests/drive_branches.py` | Forces every finding branch to run with 58 scenarios and checks the severity too | 58 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
 | `tools/gen_rules_doc.py --check` | Consistency of thresholds and docstrings | 0 problems |
 | `tests/test_local_mode.py` | Local and remote mode handling (false positives from logs/, gz, double counting, syscalls/ branches, collection failure messages) on synthetic data. No external bundle needed | 0 failures |
 | `tests/test_logsdb.py` | Every branch of the document limit, logsdb and force merge findings (SHD-008, 013, 014, 015, IDX-013, ILM-007, 008, 009) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_write_path.py` | Every branch of the write path and operations findings (PERF-012, OS-007, SHD-016, IDX-014, 015, CLU-017, MAP-004, DIF-013) on synthetic data, in both languages. No external bundle needed | 0 failures |
+| `tests/test_bottleneck_cost.py` | Bottleneck summary, recently restarted nodes left out of comparisons (HOT-001, 002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001 and COST-001 to 004 on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |
 
@@ -486,10 +502,11 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 │   ├── envcheck.py             # runtime environment check (--check-env)
 │   ├── mask.py                 # masking for the Support summary (alias replacement, leak check)
 │   ├── diff.py                 # two-bundle comparison
+│   ├── bottleneck.py           # bottleneck summary (five questions from symptoms and findings)
 │   ├── i18n/                   # ko.txt and en.txt message catalogs, T() / tr() / N_()
 │   ├── model.py                # Finding / Severity
 │   ├── util.py                 # unit parsing, safe accessors (num, dicts, strs, items)
-│   ├── rules/                  # cluster · settings · nodes · shards · sharding · guidance · hotspot · ops · deep · runtime
+│   ├── rules/                  # cluster · settings · nodes · shards · sharding · guidance · hotspot · cost · ops · deep · runtime
 │   └── report/                 # text (console, Markdown) · html (single file) · handoff (Support summary)
 ├── tools/
 │   ├── gen_rules_doc.py        # RULES.md generator + consistency check
@@ -506,6 +523,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 │   ├── test_handoff.py         # Support summary and masking checks (synthetic data)
 │   ├── test_logsdb.py          # document limit, logsdb and force merge checks (synthetic data)
 │   ├── test_write_path.py      # write path and operations checks (synthetic data)
+│   ├── test_bottleneck_cost.py # bottleneck summary and storage cost checks (synthetic data)
 │   └── make_broken_bundle.py   # create a bundle with injected failures
 ├── docs/STYLE.md              # style and glossary
 ├── README.md / README.ko.md

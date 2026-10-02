@@ -7,9 +7,9 @@ Each entry is an any-of list: the rule runs if at least one file is present.
 """
 
 from ..i18n import T
-from . import cluster, deep, guidance, hotspot, nodes, ops, runtime, settings, sharding, shards, syscalls
+from . import cluster, cost, deep, guidance, hotspot, nodes, ops, runtime, settings, sharding, shards, syscalls
 
-MODULES = [cluster, settings, nodes, shards, sharding, guidance, hotspot, ops, deep, runtime, syscalls]
+MODULES = [cluster, settings, nodes, shards, sharding, guidance, hotspot, cost, ops, deep, runtime, syscalls]
 
 _NODES = ["nodes.json"]
 _STATS = ["nodes_stats.json"]
@@ -36,7 +36,7 @@ REQUIRES = {
     "r_heap_usage": [_STATS], "r_heap_sizing": [_NODES, _STATS], "r_gc": [_STATS],
     "r_os": [_STATS], "r_disk": [_STATS], "r_thread_pools": [_STATS], "r_breakers": [_STATS],
     "r_indexing_pressure": [_STATS], "r_fielddata": [_STATS], "r_ingest_failures": [_STATS],
-    "r_node_heterogeneity": [_NODES, _STATS],
+    "r_node_heterogeneity": [_NODES, _STATS], "r_search_pool_wait": [_NODES, _STATS],
     # shards
     "r_shard_density": [_SH, _NODES], "r_shard_balance": [_SH], "r_data_stream_health": [["data_stream.json"]],
     "r_cache_efficiency": [_IDX], "r_shard_size": [_SH], "r_small_shards": [_SH],
@@ -62,6 +62,9 @@ REQUIRES = {
     "r_desired_balance": [["allocation.json", "cat_allocation.txt"]],
     "r_recovery_settings": [_CS], "r_template_conflict": [["templates.json"], ["index_templates.json"]],
     "r_delayed_allocation": [_SET],
+    # cost
+    "r_hot_rolled_over": [["ilm_explain.json"], _IDX, _SH], "r_idle_replicas": [_SET, _IDX],
+    "r_tier_usage": [_STATS], "r_ingest_headroom": [_SET, _IDX, _STATS],
     # ops
     "r_monitoring": [_IDX], "r_license": [["licenses.json"]], "r_snapshots": [["repositories.json", "snapshot.json"]],
     "r_ilm": [["ilm_explain.json", "ilm_status.json"]],
@@ -81,7 +84,7 @@ REQUIRES = {
     "r_ilm_policies": [["ilm_policies.json"]], "r_forcemerge": [["ilm_policies.json", "ilm_explain.json"], _STATS], "r_voting_exclusions": [["cluster_state.json"]],
     "r_node_shutdown": [["nodes_shutdown_status.json"]], "r_shard_store_errors": [["shard_stores.json"]],
     "r_remote_clusters": [["remote_cluster_info.json"]],
-    "r_frozen_cache": [["searchable_snapshots_cache_stats.json"]], "r_script_limit": [_STATS],
+    "r_frozen_cache": [["searchable_snapshots_cache_stats.json"]], "r_frozen_network_storage": [_STATS], "r_script_limit": [_STATS],
     "r_ingest_processors": [_STATS], "r_cluster_state_publication": [_STATS],
     "r_plugin_consistency": [_NODES], "r_ml_deployments": [["ml_trained_models_stats.json"]],
     "r_watcher_autoscaling_rollup": [["watcher_stack.json", "autoscaling_capacity.json", "rollup_jobs.json"]],

@@ -6,7 +6,7 @@ Uses only the Python 3.8+ standard library and makes no outbound network calls.
 """
 from .i18n import N_
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 # ---------------------------------------------------------------------------
 # Baseline for findings

@@ -5,6 +5,38 @@ English · [한국어](CHANGELOG.ko.md)
 This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Each entry is written as "previous behavior → current behavior (reason)". Use it to trace why a result differs from an earlier report.
 
+## [0.14.0] - 2026-10-02
+
+A bottleneck summary at the top of every report, recently restarted nodes left out of node comparisons, frozen shared cache on network storage, and storage cost findings. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.
+
+### Added
+
+- Bottleneck summary in every output (HTML, Markdown, console, JSON `bottleneck`, Support summary): five questions (is ingest keeping up, is search slow, is storage the limit, do restarts or recoveries skew the numbers, capacity or concentration). Each looks at symptoms first (rejections, queues, throttling, latency) and names a cause only when a symptom exists, by walking cause groups in a fixed order over the findings in the report. The order is the tool's judgment, not an official decision tree. It is left out when `--only` runs part of the rules
+- FRZ-002 (Warning, tool threshold): a node with a frozen shared cache whose data path is on a network filesystem (nfs, cifs, smb, fuse, glusterfs, ceph). Nodes with a shared cache can only have a single data path, so the cache file is on that filesystem. The table shows hot threads reading the cache file and the search queue and rejections. "Direct buffer memory" errors in the server logs → Critical
+- PERF-013 (tool threshold): search thread pool busy (active >= 80% of the pool size) while node CPU is under 50% at collection. Queued searches → Warning, otherwise Info
+- COST-001 (Info): rolled-over indices still in the ILM hot phase 30 days or more after rollover, grouped by policy with the next phase and its min_age. Only when a warm, cold or frozen tier exists
+- COST-002 (Info): indices with 2 or more replicas and no searches since the shards started, with the space freed at 1 replica. Not listed when the data nodes span replicas + 1 availability zones
+- COST-003 (Info): disk use between tiers. Hot at 70% or more with a warm or cold tier 30 points emptier, or a warm or cold tier under 20%. Frozen is shown but not compared
+- COST-004 (Info, Warning): days of ingest the landing tier can take before the high watermark, from one bundle. Daily ingest comes from indices created in the last 7 days. Warning at 30 days or less when more than half of that data has no ILM phase after hot
+- New category "Storage cost" in the Capacity area, and module `cost` for `--only`
+- `tests/test_bottleneck_cost.py`, and 7 scenarios in `tests/drive_branches.py`
+- 10 thresholds: `node_compare_min_uptime_hours`, `search_pool_busy_share`, `search_io_cpu_pct_max`, `ingest_fail_ratio_warn`, `hot_rolled_days_info`, `cost_replicas_min`, `tier_hot_used_pct`, `tier_gap_pct`, `tier_idle_used_pct`, `ingest_window_days`
+
+### Changed
+
+- HOT-001: a node restarted moments ago looked idle and created a heap or CPU gap → nodes up for less than 24 hours are left out of the heap and CPU comparison and named in the finding. Disk use does not reset on restart, so it is still compared
+- HOT-002: compared cumulative totals, which favor nodes that have run longer → compares the hourly rate and leaves out nodes up for less than 24 hours
+- PERF-012: an indexing node was picked by its cumulative index_total, so a recently restarted writer was skipped → picked by hourly rate
+- DIF-009: every node was in one average (dedicated masters pulled it down) → data nodes only, skew per tier, and nodes that restarted between the bundles are shown but left out of the totals
+- ING-001: any failure was a Warning → failures are summed per pipeline across nodes with a failure ratio. 1% or more → Warning, otherwise Info. The basis is now a tool threshold
+- Console: column alignment counts Hangul as two columns
+- 120 single-bundle rules and 10 bundle-comparison rules (182 finding IDs plus comparison DIF-001~013)
+
+### Reviewed but not added
+
+- Thread wait time in hot threads ("other") as an I/O signal: it also includes waiting on locks
+- Load average above the core count as I/O wait: inside a container the load can be the host's (see OS-001)
+
 ## [0.13.0] - 2026-10-02
 
 Write path and operations checks that were missing, found by comparing with the decision logic of another diagnostics tool. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.

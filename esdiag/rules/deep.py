@@ -337,6 +337,96 @@ def r_frozen_cache(ctx):
         source="searchable_snapshots_cache_stats.json")]
 
 
+D_SNAP = ("Searchable snapshots",
+          "https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots")
+NET_FS = ("nfs", "cifs", "smb", "fuse", "glusterfs", "ceph")
+# Stack frames of a thread reading a file, and of the searchable snapshot / blob cache code that owns the shared cache file
+_FILE_READ = ("FileChannelImpl.read", "FileDispatcherImpl.pread", "FileDispatcherImpl.read", "IOUtil.read", "NIOFSDirectory")
+_CACHE_CODE = ("blobcache", "searchablesnapshots", "SharedBytes", "FrozenIndexInput")
+
+
+def _has_shared_cache(ctx, n, cache_sizes):
+    if cache_sizes.get(n.name):
+        return True
+    if ctx.is_frozen_only(n):
+        return True
+    v = n.setting("xpack.searchable.snapshot.shared_cache.size")
+    return v is not None and str(v).strip().lower() not in ("0", "0b", "0%", "")
+
+
+def _cache_file_reads(ctx):
+    """node name -> number of hot threads reading a file inside the searchable snapshot cache code."""
+    from .runtime import parse_hot_threads
+    out = collections.Counter()
+    if not ctx.hot_threads_text.strip():
+        return out
+    for node, _pct, _tname, _d, stack in parse_hot_threads(ctx.hot_threads_text):
+        if any(any(sig in fr for sig in _FILE_READ) for fr in stack) and \
+                any(any(sig in fr for sig in _CACHE_CODE) for fr in stack):
+            out[node] += 1
+    return out
+
+
+def _direct_buffer_oom(ctx):
+    """Lines with 'Direct buffer memory' in the server logs (local/remote mode only)."""
+    from .runtime import _es_log_files
+    hits = 0
+    for rel in _es_log_files(ctx.b.log_files())[:40]:
+        text = ctx.b.read_log(rel, ctx.t["log_scan_bytes"]) or ""
+        hits += sum(1 for ln in text.splitlines() if "Direct buffer memory" in ln)
+    return hits
+
+
+def r_frozen_network_storage(ctx):
+    """Nodes with a frozen shared cache whose data path is on a network filesystem (FRZ-002).
+
+    A node has a shared cache when the cache stats show one, when it is a dedicated frozen node (which gets a shared cache by default),
+    or when xpack.searchable.snapshot.shared_cache.size is set. Nodes with a shared cache can only have a single data path, so the
+    cache file sits on the filesystem of that path. If nodes_stats fs.data[].type is nfs / cifs / smb / fuse / glusterfs / ceph → Warning.
+    Searches read the cache file and cache misses write to it while searches run, unlike the segment files of other tiers, which do
+    not change once written (PERF-009 covers the data path of every node).
+    Supporting signals per node: hot threads reading a file inside the searchable snapshot cache code, and the search thread pool
+    queue and rejections. "Direct buffer memory" errors in the server logs → Critical.
+    """
+    sizes = {}
+    for nid, body in items(ctx.frozen_cache.get("nodes")):
+        name = next((n.name for n in ctx.nodes if n.id == nid), nid)
+        sizes[name] = num(body, "shared_cache", "size_in_bytes")
+    reads = None
+    rows, names = [], []
+    for n in ctx.data_nodes:
+        if not _has_shared_cache(ctx, n, sizes):
+            continue
+        for d in dig(n.stats, "fs", "data", default=[]) or []:
+            t = str((d or {}).get("type") or "").lower()
+            if not t or not any(x in t for x in NET_FS):
+                continue
+            if reads is None:
+                reads = _cache_file_reads(ctx)
+            sp = dig(n.stats, "thread_pool", "search", default={}) or {}
+            names.append(n.name)
+            rows.append([n.name, d.get("mount") or d.get("path") or "-", d.get("type"),
+                         fmt_bytes(sizes[n.name]) if sizes.get(n.name) else "-",
+                         fmt_num(reads.get(n.name, 0)) if ctx.hot_threads_text.strip() else "-",
+                         fmt_num(num(sp, "queue")), fmt_num(num(sp, "rejected"))])
+            break
+    if not rows:
+        return []
+    oom = _direct_buffer_oom(ctx) if ctx.has_logs else 0
+    sev = Severity.CRITICAL if oom else Severity.WARNING
+    obs = T("rules.deep.r_frozen_network_storage.02") % (len(rows), ", ".join(names))
+    if oom:
+        obs += T("rules.deep.r_frozen_network_storage.03") % oom
+    return [Finding(
+        "FRZ-002", PERF, sev, T("rules.deep.r_frozen_network_storage.01"),
+        observed=obs,
+        impact=T("rules.deep.r_frozen_network_storage.04"),
+        recommend=T("rules.deep.r_frozen_network_storage.05"),
+        evidence=table(["node", "mount", "type", T("rules.deep.r_frozen_network_storage.06"),
+                        T("rules.deep.r_frozen_network_storage.07"), "search queue", "search rejected"], rows),
+        affected=names, refs=[D_SNAP], source="nodes_stats.json / searchable_snapshots_cache_stats.json / nodes_hot_threads.txt")]
+
+
 # ------------------------------------------------------------------ Node stats details
 def r_script_limit(ctx):
     """Nodes with nodes_stats.script.compilation_limit_triggered > 0 → Warning (PERF-010)."""
@@ -745,6 +835,6 @@ def r_forcemerge(ctx):
     return out
 
 RULES = [r_search_usage, r_disk_io_utilization, r_mapping_limits_actual, r_vector_mapping_actual, r_ilm_policies, r_forcemerge, r_voting_exclusions,
-         r_node_shutdown, r_shard_store_errors, r_remote_clusters, r_frozen_cache, r_script_limit,
+         r_node_shutdown, r_shard_store_errors, r_remote_clusters, r_frozen_cache, r_frozen_network_storage, r_script_limit,
          r_ingest_processors, r_cluster_state_publication, r_plugin_consistency, r_ml_deployments,
          r_watcher_autoscaling_rollup]

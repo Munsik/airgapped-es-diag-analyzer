@@ -8,7 +8,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdiag 0.13.0 |
+| 도구 버전 | esdiag 0.14.0 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -48,13 +48,14 @@
 
 - [클러스터](#클러스터) — 12개 룰
 - [설정 변경 (기본값 대비)](#설정-변경-기본값-대비) — 5개 룰
-- [노드 (JVM · OS · 디스크 · 스레드풀)](#노드-jvm-os-디스크-스레드풀) — 12개 룰
+- [노드 (JVM · OS · 디스크 · 스레드풀)](#노드-jvm-os-디스크-스레드풀) — 13개 룰
 - [샤드 · 인덱스](#샤드-인덱스) — 21개 룰
 - [과다 샤딩 · 소형 샤드](#과다-샤딩-소형-샤드) — 3개 룰
 - [공식 가이드 기준 (설정 · 샤드 · 성능 · 디스크 · 벡터)](#공식-가이드-기준-설정-샤드-성능-디스크-벡터) — 25개 룰
 - [핫스팟 · 밸런싱](#핫스팟-밸런싱) — 7개 룰
+- [스토리지 비용](#스토리지-비용) — 4개 룰
 - [운영 · 보안](#운영-보안) — 9개 룰
-- [매핑 · ILM 정책 · 클러스터 조정 · 세부 통계](#매핑-ilm-정책-클러스터-조정-세부-통계) — 17개 룰
+- [매핑 · ILM 정책 · 클러스터 조정 · 세부 통계](#매핑-ilm-정책-클러스터-조정-세부-통계) — 18개 룰
 - [런타임 (hot threads · 로그)](#런타임-hot-threads-로그) — 2개 룰
 - [OS 설정 (local/remote 모드 syscalls/)](#os-설정-localremote-모드-syscalls) — 1개 룰
 - [변화 추세 (--baseline 비교 모드)](#변화-추세---baseline-비교-모드) — 10개 룰
@@ -498,15 +499,19 @@ indexing_pressure.memory.total 의 *_rejections(coordinating/primary/replica) �
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `nodes.r_ingest_failures` |
-| 근거 구분 | 사실 보고 |
-| 가능 심각도 | 주의 |
-| 임계값 | `ingest_failed_warn` = 1 — [도구]<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `ingest_fail_ratio_warn` = 0.01 — [도구] 파이프라인의 실패 / 처리 문서 비율<br>`ingest_failed_warn` = 1 — [도구]<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
 
 **판정 로직**
 
-ingest.total.failed >= ingest_failed_warn 인 노드가 있으면 주의. 실패 파이프라인별 건수를 근거로 제시.
+ingest 파이프라인 실패를 파이프라인별 실패율로 판정한다(ING-001).
+
+ingest.total.failed >= ingest_failed_warn 인 노드가 있을 때 실행한다. 실패 건수와 처리 건수를 노드 전체에 걸쳐 파이프라인별로 합하고,
+실패율 = 실패 / 처리. 실패율이 ingest_fail_ratio_warn 이상인 파이프라인이 있으면 → 주의, 없으면 참고.
+노드 시작 이후 누적값이며, 다른 파이프라인에서 호출된 파이프라인은 양쪽에 모두 집계된다.
 
 ### NODE-001, NODE-003 — 같은 tier 안에서 노드 스펙 불균일
 
@@ -540,8 +545,8 @@ tier 가 다르면 스펙이 다른 것이 정상 설계이므로 tier 간 차�
 
 노드별 flush, refresh, merge 평균 시간(nodes_stats indices.flush/refresh/merges 의 total_time / total).
 
-실제로 색인하는 노드만 판정한다: 노드의 indices.indexing.index_total 이 가장 많이 색인한 data 노드의 write_node_index_share_min
-이상. data stream write index 를 가졌다는 것만으로는 부족하다. 수집량이 적은 stream 은 몇 달씩 쓰기가 거의 없는 write index 를
+실제로 색인하는 노드만 판정한다: 노드의 색인 속도(uptime 시간당 indices.indexing.index_total)가 가장 많이 색인한 data 노드의
+write_node_index_share_min 이상. 시간당 값이라 최근 재시작한 노드도 같이 비교할 수 있다. data stream write index 를 가졌다는 것만으로는 부족하다. 수집량이 적은 stream 은 몇 달씩 쓰기가 거의 없는 write index 를
 유지할 수 있기 때문이다. 색인하지 않는 노드의 merge 는 force merge(ILM forcemerge, searchable_snapshot 이 기본으로
 앞 단계에서 하는 force merge, 수동 _forcemerge)이거나 rollover 직후 마무리 merge 다.
 큰 segment 를 합치므로 평균이 긴 것이 스토리지가 느리다는 뜻은 아니다.
@@ -549,6 +554,26 @@ tier 가 다르면 스펙이 다른 것이 정상 설계이므로 tier 간 차�
 평균 >= *_avg_ms_warn → 주의, >= *_avg_ms_info → 참고(PERF-012). 공식 수치가 아닌 현장 기준값이며,
 노드 시작 이후 누적 평균이다. flush·merge 가 느리면 대개 스토리지가 따라가지 못하는 것이므로
 IDX-005(merge throttling), IDX-014(indexing throttle)와 함께 본다.
+
+### PERF-013 — CPU 는 낮은데 search 스레드가 바쁨
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `nodes.r_search_pool_wait` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `search_io_cpu_pct_max` = 50 — [도구] search 풀이 바쁜데 노드 CPU 가 이보다 낮으면 대기 중인 것으로 봄<br>`search_pool_busy_share` = 0.8 — [도구] 활성 search 스레드 / 풀 크기가 이 이상이면 바쁜 것으로 봄 |
+| 필요 입력 | (nodes.json) 그리고 (nodes_stats.json) |
+| 근거 파일 | nodes.json / nodes_stats.json |
+
+**판정 로직**
+
+수집 시점 순간값 기준으로 노드 CPU 는 낮은데 search thread pool 이 바쁜 경우(PERF-013).
+
+활성 search 스레드 >= 풀 크기(nodes.json thread_pool.search.size)의 search_pool_busy_share 이고 노드 CPU% <
+search_io_cpu_pct_max. CPU 를 쓰지 않으면서 바쁜 스레드는 보통 무언가를 기다리고 있다. 대부분 스토리지 읽기(frozen shared
+cache, 원격 스토리지)이고, 락이나 다른 노드 응답을 기다리는 경우도 있다. 그런 노드에 대기 중인 검색이 있으면 → 주의, 아니면 참고.
+한 순간의 값이므로 hot threads(RT-001)와 스토리지 관련 판정(FRZ-002, PERF-009, DISK-008)과 함께 본다.
 
 ## 샤드 · 인덱스
 
@@ -1438,7 +1463,7 @@ tier 단위 CPU 포화. 한 tier 의 모든 노드가 load15/CPU >= load_per_cpu
 | 함수 | `hotspot.r_resource_hotspot` |
 | 근거 구분 | 공식 기준 |
 | 가능 심각도 | 주의, 정상 |
-| 임계값 | `disk_imbalance_pct_warn` = 15 — [도구] 노드 간 디스크 사용률 편차(%p)<br>`hotspot_cpu_pct_floor` = 50 — [도구]<br>`hotspot_cpu_pct_gap` = 40 — [도구]<br>`hotspot_disk_pct_floor` = 50 — [도구]<br>`hotspot_heap_pct_floor` = 70 — [도구] 최대값이 이 미만이면 무시<br>`hotspot_heap_pct_gap` = 30 — [도구] 노드 간 heap 편차(%p) |
+| 임계값 | `disk_imbalance_pct_warn` = 15 — [도구] 노드 간 디스크 사용률 편차(%p)<br>`hotspot_cpu_pct_floor` = 50 — [도구]<br>`hotspot_cpu_pct_gap` = 40 — [도구]<br>`hotspot_disk_pct_floor` = 50 — [도구]<br>`hotspot_heap_pct_floor` = 70 — [도구] 최대값이 이 미만이면 무시<br>`hotspot_heap_pct_gap` = 30 — [도구] 노드 간 heap 편차(%p)<br>`node_compare_min_uptime_hours` = 24 — [도구] uptime 이 이보다 짧은 노드는 노드 간 비교에서 제외 |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
 | 참고 문서 | [Hot spotting 문제 해결](https://www.elastic.co/docs/troubleshoot/elasticsearch/hotspotting) |
@@ -1449,6 +1474,8 @@ tier 단위 CPU 포화. 한 tier 의 모든 노드가 load15/CPU >= load_per_cpu
 
 tier 가 다르면 역할과 부하가 달라 비교하지 않는다. frozen tier 디스크는 shared cache 선점유라 제외.
 지표별로 tier 내 최대−최소 >= gap 이고 최대값 >= floor 일 때 주의. 수집 순간값이다.
+uptime 이 node_compare_min_uptime_hours 미만인 노드는 heap·CPU 비교에서 뺀다(재시작 직후에는 캐시가 비어 있고
+활성 샤드도 적어 한가해 보임). 디스크 사용량은 재시작해도 그대로라 디스크 비교에는 넣는다.
 
 ### HOT-002.(하위 항목) — 같은 tier 안에서 %s 작업량 편중
 
@@ -1457,16 +1484,18 @@ tier 가 다르면 역할과 부하가 달라 비교하지 않는다. frozen tie
 | 함수 | `hotspot.r_workload_hotspot` |
 | 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의 |
-| 임계값 | `workload_skew_ratio_warn` = 1.8 — [도구] 최대 노드 / 평균 |
+| 임계값 | `node_compare_min_uptime_hours` = 24 — [도구] uptime 이 이보다 짧은 노드는 노드 간 비교에서 제외<br>`workload_skew_ratio_warn` = 1.8 — [도구] 최대 노드 / 평균 |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
 | 참고 문서 | [Hot spotting 문제 해결](https://www.elastic.co/docs/troubleshoot/elasticsearch/hotspotting) |
 
 **판정 로직**
 
-같은 tier 안에서 노드별 누적 색인/검색 작업량 편중(최대 노드 / tier 평균 >= workload_skew_ratio_warn → 주의).
+같은 tier 안에서 노드별 색인/검색 작업량 편중을 시간당 값(누적 횟수 / uptime)으로 비교한다.
 
-누적값이며 replica 작업이 포함된다. uptime 이 다르면 왜곡되므로 시간당 환산값을 함께 제시한다.
+최대 노드 / tier 평균 >= workload_skew_ratio_warn → 주의. uptime 이 node_compare_min_uptime_hours 미만인 노드는
+뺀다(누적값이 짧은 구간만 담고 캐시도 비어 있음). 남은 노드가 2대 미만이거나 합계 작업이 10000 건 미만인 tier 는
+건너뛴다. replica 작업이 포함된 값이다.
 
 ### HOT-003, HOT-004 — desired balance 미수렴 샤드
 
@@ -1537,6 +1566,95 @@ composable 템플릿이 하나라도 매칭되면 레거시 템플릿은 적용�
 **판정 로직**
 
 노드 재기동 시 즉시 재복제를 막는 delayed_timeout 설정.
+
+## 스토리지 비용
+
+### COST-001 — 롤오버 후에도 hot tier 에 남은 인덱스
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `cost.r_hot_rolled_over` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 참고 |
+| 임계값 | `hot_rolled_days_info` = 30 — [도구] ILM hot phase 에 남은 인덱스의 롤오버 후 경과일<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 필요 입력 | (ilm_explain.json) 그리고 (indices_stats.json) 그리고 (indices.json 또는 shards.json 또는 cat_shards.txt) |
+| 근거 파일 | ilm_explain.json / ilm_policies.json / indices_stats.json |
+| 참고 문서 | [인덱스 수명 주기(phase)](https://www.elastic.co/docs/manage-data/lifecycle/index-lifecycle-management/index-lifecycle)<br>[데이터 tier](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
+
+**판정 로직**
+
+롤오버 후 한참 지났는데도 ILM hot phase 에 남아 있는 인덱스(COST-001).
+
+데이터를 옮길 warm, cold, frozen tier 가 있을 때만 본다. ILM explain 의 phase 가 hot 이고, 롤오버를 마쳤고
+write 대상이 아니며, 롤오버 이후 경과(lifecycle_date)가 hot_rolled_days_info 이상이고, 샤드가 하나라도 hot 노드에 있으면 대상이다.
+ILM 정책별로 묶고 다음 phase 와 그 min_age 를 함께 보여 준다. min_age 는 롤오버 시점부터 센다.
+참고로만 보고한다. 검색 속도나 짧은 보존 기간 때문에 일부러 hot 에 둘 수도 있다.
+
+### COST-002 — 검색이 없는 인덱스의 추가 replica
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `cost.r_idle_replicas` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 참고 |
+| 임계값 | `cost_replicas_min` = 2 — [도구] 검색 없는 인덱스를 보고하는 replica 수<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 필요 입력 | (settings.json) 그리고 (indices_stats.json) |
+| 근거 파일 | settings.json / indices_stats.json |
+| 참고 문서 | [클러스터, 노드, 샤드](https://www.elastic.co/docs/deploy-manage/distributed-architecture/clusters-nodes-shards) |
+
+**판정 로직**
+
+replica 가 cost_replicas_min 개 이상인데 검색이 없는 인덱스(COST-002).
+
+사용자 인덱스(system 인덱스와 searchable snapshot 마운트 제외) 중 number_of_replicas >= cost_replicas_min 이고, 문서가 있고,
+indices_stats total.search.query_total 이 0 인 것. data 노드가 replica + 1 개 이상의 가용 영역에 걸쳐 있으면
+영역마다 사본 하나씩 두는 의도된 구성이므로 넣지 않는다. 두 번째 이후 replica 는 노드 한 대 장애에 대한 가용성은 그대로인 채
+디스크와 색인 작업만 늘린다. 검색 카운터는 샤드가 옮겨지거나 노드가 재시작하면 초기화되므로 0 은
+'샤드가 시작된 뒤로 검색이 없음' 이라는 뜻이다. 참고로만 보고한다.
+
+### COST-003 — data tier 간 디스크 사용률 차이가 큼
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `cost.r_tier_usage` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 참고 |
+| 임계값 | `tier_gap_pct` = 30 — [도구] hot 과 차가운 tier 의 디스크 사용률 차이(포인트)<br>`tier_hot_used_pct` = 70 — [도구] 차가운 tier 와 비교를 시작하는 hot tier 디스크 사용률<br>`tier_idle_used_pct` = 20 — [도구] 차가운 tier 사용률이 이보다 낮으면 대부분 비어 있는 것으로 봄 |
+| 필요 입력 | (nodes_stats.json) |
+| 근거 파일 | nodes_stats.json |
+| 참고 문서 | [데이터 tier](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers)<br>[인덱스 수명 주기(phase)](https://www.elastic.co/docs/manage-data/lifecycle/index-lifecycle-management/index-lifecycle) |
+
+**판정 로직**
+
+data tier 별 디스크 사용률(COST-003).
+
+frozen 은 shared cache 가 디스크를 미리 잡으므로 보여 주기만 하고 비교하지 않는다. 조건:
+(1) hot tier 가 tier_hot_used_pct 이상인데 warm 이나 cold tier 가 tier_gap_pct 포인트 이상 비어 있음. 보통
+hot 디스크가 감당하는 것보다 늦게 데이터가 옮겨진다는 뜻이다. (2) warm 이나 cold tier 가 tier_idle_used_pct 미만. 담은
+데이터보다 tier 가 크다는 신호다. frozen 이 아닌 tier 가 2개 이상일 때만 본다. 참고로만 보고한다.
+
+### COST-004 — 수집 대상 tier 가 더 받을 수 있는 수집 일수
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `cost.r_ingest_headroom` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `disk_projection_days_warn` = 30 — [도구]<br>`ingest_window_days` = 7 — [도구] 하루 수집량 추정에 쓰는 최근 인덱스 기간(일) |
+| 필요 입력 | (settings.json) 그리고 (indices_stats.json) 그리고 (nodes_stats.json) |
+| 근거 파일 | settings.json / indices_stats.json / nodes_stats.json |
+| 참고 문서 | [데이터 tier](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
+
+**판정 로직**
+
+번들 하나로 수집 대상 tier 가 high watermark 까지 며칠치 수집량을 더 받을 수 있는지 계산한다(COST-004).
+
+하루 수집량 = 최근 ingest_window_days 안에 만들어진 사용자 인덱스의 store 크기(replica 포함) + 그보다 오래된 write index 중
+구간에 해당하는 부분(크기 × 구간 / 나이)을 구간 일수로 나눈 값(클러스터가 더 젊으면 그 기간). searchable
+snapshot 마운트와 system 인덱스는 뺀다. 수집 대상 tier = write 대상 샤드가 있는 tier(frozen 제외).
+여유 = 그 노드들의 (high watermark 에서 허용하는 바이트 − 사용 바이트) 합. 일수 = 여유 / 하루 수집량.
+아무것도 옮기거나 지우지 않는다고 가정한다. 일수 <= disk_projection_days_warn 이면서 구간 데이터의 절반 넘게 hot 다음 ILM
+phase 가 없으면(이동도 삭제도 없음) → 주의, 아니면 참고. 비교 모드(DIF-008)는 실제 증가량을 잰다.
 
 ## 운영 · 보안
 
@@ -1889,6 +2007,29 @@ frozen shared cache 통계. eviction 이 캐시 region 수를 넘은 노드가 �
 
 eviction > region 수는 캐시 전체가 최소 한 번 이상 교체되었다는 뜻으로, 검색 대상 대비 캐시가 작다는 신호다(도구 판단).
 
+### FRZ-002 — frozen shared cache 가 네트워크 파일시스템에 있음
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `deep.r_frozen_network_storage` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 치명, 주의 |
+| 필요 입력 | (nodes_stats.json) |
+| 근거 파일 | nodes_stats.json / searchable_snapshots_cache_stats.json / nodes_hot_threads.txt |
+| 참고 문서 | [Searchable snapshots](https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots) |
+
+**판정 로직**
+
+frozen shared cache 가 있는 노드의 data path 가 네트워크 파일시스템인지 본다(FRZ-002).
+
+캐시 통계에 shared cache 가 있거나, 전용 frozen 노드(기본으로 shared cache 를 가짐)이거나,
+xpack.searchable.snapshot.shared_cache.size 가 설정되어 있으면 shared cache 가 있는 노드로 본다. shared cache 가 있는 노드는
+data path 를 하나만 가질 수 있으므로 캐시 파일은 그 경로의 파일시스템에 있다. nodes_stats fs.data[].type 이 nfs / cifs / smb / fuse / glusterfs / ceph 이면 주의.
+검색은 캐시 파일을 읽고, 캐시 미스는 검색 중에 같은 파일에 쓴다. 한 번 쓰면 바뀌지 않는 다른 tier 의 세그먼트 파일과
+다르다(모든 노드의 data path 는 PERF-009 가 본다).
+노드별 보조 신호: searchable snapshot 캐시 코드 안에서 파일을 읽는 hot thread 수, search thread pool 의
+queue 와 rejected. 서버 로그에 "Direct buffer memory" 오류가 있으면 → 심각.
+
 ### PERF-010 — 스크립트 컴파일 한도 발동
 
 | 항목 | 내용 |
@@ -2146,7 +2287,11 @@ breaker tripped 증가분 > 0 → 치명.
 
 **판정 로직**
 
-노드별 구간 index_total / query_total 증가분을 초당 처리량으로 환산(replica 작업 포함). 최대 노드 / 평균 >= workload_skew_ratio_warn → 주의, 그 외 참고.
+구간 동안 노드별 index_total / query_total 증가량을 초당 처리량으로 환산한다(replica 작업 포함).
+
+data 노드만 센다. 편중은 tier 안에서 비교한다: 가장 바쁜 노드 / tier 평균 >= workload_skew_ratio_warn → 주의,
+아니면 참고. 구간 중 재시작한 노드(uptime 감소)는 카운터가 초기화되었으므로 표에는 보이되
+합계와 편중 계산에서는 뺀다.
 
 ### DIF-010, DIF-011 — 인덱스 증가량 상위
 
@@ -2305,6 +2450,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `cgroup_throttle_ratio_warn` | 0.01 | [도구] throttled / elapsed periods |
 | `cgroup_throttle_ratio_crit` | 0.05 | [도구] throttled / elapsed periods |
 | `uptime_short_hours` | 6 | [도구] 최근 재기동 판단 |
+| `node_compare_min_uptime_hours` | 24 | [도구] uptime 이 이보다 짧은 노드는 노드 간 비교에서 제외 |
 | `disk_watermark_low_default` | 85% | [공식] ES 기본값(설정 파일이 없을 때만 사용) |
 | `disk_watermark_high_default` | 90% | [공식] ES 기본값(설정 파일이 없을 때만 사용) |
 | `disk_watermark_flood_default` | 95% | [공식] ES 기본값(설정 파일이 없을 때만 사용) |
@@ -2406,6 +2552,15 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `forcemerge_stuck_hours` | 24 | [도구] force merge 단계에 이 시간 이상 머물면 보고 |
 | `disk_io_busy_pct_warn` | 60 | [도구] 기동 이후 평균 디스크 사용률 |
 | `search_expensive_share_warn` | 10 | [도구] 비용이 큰 쿼리 유형의 검색 대비 비중(%) |
+| `search_pool_busy_share` | 0.8 | [도구] 활성 search 스레드 / 풀 크기가 이 이상이면 바쁜 것으로 봄 |
+| `search_io_cpu_pct_max` | 50 | [도구] search 풀이 바쁜데 노드 CPU 가 이보다 낮으면 대기 중인 것으로 봄 |
+| `ingest_fail_ratio_warn` | 0.01 | [도구] 파이프라인의 실패 / 처리 문서 비율 |
+| `hot_rolled_days_info` | 30 | [도구] ILM hot phase 에 남은 인덱스의 롤오버 후 경과일 |
+| `cost_replicas_min` | 2 | [도구] 검색 없는 인덱스를 보고하는 replica 수 |
+| `tier_hot_used_pct` | 70 | [도구] 차가운 tier 와 비교를 시작하는 hot tier 디스크 사용률 |
+| `tier_gap_pct` | 30 | [도구] hot 과 차가운 tier 의 디스크 사용률 차이(포인트) |
+| `tier_idle_used_pct` | 20 | [도구] 차가운 tier 사용률이 이보다 낮으면 대부분 비어 있는 것으로 봄 |
+| `ingest_window_days` | 7 | [도구] 하루 수집량 추정에 쓰는 최근 인덱스 기간(일) |
 | `diff_min_hours_for_projection` | 1.0 | [도구] 이보다 짧은 간격은 외삽 안 함 |
 | `disk_projection_days_warn` | 30 | [도구] |
 | `index_growth_min_bytes` | 1GiB | [도구] |

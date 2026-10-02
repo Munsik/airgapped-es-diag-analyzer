@@ -273,8 +273,8 @@ def r_os(ctx):
 def r_write_latency(ctx):
     """Average flush, refresh and merge time per node (nodes_stats indices.flush/refresh/merges total_time / total).
 
-    Only nodes that actually index are rated: indices.indexing.index_total of the node >= write_node_index_share_min of the
-    busiest data node. Holding a data stream write index is not enough, because a low-volume stream can keep an idle write index
+    Only nodes that actually index are rated: indexing rate of the node (indices.indexing.index_total per hour of uptime)
+    >= write_node_index_share_min of the busiest data node. The hourly rate keeps a recently restarted node comparable. Holding a data stream write index is not enough, because a low-volume stream can keep an idle write index
     for months. On a node that does not index, merges come from a force merge (ILM forcemerge, the force merge that
     searchable_snapshot runs in the preceding phase by default, or a manual _forcemerge) or from merges finishing after rollover.
     Those merge large segments, so a long average there does not mean slow storage.
@@ -286,7 +286,8 @@ def r_write_latency(ctx):
     specs = (("flush", "flush", ctx.t["flush_avg_ms_info"], ctx.t["flush_avg_ms_warn"]),
              ("refresh", "refresh", ctx.t["refresh_avg_ms_info"], ctx.t["refresh_avg_ms_warn"]),
              ("merge", "merges", ctx.t["merge_avg_ms_info"], ctx.t["merge_avg_ms_warn"]))
-    indexed = dict((n.name, num(n.stats, "indices", "indexing", "index_total")) for n in ctx.data_nodes)
+    indexed = dict((n.name, num(n.stats, "indices", "indexing", "index_total") / (n.uptime_ms / 3600000.0)
+                    if n.uptime_ms else num(n.stats, "indices", "indexing", "index_total")) for n in ctx.data_nodes)
     top = max(indexed.values() or [0])
     writers = set(k for k, v in indexed.items() if top and v >= top * ctx.t["write_node_index_share_min"])
     rows, warn, info = [], [], []
@@ -562,7 +563,12 @@ def r_fielddata(ctx):
 
 
 def r_ingest_failures(ctx):
-    """Warning if any node has ingest.total.failed >= ingest_failed_warn. The count per failing pipeline is shown as evidence."""
+    """Ingest pipeline failures, rated by failure ratio per pipeline (ING-001).
+
+    Runs when any node has ingest.total.failed >= ingest_failed_warn. Failed and processed counts are summed per pipeline across nodes,
+    and the failure ratio is failed / processed. Any pipeline at or above ingest_fail_ratio_warn → Warning, otherwise Info.
+    Counters are cumulative since node start, and a pipeline called from another pipeline is counted in both.
+    """
     rows = []
     for n in ctx.nodes:
         tot = dig(n.stats, "ingest", "total", default={}) or {}
@@ -570,21 +576,34 @@ def r_ingest_failures(ctx):
         if failed >= ctx.t["ingest_failed_warn"]:
             rows.append([n.name, fmt_num(failed), fmt_num(tot.get("count")),
                          fmt_ms(tot.get("time_in_millis"))])
-    pipe_rows = []
-    for n in ctx.nodes:
-        for pname, p in items(dig(n.stats, "ingest", "pipelines")):
-            if (num(p, "failed")) > 0:
-                pipe_rows.append([n.name, pname, fmt_num(p.get("failed")), fmt_num(p.get("count"))])
     if not rows:
         return []
-    pipe_rows.sort(key=lambda r: -int(str(r[2]).replace(",", "")))
+    agg = collections.OrderedDict()
+    for n in ctx.nodes:
+        for pname, p in items(dig(n.stats, "ingest", "pipelines")):
+            a = agg.setdefault(pname, [0, 0, set()])
+            a[0] += num(p, "failed")
+            a[1] += num(p, "count")
+            if num(p, "failed"):
+                a[2].add(n.name)
+    pipes = [(k, v[0], v[1], (v[0] / float(v[1])) if v[1] else 1.0, len(v[2]))
+             for k, v in agg.items() if v[0] > 0]
+    pipes.sort(key=lambda r: (-r[3], -r[1]))
+    high = [r for r in pipes if r[3] >= ctx.t["ingest_fail_ratio_warn"]]
+    sev = Severity.WARNING if high else Severity.INFO
+    obs = T("rules.nodes.r_ingest_failures.02") % (len(rows), len(pipes))
+    if high:
+        obs += T("rules.nodes.r_ingest_failures.05") % (len(high), ctx.t["ingest_fail_ratio_warn"] * 100)
+    else:
+        obs += T("rules.nodes.r_ingest_failures.06") % (ctx.t["ingest_fail_ratio_warn"] * 100)
     return [Finding(
-        "ING-001", CAT, Severity.WARNING, T("rules.nodes.r_ingest_failures.01"),
-        observed=T("rules.nodes.r_ingest_failures.02") % (len(rows), len(pipe_rows)),
+        "ING-001", CAT, sev, T("rules.nodes.r_ingest_failures.01"),
+        observed=obs,
         impact=T("rules.nodes.r_ingest_failures.03"),
         recommend=T("rules.nodes.r_ingest_failures.04"),
-        evidence=table(["node", "pipeline", "failed", "count"], pipe_rows[: ctx.t["top_n"]])
-        if pipe_rows else table(["node", "failed", "count", "time"], rows),
+        evidence=table(["pipeline", "failed", "count", T("rules.nodes.r_ingest_failures.07"), "nodes"],
+                       [[r[0], fmt_num(r[1]), fmt_num(r[2]), "%.2f%%" % (r[3] * 100), r[4]] for r in pipes[: ctx.t["top_n"]]])
+        if pipes else table(["node", "failed", "count", "time"], rows),
         source="nodes_stats.json")]
 
 
@@ -626,8 +645,43 @@ def r_node_heterogeneity(ctx):
     return out
 
 
+def r_search_pool_wait(ctx):
+    """Search thread pool busy while the node CPU is low (PERF-013), from the point-in-time values at collection.
+
+    active search threads >= search_pool_busy_share of the pool size (nodes.json thread_pool.search.size) and node CPU% <
+    search_io_cpu_pct_max. Threads that are busy without using CPU are usually waiting, most often on storage reads (frozen shared
+    cache, remote storage) and sometimes on locks or other nodes. Queued searches on such a node → Warning, otherwise Info.
+    This is a single moment, so read it with hot threads (RT-001) and the storage findings (FRZ-002, PERF-009, DISK-008).
+    """
+    rows, warn = [], False
+    for n in ctx.data_nodes:
+        size = dig(n.info, "thread_pool", "search", "size")
+        sp = dig(n.stats, "thread_pool", "search", default={}) or {}
+        active = num(sp, "active")
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            continue
+        if size <= 0 or n.cpu_pct is None:
+            continue
+        if active >= size * ctx.t["search_pool_busy_share"] and n.cpu_pct < ctx.t["search_io_cpu_pct_max"]:
+            q = num(sp, "queue")
+            warn = warn or q > 0
+            rows.append([n.name, ctx.tier_of(n) or "-", "%d / %d" % (active, size), fmt_num(q),
+                         fmt_num(num(sp, "rejected")), "%s%%" % n.cpu_pct])
+    if not rows:
+        return []
+    return [Finding(
+        "PERF-013", "perf", Severity.WARNING if warn else Severity.INFO, T("rules.nodes.r_search_pool_wait.01"),
+        observed=T("rules.nodes.r_search_pool_wait.02") % (len(rows), ", ".join(r[0] for r in rows)),
+        impact=T("rules.nodes.r_search_pool_wait.03"),
+        recommend=T("rules.nodes.r_search_pool_wait.04"),
+        evidence=table(["node", "tier", T("rules.nodes.r_search_pool_wait.05"), "queue", "rejected", "cpu%"], rows),
+        affected=[r[0] for r in rows], source="nodes.json / nodes_stats.json")]
+
+
 RULES = [
     r_heap_usage, r_heap_sizing, r_gc, r_os, r_disk, r_thread_pools,
     r_breakers, r_indexing_pressure, r_fielddata, r_ingest_failures,
-    r_node_heterogeneity, r_write_latency,
+    r_node_heterogeneity, r_write_latency, r_search_pool_wait,
 ]

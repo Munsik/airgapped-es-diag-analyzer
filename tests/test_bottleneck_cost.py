@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Checks for 0.14.0: bottleneck summary, recently restarted nodes left out of node comparisons, frozen shared cache on a
+network filesystem (FRZ-002), busy search pool with low CPU (PERF-013), ingest failure ratio (ING-001) and the storage cost
+findings (COST-001 to COST-004). No external bundle needed (synthetic data). Every case runs in both languages.
+
+    python3 tests/test_bottleneck_cost.py
+"""
+import copy
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, ".."))
+sys.path.insert(0, HERE)
+
+from esdiag.engine import analyze  # noqa: E402
+from esdiag.i18n import set_lang  # noqa: E402
+from esdiag.mask import Masker  # noqa: E402
+from esdiag.model import Severity  # noqa: E402
+from esdiag.report import handoff as handoff_report  # noqa: E402
+from esdiag.report import html as html_report  # noqa: E402
+from esdiag.report import text as text_report  # noqa: E402
+from test_logsdb import Bundle, COLLECTED_MS, GB, M, w  # noqa: E402
+
+HANGUL = re.compile(u"[가-힣]")
+FAILS, N = [], [0]
+NEW_IDS = ("FRZ-002", "PERF-013", "ING-001", "COST-001", "COST-002", "COST-003", "COST-004", "HOT-001", "HOT-002", "DIF-009")
+DAY = 86400000
+HOUR = 3600000
+
+HOT_THREADS = """::: {frozen-1}{node02XXXXXXXXXXXXXXXXX}{x}{frozen-1}{10.0.0.3}{10.0.0.3:9300}{f}
+   Hot threads at 2026-10-01T00:00:00Z, interval=500ms, busiestThreads=3, ignoreIdleThreads=true:
+
+   90.0% [cpu=2.0%, other=88.0%] (450ms out of 500ms) cpu usage by thread 'elasticsearch[frozen-1][search][T#3]'
+     10/10 snapshots sharing following 6 elements
+       java.base@21/sun.nio.ch.FileDispatcherImpl.pread0(Native Method)
+       java.base@21/sun.nio.ch.FileChannelImpl.readInternal(FileChannelImpl.java:800)
+       java.base@21/sun.nio.ch.FileChannelImpl.read(FileChannelImpl.java:780)
+       org.elasticsearch.blobcache.shared.SharedBytes$IO.read(SharedBytes.java:300)
+       org.elasticsearch.xpack.searchablesnapshots.store.input.FrozenIndexInput.readWithoutBlobCache(FrozenIndexInput.java:100)
+       org.apache.lucene.search.IndexSearcher.search(IndexSearcher.java:500)
+"""
+
+
+def check(name, cond, detail=""):
+    N[0] += 1
+    if not cond:
+        FAILS.append(name + (" - " + str(detail) if detail else ""))
+
+
+def load(root, rel):
+    with open(os.path.join(root, rel)) as fh:
+        return json.load(fh)
+
+
+def _by_name(doc):
+    return dict((v["name"], k) for k, v in doc["nodes"].items())
+
+
+def build(root, symptoms=True, zones=False, restart_hot2=True, hot2_index_total=10 ** 6):
+    """hot-1, hot-2 (restarted 2 hours ago), warm-1, frozen-1 (NFS)."""
+    b = Bundle()
+    b.policies["p2"] = {"policy": {"phases": {"hot": {"actions": {"rollover": {"max_primary_shard_size": "50gb"}}},
+                                              "warm": {"min_age": "60d", "actions": {}}}}}
+    ds = [".ds-logs-a-default-2026.08.01-000001", ".ds-logs-a-default-2026.09.29-000002"]
+    b.index(ds[0], 10 * GB, M, policy="p2", node="hot-1")
+    b.index(ds[1], 5 * GB, M, policy="p2", node="hot-1")
+    b.stream("logs-a-default", ds, policy="p2")
+    b.explain[ds[0]]["lifecycle_date_millis"] = COLLECTED_MS - 40 * DAY
+    b.explain[ds[1]]["lifecycle_date_millis"] = COLLECTED_MS - 2 * DAY
+    b.index("idle-3rep", 20 * GB, M, node="hot-1")
+    b.settings["idle-3rep"]["settings"]["index"]["number_of_replicas"] = "2"
+    b.index("searched-3rep", 20 * GB, M, node="hot-1")
+    b.settings["searched-3rep"]["settings"]["index"]["number_of_replicas"] = "2"
+    b.stats["searched-3rep"]["total"]["search"] = {"query_total": 50}
+    b.index("bulk-noilm", 350 * GB, M, node="hot-2")      # 700GB with replica, created 2 days ago, no ILM
+    b.index("old-index", GB, M, node="warm-1")
+    created = {"bulk-noilm": COLLECTED_MS - 2 * DAY, "old-index": COLLECTED_MS - 30 * DAY,
+               ds[0]: COLLECTED_MS - 61 * DAY, ds[1]: COLLECTED_MS - 2 * DAY,
+               "idle-3rep": COLLECTED_MS - 20 * DAY, "searched-3rep": COLLECTED_MS - 20 * DAY}
+    for name, c in created.items():
+        b.settings[name]["settings"]["index"]["creation_date"] = str(c)
+    b.write(root)
+
+    ni, ns = load(root, "nodes.json"), load(root, "nodes_stats.json")
+    ids = _by_name(ni)
+    hot1 = ids["hot-1"]
+    ni["nodes"]["node99XXXXXXXXXXXXXXXXXX"] = dict(copy.deepcopy(ni["nodes"][hot1]), name="hot-2")
+    ns["nodes"]["node99XXXXXXXXXXXXXXXXXX"] = dict(copy.deepcopy(ns["nodes"][hot1]), name="hot-2")
+    for nid, info in ni["nodes"].items():
+        info["thread_pool"]["search"] = {"type": "fixed", "size": 13, "queue_size": 1000}
+        if zones:
+            info["attributes"] = {"availability_zone": "z%d" % (hash(info["name"]) % 3)}
+    zi = 0
+    for nid, info in sorted(ni["nodes"].items()):
+        if zones:
+            info["attributes"] = {"availability_zone": "z%d" % (zi % 3)}
+            zi += 1
+    for nid, st in ns["nodes"].items():
+        name = st["name"]
+        st["jvm"]["uptime_in_millis"] = 2 * HOUR if (name == "hot-2" and restart_hot2) else 100 * DAY
+        st["os"] = {"cpu": {"percent": 30, "load_average": {"1m": 1, "5m": 1, "15m": 1}}}
+        st["thread_pool"]["search"] = {"threads": 13, "active": 1, "queue": 0, "rejected": 0}
+        st["thread_pool"]["write"] = {"threads": 4, "active": 1, "queue": 0, "rejected": 0}
+        st["indices"] = {"indexing": {"index_total": 0}, "search": {"query_total": 0},
+                         "flush": {"total": 1000, "total_time_in_millis": 1000 * 100},
+                         "refresh": {"total": 1000, "total_time_in_millis": 1000 * 5},
+                         "merges": {"total": 1000, "total_time_in_millis": 1000 * 1000}}
+        if name.startswith("hot"):
+            st["fs"]["total"] = {"total_in_bytes": 1000 * GB, "available_in_bytes": 250 * GB, "free_in_bytes": 250 * GB}
+            st["jvm"]["mem"]["heap_used_percent"] = 90 if name == "hot-1" else 10
+            st["os"]["cpu"]["percent"] = 60 if name == "hot-1" else 5
+            st["indices"]["indexing"]["index_total"] = 10 ** 8 if name == "hot-1" else hot2_index_total
+            st["indices"]["search"]["query_total"] = 10 ** 6
+        if name == "hot-2":
+            st["indices"]["flush"]["total_time_in_millis"] = 1000 * 1500
+        if name == "warm-1":
+            st["fs"]["total"] = {"total_in_bytes": 1000 * GB, "available_in_bytes": 950 * GB, "free_in_bytes": 950 * GB}
+        if name == "frozen-1":
+            st["fs"]["data"] = [{"path": "/data", "mount": "/data (nas:/vol1)", "type": "nfs4",
+                                 "total_in_bytes": 1000 * GB}]
+            st["indices"]["search"]["query_total"] = 1000
+            if symptoms:
+                st["os"]["cpu"]["percent"] = 5
+                st["thread_pool"]["search"] = {"threads": 13, "active": 13, "queue": 40, "rejected": 7}
+        if name == "hot-1" and symptoms:
+            st["thread_pool"]["write"]["rejected"] = 500
+            st["ingest"] = {"total": {"count": 101000, "failed": 51, "time_in_millis": 1000},
+                            "pipelines": {"p-bad": {"count": 1000, "failed": 50},
+                                          "p-ok": {"count": 100000, "failed": 1}}}
+    w(root, "nodes.json", ni)
+    w(root, "nodes_stats.json", ns)
+    fz = ids["frozen-1"]
+    w(root, "commercial/searchable_snapshots_cache_stats.json", {"nodes": {fz: {"shared_cache": {
+        "num_regions": 100, "size_in_bytes": 900 * GB, "reads": 10, "bytes_read_in_bytes": GB, "evictions": 1}}}})
+    if symptoms:
+        w(root, "nodes_hot_threads.txt", HOT_THREADS)
+        w(root, "logs/c1.log", "[2026-10-01T00:00:00,000][WARN ][o.e.b.ElasticsearchUncaughtExceptionHandler] "
+                                "fatal error in thread [elasticsearch[frozen-1][search][T#3]], exiting\n"
+                                "java.lang.OutOfMemoryError: Direct buffer memory\n")
+
+
+def findings(res):
+    return dict((f.id, f) for f in res.findings)
+
+
+def rows_of(f):
+    return (f.evidence or {}).get("rows", []) if f else []
+
+
+def run_lang(lang, tmp):
+    set_lang(lang)
+    pre = "[%s] " % lang
+    root = os.path.join(tmp, "a-" + lang)
+    build(root)
+    res = analyze(root)
+    check(pre + "no rule errors", not res.errors, [e["rule"] + ": " + e["error"].strip().splitlines()[-1] for e in res.errors])
+    f = findings(res)
+
+    # restarted node left out of node comparisons
+    h1 = f.get("HOT-001")
+    check(pre + "HOT-001 not raised by the restarted node's low heap/CPU", h1 is not None and h1.severity == Severity.OK,
+          h1 and (h1.severity, h1.observed))
+    check(pre + "HOT-001 names the excluded node", h1 is not None and "hot-2" in (h1.observed or ""), h1 and h1.observed)
+    check(pre + "HOT-002 not raised with one settled hot node", not any(k.startswith("HOT-002") for k in f))
+    p12 = f.get("PERF-012")
+    check(pre + "PERF-012 rates the restarted writer by hourly rate", p12 is not None and
+          any(r[0] == "hot-2" for r in rows_of(p12)), rows_of(p12))
+
+    # frozen on NFS, busy search pool
+    fz = f.get("FRZ-002")
+    check(pre + "FRZ-002 critical with Direct buffer memory in the logs", fz is not None and fz.severity == Severity.CRITICAL,
+          fz and fz.severity)
+    check(pre + "FRZ-002 lists frozen-1 with a hot thread reading the cache file",
+          fz is not None and rows_of(fz) and rows_of(fz)[0][0] == "frozen-1" and rows_of(fz)[0][4] == "1", rows_of(fz))
+    check(pre + "FRZ-002 skips hot nodes (no shared cache)", fz is not None and len(rows_of(fz)) == 1)
+    p13 = f.get("PERF-013")
+    check(pre + "PERF-013 warning (13/13 active, queue, CPU 5%)", p13 is not None and p13.severity == Severity.WARNING,
+          p13 and p13.severity)
+    check(pre + "PERF-013 lists frozen-1 only", p13 is not None and [r[0] for r in rows_of(p13)] == ["frozen-1"], rows_of(p13))
+
+    # ingest failure ratio
+    i1 = f.get("ING-001")
+    check(pre + "ING-001 warning (p-bad 5%)", i1 is not None and i1.severity == Severity.WARNING)
+    check(pre + "ING-001 sorts by failure ratio", i1 is not None and rows_of(i1)[0][0] == "p-bad", rows_of(i1))
+
+    # cost
+    c1 = f.get("COST-001")
+    check(pre + "COST-001 lists the 40-day-old rolled-over index under p2", c1 is not None and rows_of(c1)
+          and rows_of(c1)[0][0] == "p2" and rows_of(c1)[0][1] == 1, rows_of(c1))
+    check(pre + "COST-001 shows the next phase", c1 is not None and "warm 60d" in str(rows_of(c1)[0][4]), rows_of(c1))
+    c2 = f.get("COST-002")
+    check(pre + "COST-002 lists only the unsearched index", c2 is not None and [r[0] for r in rows_of(c2)] == ["idle-3rep"],
+          rows_of(c2))
+    c3 = f.get("COST-003")
+    check(pre + "COST-003 flags full hot and empty warm", c3 is not None and "hot" in c3.observed and "warm" in c3.observed,
+          c3 and c3.observed)
+    c4 = f.get("COST-004")
+    check(pre + "COST-004 warning (about 3 days of headroom, data never leaves)", c4 is not None and c4.severity == Severity.WARNING,
+          c4 and (c4.severity, c4.observed))
+    check(pre + "COST-004 top contributor is bulk-noilm", c4 is not None and rows_of(c4)[0][0] == "bulk-noilm", rows_of(c4))
+
+    # bottleneck summary
+    rows = dict((r["id"], r) for r in res.bottleneck())
+    check(pre + "summary has five questions", list(rows) == ["ingest", "search", "storage", "restart", "capacity"], list(rows))
+    check(pre + "ingest: storage first (PERF-012)", rows["ingest"]["verdict_id"] == "storage" and "PERF-012" in rows["ingest"]["causes"],
+          rows["ingest"])
+    check(pre + "ingest: symptom names write rejections", any("500" in s for s in rows["ingest"]["basis"]), rows["ingest"]["basis"])
+    check(pre + "search: storage reads (PERF-013, FRZ-002)", rows["search"]["verdict_id"] == "storage"
+          and "FRZ-002" in rows["search"]["causes"], rows["search"])
+    check(pre + "storage: signals", rows["storage"]["state"] == "issue", rows["storage"])
+    check(pre + "storage tag critical (FRZ-002)", rows["storage"]["worst"] == Severity.CRITICAL)
+    check(pre + "restart: recent (OS-006)", rows["restart"]["verdict_id"] == "recent", rows["restart"])
+    check(pre + "capacity: disk (COST-004)", rows["capacity"]["verdict_id"] == "disk", rows["capacity"])
+    d = res.to_dict()
+    check(pre + "JSON has the summary", len(d.get("bottleneck") or []) == 5)
+
+    try:
+        out = text_report.console(res, show_ok=True)
+        md = text_report.markdown(res, show_ok=True)
+        ht = html_report.render(res)
+        hf = handoff_report.render(res, Masker(res.ctx, level="basic"), "basic", "test")
+        from esdiag.i18n import T
+        title = T("btl.title")
+        check(pre + "summary in every report", all(title in x for x in (out, md, ht, hf)))
+    except Exception as exc:  # noqa: BLE001
+        check(pre + "reports render", False, repr(exc))
+
+    # --only gives no summary (it would be partial)
+    res_o = analyze(root, only=["nodes"])
+    check(pre + "no summary with --only", res_o.bottleneck() == [])
+
+    if lang == "en":
+        for x in res.findings:
+            if x.id.split(".")[0] not in NEW_IDS:
+                continue
+            text = " ".join([x.title, x.observed or "", x.impact or "", x.recommend or ""] +
+                            [str(c) for c in (x.evidence or {}).get("columns", [])])
+            check(pre + "%s has no Hangul" % x.id, not HANGUL.search(text), HANGUL.findall(text)[:5])
+            check(pre + "%s has no dash" % x.id, not re.search(u"[–—]", text))
+            check(pre + "%s has no plural marker" % x.id, not re.search(r"\[[a-z ]+\|[a-z ]+\]", text))
+        for r in res.bottleneck():
+            text = " ".join(r["basis"] + [r["question"], r["verdict"], r["next"]])
+            check(pre + "summary %s has no Hangul" % r["id"], not HANGUL.search(text))
+            check(pre + "summary %s has no dash" % r["id"], not re.search(u"[–—]", text))
+
+
+def run_variants(tmp):
+    set_lang("en")
+    # no symptoms: ingest keeping up, search clear
+    root = os.path.join(tmp, "quiet")
+    build(root, symptoms=False, restart_hot2=False, hot2_index_total=10 ** 8)
+    res = analyze(root)
+    f = findings(res)
+    rows = dict((r["id"], r) for r in res.bottleneck())
+    check("quiet: ingest clear", rows["ingest"]["state"] == "clear", rows["ingest"])
+    check("quiet: search clear", rows["search"]["state"] == "clear", rows["search"])
+    check("quiet: restart clear", rows["restart"]["state"] == "clear", rows["restart"])
+    check("quiet: no FRZ-002 Critical without logs", f.get("FRZ-002") is not None and f["FRZ-002"].severity == Severity.WARNING)
+    check("quiet: no PERF-013", "PERF-013" not in f)
+    check("quiet: no ING-001", "ING-001" not in f)
+    # both hot nodes settled: heap gap 80 points and hourly indexing skew are reported again
+    check("settled: HOT-001 warning", f.get("HOT-001") is not None and f["HOT-001"].severity == Severity.WARNING,
+          f.get("HOT-001") and f["HOT-001"].observed)
+
+    # three zones and two replicas: one copy per zone is deliberate
+    root = os.path.join(tmp, "zones")
+    build(root, zones=True)
+    f = findings(analyze(root))
+    check("zones: COST-002 not raised", "COST-002" not in f, f.get("COST-002") and rows_of(f["COST-002"]))
+
+    # hourly rate decides HOT-002: hot-2 settled with 10x fewer operations per hour
+    root = os.path.join(tmp, "rate")
+    build(root, restart_hot2=False, hot2_index_total=10 ** 7)
+    f = findings(analyze(root))
+    check("rate: HOT-002 indexing skew", "HOT-002.index_total" in f, sorted(f))
+
+    # comparison: hot-2 restarted in the interval, left out of the totals
+    base = os.path.join(tmp, "base")
+    build(base, restart_hot2=False)
+    ns = load(base, "nodes_stats.json")
+    for st in ns["nodes"].values():
+        st["jvm"]["uptime_in_millis"] = 100 * DAY - 6 * HOUR
+        st["indices"]["indexing"]["index_total"] = max(0, st["indices"]["indexing"]["index_total"] - 10 ** 5)
+    w(base, "nodes_stats.json", ns)
+    w(base, "manifest.json", dict(load(base, "manifest.json"), collectionDate="2026-09-30T18:00:00Z"))
+    cur = os.path.join(tmp, "cur")
+    build(cur)
+    ns_b = load(base, "nodes_stats.json")
+    for st in ns_b["nodes"].values():
+        if st["name"] == "hot-2":
+            st["indices"]["indexing"]["index_total"] = 10 ** 8
+    w(base, "nodes_stats.json", ns_b)
+    res = analyze(cur, baseline=base)
+    f = findings(res)
+    d9 = f.get("DIF-009")
+    check("diff: no rule errors", not res.errors, res.errors[:1])
+    check("diff: DIF-009 notes the restarted node", d9 is not None and "hot-2" in d9.observed, d9 and d9.observed)
+    check("diff: restarted node has no rate", d9 is not None and any(r[0] == "hot-2" and r[2] == "-" for r in rows_of(d9)),
+          rows_of(d9))
+    check("diff: only data nodes in DIF-009", d9 is not None and len(rows_of(d9)) == 4, rows_of(d9))
+    rows = dict((r["id"], r) for r in res.bottleneck())
+    check("diff: restart row picks the interval restart", rows["restart"]["verdict_id"] in ("interval", "recent"), rows["restart"])
+
+
+def main():
+    tmp = tempfile.mkdtemp()
+    try:
+        for lang in ("ko", "en"):
+            run_lang(lang, tmp)
+        run_variants(tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        set_lang("ko")
+    for f in FAILS:
+        print("FAIL " + f)
+    print("bottleneck and cost checks: %d run, %d failed" % (N[0], len(FAILS)))
+    return 1 if FAILS else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

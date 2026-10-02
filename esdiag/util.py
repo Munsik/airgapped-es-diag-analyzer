@@ -221,3 +221,15 @@ def top_n(items, key, n=10, reverse=True):
         return sorted(items, key=key, reverse=reverse)[:n]
     except TypeError:
         return list(items)[:n]
+
+
+def dwidth(text):
+    """Display width in a terminal: East Asian wide and full-width characters take two columns."""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in str(text))
+
+
+def dljust(text, width):
+    """ljust by display width."""
+    text = str(text)
+    return text + " " * max(0, width - dwidth(text))

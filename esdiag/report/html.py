@@ -8,6 +8,7 @@ import html as _h
 import json
 
 from ..i18n import T, get_lang
+from .. import bottleneck as btl
 from ..model import Severity, category_label
 from ..util import truncate
 
@@ -210,6 +211,21 @@ def render(result):
     ]:
         o.append("<div><span>%s</span><strong>%s</strong></div>" % (e(label), e(val)))
     o.append("</div></header>")
+
+    # ---------- Bottleneck summary ----------
+    rows = result.bottleneck()
+    if rows:
+        o.append("<h2>%s<small>%s</small></h2><div class='scroll'><table><thead><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr></thead><tbody>"
+                 % (e(T("btl.title")), e(T("btl.intro")), e(T("btl.col.q")), e(T("btl.col.v")), e(T("btl.col.b")), e(T("btl.col.n"))))
+        for r in rows:
+            q, v, b, nx = btl.cells(r)
+            links = ", ".join("<a href='#%s' data-jump='%s'>%s</a>" % (e(i), e(i), e(i)) for i in r["causes"])
+            basis = " / ".join(e(x) for x in r["basis"])
+            if links:
+                basis = (basis + " / " if basis else "") + (e(T("btl.findings")) % links)
+            o.append("<tr><td class='n'>%s</td><td><span class='tag %s'>%s</span></td><td>%s</td><td>%s</td></tr>"
+                     % (e(q), btl.css(r), e(v), basis or "-", e(nx)))
+        o.append("</tbody></table></div>")
 
     # ---------- Action priority ----------
     act = result.priority()

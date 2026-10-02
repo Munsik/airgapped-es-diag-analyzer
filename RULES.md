@@ -8,7 +8,7 @@
 
 | Item | Value |
 | --- | --- |
-| Tool version | esdiag 0.13.0 |
+| Tool version | esdiag 0.14.0 |
 | Elasticsearch baseline version | 9.4 |
 | Official docs checked | 2026-09 |
 | Validated on real bundles | 9.4.4 (ECH, 3 nodes, single tier) / 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), api mode |
@@ -48,13 +48,14 @@ Each rule declares the input files it needs (`REQUIRES` in `esdiag/rules/__init_
 
 - [Cluster](#cluster): 12 rules
 - [Settings changes (versus defaults)](#settings-changes-versus-defaults): 5 rules
-- [Nodes (JVM, OS, disk, thread pools)](#nodes-jvm-os-disk-thread-pools): 12 rules
+- [Nodes (JVM, OS, disk, thread pools)](#nodes-jvm-os-disk-thread-pools): 13 rules
 - [Shards and indices](#shards-and-indices): 21 rules
 - [Oversharding and small shards](#oversharding-and-small-shards): 3 rules
 - [Official guidance baselines (settings, shards, performance, disk, vectors)](#official-guidance-baselines-settings-shards-performance-disk-vectors): 25 rules
 - [Hot spots and balancing](#hot-spots-and-balancing): 7 rules
+- [Storage cost](#storage-cost): 4 rules
 - [Operations and security](#operations-and-security): 9 rules
-- [Mappings, ILM policies, cluster coordination, detailed stats](#mappings-ilm-policies-cluster-coordination-detailed-stats): 17 rules
+- [Mappings, ILM policies, cluster coordination, detailed stats](#mappings-ilm-policies-cluster-coordination-detailed-stats): 18 rules
 - [Runtime (hot threads, logs)](#runtime-hot-threads-logs): 2 rules
 - [OS settings (syscalls/ in local and remote mode)](#os-settings-syscalls-in-local-and-remote-mode): 1 rule
 - [Trend (--baseline comparison mode)](#trend---baseline-comparison-mode): 10 rules
@@ -498,15 +499,19 @@ Node fielddata memory / heap_max >= fielddata_heap_pct_warn → Warning (FD-001)
 | Item | Details |
 | --- | --- |
 | Function | `nodes.r_ingest_failures` |
-| Evidence basis | Reported fact |
-| Possible severities | Warning |
-| Thresholds | `ingest_failed_warn` = 1 ([Tool])<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Evidence basis | Tool threshold |
+| Possible severities | Warning, Info |
+| Thresholds | `ingest_fail_ratio_warn` = 0.01 ([Tool] Failed / processed documents of a pipeline)<br>`ingest_failed_warn` = 1 ([Tool])<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes_stats.json |
 
 **Decision logic**
 
-Warning if any node has ingest.total.failed >= ingest_failed_warn. The count per failing pipeline is shown as evidence.
+Ingest pipeline failures, rated by failure ratio per pipeline (ING-001).
+
+Runs when any node has ingest.total.failed >= ingest_failed_warn. Failed and processed counts are summed per pipeline across nodes,
+and the failure ratio is failed / processed. Any pipeline at or above ingest_fail_ratio_warn → Warning, otherwise Info.
+Counters are cumulative since node start, and a pipeline called from another pipeline is counted in both.
 
 ### NODE-001, NODE-003: Uneven node specs within the same tier
 
@@ -540,8 +545,8 @@ Different specs across tiers are normal design, so differences between tiers are
 
 Average flush, refresh and merge time per node (nodes_stats indices.flush/refresh/merges total_time / total).
 
-Only nodes that actually index are rated: indices.indexing.index_total of the node >= write_node_index_share_min of the
-busiest data node. Holding a data stream write index is not enough, because a low-volume stream can keep an idle write index
+Only nodes that actually index are rated: indexing rate of the node (indices.indexing.index_total per hour of uptime)
+>= write_node_index_share_min of the busiest data node. The hourly rate keeps a recently restarted node comparable. Holding a data stream write index is not enough, because a low-volume stream can keep an idle write index
 for months. On a node that does not index, merges come from a force merge (ILM forcemerge, the force merge that
 searchable_snapshot runs in the preceding phase by default, or a manual _forcemerge) or from merges finishing after rollover.
 Those merge large segments, so a long average there does not mean slow storage.
@@ -549,6 +554,26 @@ Any metric with fewer than write_latency_min_ops operations is skipped.
 Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
 and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;
 read them with IDX-005 (merge throttling) and IDX-014 (indexing throttled).
+
+### PERF-013: Search threads busy while CPU is low
+
+| Item | Details |
+| --- | --- |
+| Function | `nodes.r_search_pool_wait` |
+| Evidence basis | Tool threshold |
+| Possible severities | Warning, Info |
+| Thresholds | `search_io_cpu_pct_max` = 50 ([Tool] Busy search pool with node CPU below this suggests threads waiting)<br>`search_pool_busy_share` = 0.8 ([Tool] Active search threads / pool size counted as busy) |
+| Required input | (nodes.json) and (nodes_stats.json) |
+| Source files | nodes.json / nodes_stats.json |
+
+**Decision logic**
+
+Search thread pool busy while the node CPU is low (PERF-013), from the point-in-time values at collection.
+
+active search threads >= search_pool_busy_share of the pool size (nodes.json thread_pool.search.size) and node CPU% <
+search_io_cpu_pct_max. Threads that are busy without using CPU are usually waiting, most often on storage reads (frozen shared
+cache, remote storage) and sometimes on locks or other nodes. Queued searches on such a node → Warning, otherwise Info.
+This is a single moment, so read it with hot threads (RT-001) and the storage findings (FRZ-002, PERF-009, DISK-008).
 
 ## Shards and indices
 
@@ -1438,7 +1463,7 @@ The cgroup CPU throttling (OS-003) and the rejections of the write, write_coordi
 | Function | `hotspot.r_resource_hotspot` |
 | Evidence basis | Official |
 | Possible severities | Warning, OK |
-| Thresholds | `disk_imbalance_pct_warn` = 15 ([Tool] Disk usage spread between nodes (percentage points))<br>`hotspot_cpu_pct_floor` = 50 ([Tool])<br>`hotspot_cpu_pct_gap` = 40 ([Tool])<br>`hotspot_disk_pct_floor` = 50 ([Tool])<br>`hotspot_heap_pct_floor` = 70 ([Tool] Ignored if the maximum is below this)<br>`hotspot_heap_pct_gap` = 30 ([Tool] Heap spread between nodes (percentage points)) |
+| Thresholds | `disk_imbalance_pct_warn` = 15 ([Tool] Disk usage spread between nodes (percentage points))<br>`hotspot_cpu_pct_floor` = 50 ([Tool])<br>`hotspot_cpu_pct_gap` = 40 ([Tool])<br>`hotspot_disk_pct_floor` = 50 ([Tool])<br>`hotspot_heap_pct_floor` = 70 ([Tool] Ignored if the maximum is below this)<br>`hotspot_heap_pct_gap` = 30 ([Tool] Heap spread between nodes (percentage points))<br>`node_compare_min_uptime_hours` = 24 ([Tool] Nodes up for less than this are left out of node-to-node comparisons) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes_stats.json |
 | References | [Troubleshooting hot spotting](https://www.elastic.co/docs/troubleshoot/elasticsearch/hotspotting) |
@@ -1449,6 +1474,8 @@ Checks whether heap, CPU and disk usage are skewed toward a few nodes within the
 
 Tiers with different roles and loads are not compared with each other. Frozen tier disk is excluded because the shared cache pre-allocates it.
 For each metric, Warning when max - min within the tier >= gap and the max is >= floor. Values are point-in-time at collection.
+Nodes up for less than node_compare_min_uptime_hours are left out of the heap and CPU comparison (cold caches and
+fewer active shards right after a restart make them look idle). Disk usage does not reset on restart, so they stay in that one.
 
 ### HOT-002.(sub-items): Uneven %s workload within a tier
 
@@ -1457,16 +1484,18 @@ For each metric, Warning when max - min within the tier >= gap and the max is >=
 | Function | `hotspot.r_workload_hotspot` |
 | Evidence basis | Tool threshold |
 | Possible severities | Warning |
-| Thresholds | `workload_skew_ratio_warn` = 1.8 ([Tool] Busiest node / average) |
+| Thresholds | `node_compare_min_uptime_hours` = 24 ([Tool] Nodes up for less than this are left out of node-to-node comparisons)<br>`workload_skew_ratio_warn` = 1.8 ([Tool] Busiest node / average) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes_stats.json |
 | References | [Troubleshooting hot spotting](https://www.elastic.co/docs/troubleshoot/elasticsearch/hotspotting) |
 
 **Decision logic**
 
-Skew in cumulative indexing/search work per node within the same tier (busiest node / tier average >= workload_skew_ratio_warn → Warning). Tiers with fewer than 2 nodes or fewer than 10000 operations in total are skipped.
+Skew in indexing/search work per node within the same tier, compared as an hourly rate (cumulative count / uptime).
 
-Values are cumulative and include replica work. Different uptimes distort them, so an hourly rate is shown as well.
+Busiest node / tier average >= workload_skew_ratio_warn → Warning. Nodes up for less than node_compare_min_uptime_hours
+are left out: their counters cover a short window and their caches are cold. Tiers with fewer than 2 remaining nodes
+or fewer than 10000 operations in total are skipped. Values include replica work.
 
 ### HOT-003, HOT-004: Shards not converged to desired balance
 
@@ -1537,6 +1566,95 @@ Pattern overlap is estimated by comparing wildcards.
 **Decision logic**
 
 The delayed_timeout setting that prevents immediate re-replication when a node restarts.
+
+## Storage cost
+
+### COST-001: Rolled-over indices still on the hot tier
+
+| Item | Details |
+| --- | --- |
+| Function | `cost.r_hot_rolled_over` |
+| Evidence basis | Tool threshold |
+| Possible severities | Info |
+| Thresholds | `hot_rolled_days_info` = 30 ([Tool] Days since rollover for an index still in the ILM hot phase)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Required input | (ilm_explain.json) and (indices_stats.json) and (indices.json or shards.json or cat_shards.txt) |
+| Source files | ilm_explain.json / ilm_policies.json / indices_stats.json |
+| References | [Index lifecycle (phases)](https://www.elastic.co/docs/manage-data/lifecycle/index-lifecycle-management/index-lifecycle)<br>[Data tiers](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
+
+**Decision logic**
+
+Rolled-over indices still in the ILM hot phase long after rollover (COST-001).
+
+Runs only when the cluster has a warm, cold or frozen tier to move data to. An index is listed when ILM explain shows phase hot,
+the index has rolled over and is not a write target, its age since rollover (lifecycle_date) is >= hot_rolled_days_info, and at
+least one of its shards is on a hot node. Rows are grouped by ILM policy with the next phase and its min_age, which counts from
+rollover. Info only: keeping data on hot can be intended (search speed, short retention).
+
+### COST-002: Extra replicas on indices with no searches
+
+| Item | Details |
+| --- | --- |
+| Function | `cost.r_idle_replicas` |
+| Evidence basis | Tool threshold |
+| Possible severities | Info |
+| Thresholds | `cost_replicas_min` = 2 ([Tool] Replica count at which an index with no searches is listed)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Required input | (settings.json) and (indices_stats.json) |
+| Source files | settings.json / indices_stats.json |
+| References | [Clusters, nodes and shards](https://www.elastic.co/docs/deploy-manage/distributed-architecture/clusters-nodes-shards) |
+
+**Decision logic**
+
+Indices with cost_replicas_min or more replicas and no searches (COST-002).
+
+User indices (system indices and searchable snapshot mounts excluded) with number_of_replicas >= cost_replicas_min, documents,
+and indices_stats total.search.query_total of 0. When the data nodes span at least replicas + 1 availability zones, one copy per
+zone is a deliberate layout and the index is not listed. The second and later replicas add disk and indexing work without
+adding availability against a single node loss. Search counters reset when a shard moves or its node restarts, so 0 means
+"no searches since the shards started". Info only.
+
+### COST-003: Disk usage differs a lot between data tiers
+
+| Item | Details |
+| --- | --- |
+| Function | `cost.r_tier_usage` |
+| Evidence basis | Tool threshold |
+| Possible severities | Info |
+| Thresholds | `tier_gap_pct` = 30 ([Tool] Disk usage gap (percentage points) between hot and a colder tier)<br>`tier_hot_used_pct` = 70 ([Tool] Hot tier disk usage at which colder tiers are compared)<br>`tier_idle_used_pct` = 20 ([Tool] Colder tier disk usage below this is reported as mostly empty) |
+| Required input | (nodes_stats.json) |
+| Source files | nodes_stats.json |
+| References | [Data tiers](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers)<br>[Index lifecycle (phases)](https://www.elastic.co/docs/manage-data/lifecycle/index-lifecycle-management/index-lifecycle) |
+
+**Decision logic**
+
+Disk usage across data tiers (COST-003).
+
+Frozen is shown but not compared, because its shared cache reserves the disk up front. Flags:
+(1) the hot tier is at tier_hot_used_pct or more while a warm or cold tier is tier_gap_pct points or more emptier, which
+usually means data moves off hot later than the hot disks allow; (2) a warm or cold tier is below tier_idle_used_pct, which
+suggests it is larger than the data it holds. Needs at least two non-frozen tiers. Info only.
+
+### COST-004: Days of ingest the landing tier can still hold
+
+| Item | Details |
+| --- | --- |
+| Function | `cost.r_ingest_headroom` |
+| Evidence basis | Tool threshold |
+| Possible severities | Warning, Info |
+| Thresholds | `disk_projection_days_warn` = 30 ([Tool])<br>`ingest_window_days` = 7 ([Tool] Days of recent indices used to estimate daily ingest volume) |
+| Required input | (settings.json) and (indices_stats.json) and (nodes_stats.json) |
+| Source files | settings.json / indices_stats.json / nodes_stats.json |
+| References | [Data tiers](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
+
+**Decision logic**
+
+How many days of ingest the landing tier can still take before the high watermark (COST-004), from one bundle.
+
+Daily ingest = store size (replicas included) of user indices created in the last ingest_window_days, plus the part of older write
+indices that falls in the window (size x window / age), divided by the window (shorter if the cluster is younger). Searchable
+snapshot mounts and system indices are left out. Landing tier = tiers holding shards of write targets (frozen excluded).
+Headroom = sum over those nodes of (bytes allowed at the high watermark - bytes used). Days = headroom / daily ingest.
+This assumes nothing is moved or deleted. Days <= disk_projection_days_warn while more than half of the window's data has no ILM
+phase after hot (no move, no delete) → Warning; otherwise Info. Comparison mode (DIF-008) measures real growth instead.
 
 ## Operations and security
 
@@ -1889,6 +2007,29 @@ Frozen shared cache statistics. Warning if any node has more evictions than cach
 
 Evictions > region count means the whole cache has been replaced at least once, a sign that the cache is small compared to the searched data (tool threshold).
 
+### FRZ-002: Frozen shared cache on a network filesystem
+
+| Item | Details |
+| --- | --- |
+| Function | `deep.r_frozen_network_storage` |
+| Evidence basis | Tool threshold |
+| Possible severities | Critical, Warning |
+| Required input | (nodes_stats.json) |
+| Source files | nodes_stats.json / searchable_snapshots_cache_stats.json / nodes_hot_threads.txt |
+| References | [Searchable snapshots](https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots) |
+
+**Decision logic**
+
+Nodes with a frozen shared cache whose data path is on a network filesystem (FRZ-002).
+
+A node has a shared cache when the cache stats show one, when it is a dedicated frozen node (which gets a shared cache by default),
+or when xpack.searchable.snapshot.shared_cache.size is set. Nodes with a shared cache can only have a single data path, so the
+cache file sits on the filesystem of that path. If nodes_stats fs.data[].type is nfs / cifs / smb / fuse / glusterfs / ceph → Warning.
+Searches read the cache file and cache misses write to it while searches run, unlike the segment files of other tiers, which do
+not change once written (PERF-009 covers the data path of every node).
+Supporting signals per node: hot threads reading a file inside the searchable snapshot cache code, and the search thread pool
+queue and rejections. "Direct buffer memory" errors in the server logs → Critical.
+
 ### PERF-010: Script compilation limit triggered
 
 | Item | Details |
@@ -2146,7 +2287,11 @@ Estimates when the watermark is reached from the disk growth rate.
 
 **Decision logic**
 
-Converts the per-node increase in index_total / query_total over the interval to throughput per second (replica work included). Max node / average >= workload_skew_ratio_warn -> warning, otherwise info.
+Converts the per-node increase in index_total / query_total over the interval to throughput per second (replica work included).
+
+Only data nodes are counted. The skew is compared within each tier: busiest node / tier average >= workload_skew_ratio_warn -> warning,
+otherwise info. A node that restarted during the interval (uptime went down) has reset counters, so it is shown but left out of
+the totals and the skew.
 
 ### DIF-010, DIF-011: Top index growth
 
@@ -2305,6 +2450,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `cgroup_throttle_ratio_warn` | 0.01 | [Tool] throttled / elapsed periods |
 | `cgroup_throttle_ratio_crit` | 0.05 | [Tool] throttled / elapsed periods |
 | `uptime_short_hours` | 6 | [Tool] Treats the node as recently restarted |
+| `node_compare_min_uptime_hours` | 24 | [Tool] Nodes up for less than this are left out of node-to-node comparisons |
 | `disk_watermark_low_default` | 85% | [Official] ES default (used only when no settings file is present) |
 | `disk_watermark_high_default` | 90% | [Official] ES default (used only when no settings file is present) |
 | `disk_watermark_flood_default` | 95% | [Official] ES default (used only when no settings file is present) |
@@ -2406,6 +2552,15 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `forcemerge_stuck_hours` | 24 | [Tool] Time in the forcemerge action before it is reported |
 | `disk_io_busy_pct_warn` | 60 | [Tool] Average disk utilization since startup |
 | `search_expensive_share_warn` | 10 | [Tool] Share of expensive query types in all searches (%) |
+| `search_pool_busy_share` | 0.8 | [Tool] Active search threads / pool size counted as busy |
+| `search_io_cpu_pct_max` | 50 | [Tool] Busy search pool with node CPU below this suggests threads waiting |
+| `ingest_fail_ratio_warn` | 0.01 | [Tool] Failed / processed documents of a pipeline |
+| `hot_rolled_days_info` | 30 | [Tool] Days since rollover for an index still in the ILM hot phase |
+| `cost_replicas_min` | 2 | [Tool] Replica count at which an index with no searches is listed |
+| `tier_hot_used_pct` | 70 | [Tool] Hot tier disk usage at which colder tiers are compared |
+| `tier_gap_pct` | 30 | [Tool] Disk usage gap (percentage points) between hot and a colder tier |
+| `tier_idle_used_pct` | 20 | [Tool] Colder tier disk usage below this is reported as mostly empty |
+| `ingest_window_days` | 7 | [Tool] Days of recent indices used to estimate daily ingest volume |
 | `diff_min_hours_for_projection` | 1.0 | [Tool] No extrapolation for intervals shorter than this |
 | `disk_projection_days_warn` | 30 | [Tool] |
 | `index_growth_min_bytes` | 1GiB | [Tool] |

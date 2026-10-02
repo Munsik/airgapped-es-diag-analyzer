@@ -2,8 +2,9 @@
 """Console and Markdown output."""
 
 from ..i18n import T
+from .. import bottleneck as btl
 from ..model import Severity, category_label
-from ..util import truncate
+from ..util import dljust, dwidth, truncate
 
 
 def _mark(severity):
@@ -36,12 +37,12 @@ def console(result, show_ok=True, width=100):
 
     lines.append(T("report.text.console.11"))
     areas = result.area_summary()
-    aw = max([len(a["area"]) for a in areas] or [0])
-    sw = max([len(a["status"]) for a in areas] or [0])
+    aw = max([dwidth(a["area"]) for a in areas] or [0])
+    sw = max([dwidth(a["status"]) for a in areas] or [0])
     for a in areas:
-        # Pad here so the column fits the longest label in the current language.
+        # Pad here so the column fits the longest label in the current language (Hangul takes two columns).
         lines.append(T("report.text.console.12")
-                     % (a["area"].ljust(aw), a["status"].ljust(sw), a["critical"], a["warning"], a["info"], a["ok"]))
+                     % (dljust(a["area"], aw), dljust(a["status"], sw), a["critical"], a["warning"], a["info"], a["ok"]))
     lines.append("")
     ds = getattr(result, "diff_summary", None)
     if ds:
@@ -49,6 +50,17 @@ def console(result, show_ok=True, width=100):
                      % ((T("report.text.console.14") % ds["hours"]) if ds.get("hours") else T("report.text.console.15")))
         lines.extend("  " + ln for ln in _ascii_table(
             {"columns": ds["columns"], "rows": ds["rows"]}, max_rows=20))
+        lines.append("")
+
+    rows = result.bottleneck()
+    if rows:
+        lines.append("■ " + T("btl.title"))
+        qw = max(dwidth(r["question"]) for r in rows)
+        for r in rows:
+            q, v, b, nx = btl.cells(r)
+            lines.append("  %s  %s" % (dljust(q, qw), v))
+            if b != "-":
+                lines.append("  %s  %s" % (" " * qw, truncate(b, 160)))
         lines.append("")
 
     act = result.priority()
@@ -148,6 +160,17 @@ def markdown(result, show_ok=True):
         md.append("| " + " | ".join("---" for _ in ds["columns"]) + " |")
         for r in ds["rows"]:
             md.append("| " + " | ".join(str(x) for x in r) + " |")
+        md.append("")
+    rows = result.bottleneck()
+    if rows:
+        md.append("## " + T("btl.title"))
+        md.append("")
+        md.append(T("btl.intro"))
+        md.append("")
+        md.append("| %s | %s | %s | %s |" % (T("btl.col.q"), T("btl.col.v"), T("btl.col.b"), T("btl.col.n")))
+        md.append("| --- | --- | --- | --- |")
+        for r in rows:
+            md.append("| %s |" % " | ".join(c.replace("|", "/") for c in btl.cells(r)))
         md.append("")
     act = result.priority()
     if act:

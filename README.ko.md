@@ -2,7 +2,7 @@
 
 [English](README.md) · 한국어
 
-**버전 0.13.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.14.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -39,7 +39,9 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 
 - **폐쇄망 전제** — 외부 통신·CDN·폰트·패키지 설치 없음. 저장소를 그대로 반입해 실행
 - **의존성 없음** — Python 3.8 이상 표준 라이브러리만 사용
-- **124개 판정 룰** — 단일 번들 114개 + 두 번들 비교 10개
+- **130개 판정 룰** — 단일 번들 120개 + 두 번들 비교 10개
+- **병목 요약** — 리포트 맨 위에서 다섯 가지 질문(색인이 따라가는가, 검색이 느린가, 스토리지가 한계인가, 재시작이 수치를 왜곡하는가, 용량 부족인가 편중인가)에 답합니다. 증상을 먼저 보고, 그 증상을 설명하는 판정을 이어서 짚습니다
+- **스토리지 비용** — 롤오버 후에도 hot 에 남은 데이터, 검색되지 않는 replica, tier 간 디스크 사용 차이, 수집 대상 tier 가 며칠치 수집량을 더 받을 수 있는지
 - **원인 단위 조치 우선순위** — 같은 원인에서 나온 판정(예: yellow·미할당 샤드·allocation explain·replica 초과)은 대표 1건으로 묶고 나머지는 관련 판정으로 표시
 - **판정 근거 구분** — 모든 판정에 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산 표기
 - **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 94종 지식 베이스)
@@ -88,7 +90,7 @@ python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
 | `--mask-map FILE` | 별칭 ↔ 원래 이름 매핑 JSON 경로(기본: 요약 파일명 + `.mask-map.json`). `--support-summary` 와 함께 사용 |
 | `--lang both\|ko\|en\|auto` | 출력 언어(기본 `both`). `both` 는 한국어와 영어를 모두 만들며 파일명에 `.ko` / `.en` 을 붙입니다(`report.html` → `report.ko.html`, `report.en.html`). `ko` / `en` 은 한 언어만 지정한 이름 그대로 씁니다. `auto` 는 로캘을 따릅니다. 환경 변수 `ESDIAG_LANG` 으로도 지정합니다 |
 | `--no-ok` | 정상 판정 숨김 |
-| `--only MODULE` | 특정 룰 모듈만 실행(`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `ops` `deep` `runtime` `syscalls`), 반복 지정 가능 |
+| `--only MODULE` | 특정 룰 모듈만 실행(`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `cost` `ops` `deep` `runtime` `syscalls`), 반복 지정 가능 |
 | `--thresholds FILE` | 임계값 재정의 JSON(알 수 없는 키는 경고 후 무시) |
 | `--print-thresholds` | 기본 임계값 출력 |
 | `--fail-on critical\|warning` | 해당 심각도가 있으면 종료 코드 1 |
@@ -213,8 +215,8 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 | 구분 | 의미 | 판정 ID 수 |
 | --- | --- | --- |
 | 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 69 |
-| 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 57 |
-| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 50 |
+| 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 56 |
+| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 57 |
 | 비교 계산 | 두 번들 간 증가분·증가율·선형 외삽 | DIF-001~013 |
 
 고객에게 전달할 때 "공식 기준·사실 보고" 는 근거로, "도구 판단" 은 권고로 제시하십시오.
@@ -320,21 +322,34 @@ logsdb 는 공간 효율이 좋아 대개 50GB 보다 2억건에 먼저 닿습�
 HTML 리포트(단일 파일)의 순서입니다. Markdown·콘솔도 같은 내용을 담습니다.
 
 1. 헤더 — 클러스터, 버전, 배포 형태, 수집 시각·모드, 도구 버전·판정 기준, 종합 판정, 심각도 분포
-2. **영역별 점검 결과** — 가용성 / 자원·용량 / 데이터 구조 / 성능 / 데이터 보호·운영 / 보안 / 구성의 상태와 건수
-3. 이전 번들 대비 변화(`--baseline` 지정 시)
-4. 조치 우선순위 — 치명·주의 목록, 클릭하면 해당 판정으로 이동
-5. 노드 상태 한눈에 보기 — heap·CPU·load·디스크·샤드 수 막대
-6. 저장 용량 상위 인덱스
-7. 필터 — 심각도 × 분류 조합
-8. 판정 결과 — 헬스 체크 영역 순서로, 관측 / 영향 / 권고 / 근거 표 / 출처 파일 / 참고 문서, 근거 구분 표기
-9. 판정 근거 구분 설명, 확인하지 못한 항목(입력 미수집·도구 오류)
+2. **병목 요약** — 다섯 가지 질문별 판단, 그 판단의 근거가 된 증상과 판정, 다음에 볼 곳(아래 참고)
+3. 조치 우선순위 — 치명·주의 목록, 클릭하면 해당 판정으로 이동
+4. **영역별 점검 결과** — 가용성 / 자원·용량 / 데이터 구조 / 성능 / 데이터 보호·운영 / 보안 / 구성의 상태와 건수
+5. 이전 번들 대비 변화(`--baseline` 지정 시)
+6. 노드 상태 한눈에 보기 — heap·CPU·load·디스크·샤드 수 막대
+7. 저장 용량 상위 인덱스
+8. 필터 — 심각도 × 분류 조합
+9. 판정 결과 — 헬스 체크 영역 순서로, 관측 / 영향 / 권고 / 근거 표 / 출처 파일 / 참고 문서, 근거 구분 표기
+10. 판정 근거 구분 설명, 확인하지 못한 항목(입력 미수집·도구 오류)
+
+### 병목 요약
+
+| 질문 | 먼저 보는 증상 | 증상이 있을 때 원인을 보는 순서 |
+| --- | --- | --- |
+| 색인이 따라가고 있는가 | write 거부, write 큐, indexing pressure 거부, 현재 색인 throttle | 스토리지(IDX-005, PERF-012, IDX-014, DISK-008, IDX-015, PERF-009) → 메모리(JVM-001, JVM-005, BRK-*, IP-001) → CPU(HOT-005, OS-001, OS-003) → 쓰기 부하 편중(SHD-016, HOT-002, HOT-001, SHD-006, SHD-012) → ingest 파이프라인(ING-002, ING-001) → 인덱스 설정(IDX-007, PERF-004) |
+| 검색이 느린가 | search 거부, search 큐, 높은 지연(PERF-001·002), CPU 는 낮은데 바쁜 search 풀(PERF-013) | 메모리 → CPU → 스토리지(PERF-013, FRZ-*, DISK-008, PERF-009, PERF-003) → 쿼리 비용(PERF-011, PERF-010, PERF-005, GEN-001) → 샤드 수(SHD-001, OVS-*, SHD-004, SHD-009) → 검색 부하 편중. PERF-013 이 있으면 스토리지를 맨 앞에서 본다 |
+| 스토리지가 한계인가 | 없음 | IDX-005, PERF-012, IDX-014, DISK-008, PERF-013, FRZ-002, FRZ-001, PERF-009, IDX-015 |
+| 재시작이나 복구가 수치를 왜곡하는가 | 없음 | OS-007 → DIF-002 → OS-006 → CLU-020, REC-001, HOT-003 |
+| 용량 부족인가, 편중인가 | 없음 | tier CPU(HOT-005) → 디스크(DISK-001~003, DIF-008, COST-004) → 편중(HOT-001, HOT-002, SHD-006, SHD-016, NODE-001) |
+
+원인은 해당 판정이 치명이나 주의일 때만 셉니다(PERF-013 은 참고여도 셉니다). 판정이 있는 첫 그룹이 판단이 되고, 판정이 있는 나머지 그룹은 뒤에 함께 적습니다. 증상이 없으면 그렇다고만 적고 원인은 짚지 않습니다. 증상은 있는데 어느 그룹에도 판정이 없으면 Elasticsearch 밖(클라이언트, 쿼리)을 보라고 안내합니다. 이 순서는 어디부터 볼지에 대한 도구 판단이며 공식 판단 트리가 아닙니다. `--only` 로 룰 일부만 돌리면 요약은 빠집니다. Markdown, 콘솔, JSON(`bottleneck`), Support 팀 요약에도 들어갑니다.
 
 ### 헬스 체크 영역
 
 | 영역 | 포함 분류 | 대표 판정 |
 | --- | --- | --- |
 | 가용성 | 클러스터 | 상태·미할당 샤드·마스터 정족수·샤드 한도·노드 종료·voting exclusion |
-| 자원·용량 | 노드, 핫스팟·밸런싱 | heap·GC·CPU·디스크·워터마크·스레드풀·circuit breaker·tier 포화·편중 |
+| 자원·용량 | 노드, 핫스팟·밸런싱, 스토리지 비용 | heap·GC·CPU·디스크·워터마크·스레드풀·circuit breaker·tier 포화·편중·hot 잔류 데이터·검색 없는 replica·수집 여유 |
 | 데이터 구조 | 샤드·인덱스, 벡터 검색 | 샤드 크기·과다 샤딩·매핑 한도·쓰기 차단·벡터 메모리 |
 | 성능 | 성능 기준, 런타임 | 비용이 큰 검색 패턴·캐시·ingest·hot threads·로그 |
 | 데이터 보호·운영 | 운영 | 스냅샷 RPO·SLM·ILM·라이선스·모니터링·ML |
@@ -373,7 +388,7 @@ python3 analyze.py diagnostic.zip --support-summary support-summary.md --mask st
 
 | 문서 | 내용 |
 | --- | --- |
-| [RULES.ko.md](RULES.ko.md) ([English](RULES.md)) | 124개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
+| [RULES.ko.md](RULES.ko.md) ([English](RULES.md)) | 130개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
 | [COVERAGE.ko.md](COVERAGE.ko.md) ([English](COVERAGE.md)) | Elastic 공식 문서 항목별 반영 여부와 판정할 수 없는 항목의 이유 |
 | [CHANGELOG.ko.md](CHANGELOG.ko.md) ([English](CHANGELOG.md)) | 변경 이력 — 이전 동작 → 현재 동작과 근거 |
 
@@ -394,7 +409,7 @@ python3 analyze.py --print-thresholds > my.json   # 기본값 추출
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 122개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
+임계값 132개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
 
 ---
 
@@ -436,14 +451,15 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 868개, 문제 0 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 929개, 문제 0 |
 | `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현. 한국어·영어 두 언어로 실행 | 110개 통과 |
-| `tests/drive_branches.py` | 시나리오 51개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 51개 통과, 미실행 판정 분기 0 |
+| `tests/drive_branches.py` | 시나리오 58개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 58개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
 | `tools/gen_rules_doc.py --check` | 임계값·docstring 정합성 | 문제 0 |
 | `tests/test_local_mode.py` | local/remote 모드 전용 처리(logs/ 오탐·gz·이중 집계, syscalls/ 분기, 수집 실패 안내)를 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_logsdb.py` | 문서 수 한도·logsdb·force merge 판정(SHD-008·013·014·015, IDX-013, ILM-007·008·009)의 모든 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_write_path.py` | 쓰기 경로·운영 판정(PERF-012, OS-007, SHD-016, IDX-014·015, CLU-017, MAP-004, DIF-013)의 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
+| `tests/test_bottleneck_cost.py` | 병목 요약, 최근 재시작 노드의 비교 제외(HOT-001·002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001~004 를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
 | `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |
 
@@ -485,10 +501,11 @@ bash tests/run_all.sh diagnostic.zip
 │   ├── envcheck.py             # 실행 환경 점검(--check-env)
 │   ├── mask.py                 # Support 팀 요약용 마스킹(별칭 치환, 누출 검사)
 │   ├── diff.py                 # 두 번들 비교
+│   ├── bottleneck.py           # 병목 요약(증상과 판정으로 다섯 가지 질문에 답함)
 │   ├── i18n/                   # ko.txt · en.txt 메시지 카탈로그, T() / tr() / N_()
 │   ├── model.py                # Finding / Severity
 │   ├── util.py                 # 단위 파싱, 안전 접근자(num·dicts·strs·items)
-│   ├── rules/                  # cluster · settings · nodes · shards · sharding · guidance · hotspot · ops · deep · runtime
+│   ├── rules/                  # cluster · settings · nodes · shards · sharding · guidance · hotspot · cost · ops · deep · runtime
 │   └── report/                 # text(콘솔·Markdown) · html(단일 파일) · handoff(Support 팀 요약)
 ├── tools/
 │   ├── gen_rules_doc.py        # RULES.md 생성기 + 정합성 검사
@@ -505,6 +522,7 @@ bash tests/run_all.sh diagnostic.zip
 │   ├── test_handoff.py         # Support 팀 요약·마스킹 검증(합성 데이터)
 │   ├── test_logsdb.py          # 문서 수 한도·logsdb·force merge 판정 검증(합성 데이터)
 │   ├── test_write_path.py      # 쓰기 경로·운영 판정 검증(합성 데이터)
+│   ├── test_bottleneck_cost.py # 병목 요약·스토리지 비용 판정 검증(합성 데이터)
 │   └── make_broken_bundle.py   # 장애 주입 번들 생성
 ├── docs/STYLE.md              # 문체·용어 규칙
 ├── README.md / README.ko.md

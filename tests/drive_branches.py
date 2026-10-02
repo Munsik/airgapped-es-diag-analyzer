@@ -195,6 +195,72 @@ def _cert(days):
     return [{"path": "certs/http.p12", "alias": "http", "subject_dn": "CN=es", "expiry": t.strftime("%Y-%m-%dT%H:%M:%S.000Z")}]
 
 
+PINNED_MS = 1786683094007          # 2026-08-14T04:51:34.007Z, the pinned collection date
+DAY_MS = 86400000
+
+
+def _frozen_nfs(b):
+    """First node becomes a dedicated frozen node on NFS with a full search pool and almost no CPU."""
+    _roles(b, [["data_frozen"], ["master", "data_hot"], ["master", "data_hot"]])
+
+    def fi(i, n):
+        n.setdefault("thread_pool", {})["search"] = {"type": "fixed", "size": 4, "queue_size": 1000}
+
+    def fs(i, s):
+        if i == 0:
+            s.setdefault("fs", {})["data"] = [{"path": "/data", "mount": "/data (nas:/v)", "type": "nfs4",
+                                               "total_in_bytes": 100 * GB}]
+            s.setdefault("os", {}).setdefault("cpu", {})["percent"] = 3
+            s.setdefault("thread_pool", {})["search"] = {"threads": 4, "active": 4, "queue": 5, "rejected": 0}
+    b.each_node(fi, fs)
+
+
+def _ingest(b, count, failed):
+    def fs(i, s):
+        if i == 0:
+            s["ingest"] = {"total": {"count": count, "failed": failed, "time_in_millis": 5},
+                           "pipelines": {"p1": {"count": count, "failed": failed}}}
+        else:
+            s["ingest"] = {"total": {"count": 0, "failed": 0, "time_in_millis": 0}, "pipelines": {}}
+    b.each_node(fn_stats=fs)
+
+
+def _tier_layout(b, used):
+    """Node 0 hot, node 1 warm, every other node without a data role; disk usage per data node from used."""
+    b.clone_nodes(3)
+    roles = [["master", "data_hot", "data_content"], ["master", "data_warm"]]
+
+    def pick(i, n):
+        return list(roles[i]) if i < len(roles) else (["master"] if i == 2 else ["ingest"])
+
+    def fi(i, n):
+        n["roles"] = pick(i, n)
+
+    def fs(i, s):
+        s["roles"] = pick(i, s)
+        if i < len(used):
+            t = 1000 * GB
+            s["fs"]["total"]["total_in_bytes"] = t
+            s["fs"]["total"]["available_in_bytes"] = int(t * (1 - used[i]))
+            s["fs"]["total"]["free_in_bytes"] = int(t * (1 - used[i]))
+    b.each_node(fi, fs)
+    b.edit("cluster_settings.json", _drop_watermark_settings, default={"persistent": {}, "transient": {}})
+
+
+def _hot_rolled(b):
+    _tier_layout(b, [0.3, 0.3])
+    b.add_index("old-rolled", settings={"lifecycle": {"name": "p-old", "indexing_complete": "true"}})
+    b.edit("ilm_explain.json", lambda e: e.setdefault("indices", {}).update({"old-rolled": {
+        "index": "old-rolled", "managed": True, "policy": "p-old", "phase": "hot",
+        "lifecycle_date_millis": PINNED_MS - 40 * DAY_MS}}), default={"indices": {}})
+
+
+def _headroom(b):
+    _tier_layout(b, [0.85, 0.3])
+    b.add_index("anchor-old", settings={"creation_date": str(PINNED_MS - 30 * DAY_MS)})
+    b.add_index("big-new", size=500 * GB, settings={"creation_date": str(PINNED_MS - DAY_MS)})
+
+
 # Scenario: (name, mutation function, expected finding ids)
 SCENARIOS = [
     ("status yellow, allocation explain", lambda b: (
@@ -432,6 +498,16 @@ SCENARIOS = [
             "current_capacity": {"total": {"storage": 10 ** 12, "memory": 10 ** 11}}}}}),
         b.put("rollup_jobs.json", {"jobs": [{"config": {"id": "r1"}, "status": {"job_state": "started"}}]})),
      ["OPS-005!WARNING", "OPS-004!INFO", "OPS-006!INFO"]),
+    ("frozen shared cache on NFS, busy search pool", _frozen_nfs, ["FRZ-002!WARNING", "PERF-013!WARNING"]),
+    ("ingest failure ratio 3%", lambda b: _ingest(b, 1000, 30), ["ING-001!WARNING"]),
+    ("ingest failures under the ratio", lambda b: _ingest(b, 10 ** 6, 3), ["ING-001!INFO"]),
+    ("extra replicas without searches", lambda b: (
+        b.each_node(fn_info=lambda i, n: n.update(attributes={})),
+        b.add_index("idle-rep", settings={"number_of_replicas": "2"}, extra_stats={"total.search.query_total": 0})),
+     ["COST-002!INFO"]),
+    ("hot tier full, warm tier empty", lambda b: _tier_layout(b, [0.8, 0.05]), ["COST-003!INFO"]),
+    ("rolled-over index kept on hot", _hot_rolled, ["COST-001!INFO"]),
+    ("landing tier headroom", _headroom, ["COST-004!WARNING"]),
 ]
 
 

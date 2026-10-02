@@ -8,7 +8,7 @@ the desired balance allocator description in the size-shards docs.
 
 from ..i18n import T, N_
 from ..model import Finding, Severity, table
-from ..util import dig, fmt_num, parse_bytes, dicts, num, items, strs
+from ..util import dig, fmt_ms, fmt_num, parse_bytes, dicts, num, items, strs
 
 HOT = "hotspot"
 CAT = "cluster"
@@ -36,20 +36,28 @@ def r_resource_hotspot(ctx):
 
     Tiers with different roles and loads are not compared with each other. Frozen tier disk is excluded because the shared cache pre-allocates it.
     For each metric, Warning when max - min within the tier >= gap and the max is >= floor. Values are point-in-time at collection.
+    Nodes up for less than node_compare_min_uptime_hours are left out of the heap and CPU comparison (cold caches and
+    fewer active shards right after a restart make them look idle). Disk usage does not reset on restart, so they stay in that one.
     """
-    rows, flags = [], []
+    rows, flags, skipped = [], [], []
     checks = ((T("rules.hotspot.r_resource_hotspot.01"), "heap", ctx.t["hotspot_heap_pct_gap"], ctx.t["hotspot_heap_pct_floor"]),
               (T("rules.hotspot.r_resource_hotspot.02"), "cpu", ctx.t["hotspot_cpu_pct_gap"], ctx.t["hotspot_cpu_pct_floor"]),
               (T("rules.hotspot.r_resource_hotspot.03"), "disk", ctx.t["disk_imbalance_pct_warn"], ctx.t["hotspot_disk_pct_floor"]))
     for tier, nodes in ctx.data_tiers().items():
         for n in nodes:
+            fresh = ctx.recently_restarted(n)
+            if fresh:
+                skipped.append(n.name)
             rows.append([tier, n.name, "%s%%" % n.heap_used_pct if n.heap_used_pct is not None else "-",
                          "%s%%" % n.cpu_pct if n.cpu_pct is not None else "-",
-                         "%.1f%%" % n.disk_used_pct if n.disk_used_pct is not None else "-"])
+                         "%.1f%%" % n.disk_used_pct if n.disk_used_pct is not None else "-",
+                         fmt_ms(n.uptime_ms) + (T("rules.hotspot.r_resource_hotspot.10") if fresh else "")
+                         if n.uptime_ms else "-"])
         if len(nodes) < 2:
             continue
-        series = {"heap": [(n.name, n.heap_used_pct) for n in nodes],
-                  "cpu": [(n.name, n.cpu_pct) for n in nodes],
+        settled = [n for n in nodes if not ctx.recently_restarted(n)]
+        series = {"heap": [(n.name, n.heap_used_pct) for n in settled],
+                  "cpu": [(n.name, n.cpu_pct) for n in settled],
                   "disk": [(n.name, n.disk_used_pct) for n in nodes] if tier != "frozen" else []}
         for label, key, gap, floor in checks:
             vals = [(v, k) for k, v in series[key] if v is not None]
@@ -58,47 +66,61 @@ def r_resource_hotspot(ctx):
             mx, mn = max(vals), min(vals)
             if mx[0] - mn[0] >= gap and mx[0] >= floor:
                 flags.append(T("rules.hotspot.r_resource_hotspot.04") % (tier, label, mx[0] - mn[0], mx[1], mx[0]))
-    ev = table(["tier", "node", "heap%", "cpu%", "disk%"], rows)
+    ev = table(["tier", "node", "heap%", "cpu%", "disk%", "uptime"], rows)
+    note = (T("rules.hotspot.r_resource_hotspot.11") % (ctx.t["node_compare_min_uptime_hours"], ", ".join(skipped))
+            if skipped else "")
     if not flags:
         return [Finding("HOT-001", HOT, Severity.OK, T("rules.hotspot.r_resource_hotspot.05"),
-                        observed=T("rules.hotspot.r_resource_hotspot.06"),
+                        observed=T("rules.hotspot.r_resource_hotspot.06") + note,
                         evidence=ev, refs=[D_HOT], source="nodes_stats.json")]
     return [Finding(
         "HOT-001", HOT, Severity.WARNING, T("rules.hotspot.r_resource_hotspot.07"),
-        observed=" / ".join(flags),
+        observed=" / ".join(flags) + note,
         impact=T("rules.hotspot.r_resource_hotspot.08"),
         recommend=T("rules.hotspot.r_resource_hotspot.09"),
         evidence=ev, refs=[D_HOT], source="nodes_stats.json")]
 
 
 def r_workload_hotspot(ctx):
-    """Skew in cumulative indexing/search work per node within the same tier (busiest node / tier average >= workload_skew_ratio_warn → Warning). Tiers with fewer than 2 nodes or fewer than 10000 operations in total are skipped.
+    """Skew in indexing/search work per node within the same tier, compared as an hourly rate (cumulative count / uptime).
 
-    Values are cumulative and include replica work. Different uptimes distort them, so an hourly rate is shown as well.
+    Busiest node / tier average >= workload_skew_ratio_warn → Warning. Nodes up for less than node_compare_min_uptime_hours
+    are left out: their counters cover a short window and their caches are cold. Tiers with fewer than 2 remaining nodes
+    or fewer than 10000 operations in total are skipped. Values include replica work.
     """
     out = []
     for key, label, path in (("index_total", T("rules.hotspot.r_workload_hotspot.01"), ("indices", "indexing", "index_total")),
                              ("query_total", T("rules.hotspot.r_workload_hotspot.02"), ("indices", "search", "query_total"))):
-        flags, rows = [], []
+        flags, rows, skipped = [], [], []
         for tier, nodes in ctx.data_tiers().items():
-            vals = []
+            rates, total = [], 0
             for n in nodes:
                 v = num(n.stats, *path)
                 up = (n.uptime_ms or 0) / 3600000.0
-                vals.append(v)
-                rows.append([tier, n.name, fmt_num(v), ("%.0f/h" % (v / up)) if up else "-"])
-            if len(vals) < 2 or sum(vals) < 10000:
+                fresh = ctx.recently_restarted(n)
+                rows.append([tier, n.name, fmt_num(v), ("%.0f/h" % (v / up)) if up else "-",
+                             fmt_ms(n.uptime_ms) + (T("rules.hotspot.r_resource_hotspot.10") if fresh else "")
+                             if n.uptime_ms else "-"])
+                if fresh:
+                    skipped.append(n.name)
+                    continue
+                total += v
+                if up:
+                    rates.append(v / up)
+            if len(rates) < 2 or total < 10000:
                 continue
-            avg = sum(vals) / float(len(vals))
-            if avg and max(vals) / avg >= ctx.t["workload_skew_ratio_warn"]:
-                flags.append(T("rules.hotspot.r_workload_hotspot.03") % (tier, max(vals) / avg))
+            avg = sum(rates) / float(len(rates))
+            if avg and max(rates) / avg >= ctx.t["workload_skew_ratio_warn"]:
+                flags.append(T("rules.hotspot.r_workload_hotspot.03") % (tier, max(rates) / avg))
         if flags:
+            note = (T("rules.hotspot.r_resource_hotspot.11") % (ctx.t["node_compare_min_uptime_hours"], ", ".join(skipped))
+                    if skipped else "")
             out.append(Finding(
                 "HOT-002." + key, HOT, Severity.WARNING, T("rules.hotspot.r_workload_hotspot.04") % label,
-                observed=" / ".join(flags),
+                observed=" / ".join(flags) + note,
                 impact=T("rules.hotspot.r_workload_hotspot.05"),
                 recommend=T("rules.hotspot.r_workload_hotspot.06"),
-                evidence=table(["tier", "node", T("rules.hotspot.r_workload_hotspot.07"), T("rules.hotspot.r_workload_hotspot.08")], rows),
+                evidence=table(["tier", "node", T("rules.hotspot.r_workload_hotspot.07"), T("rules.hotspot.r_workload_hotspot.08"), "uptime"], rows),
                 refs=[D_HOT], source="nodes_stats.json"))
     return out
 

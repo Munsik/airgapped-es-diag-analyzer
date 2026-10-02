@@ -523,6 +523,15 @@ class Context(object):
     def is_frozen_only(self, node):
         return self.tier_of(node) == "frozen"
 
+    def recently_restarted(self, node):
+        """True when the node has been up for less than node_compare_min_uptime_hours.
+
+        Such a node has cold caches and cumulative counters that cover a short window, so it is left out
+        when nodes are compared with each other. Unknown uptime counts as settled.
+        """
+        up = node.uptime_ms
+        return bool(up) and up < self.t["node_compare_min_uptime_hours"] * 3600000
+
     def watermark(self, kind):
         """kind: low|high|flood_stage|flood_stage.frozen -> raw string"""
         key = "cluster.routing.allocation.disk.watermark." + kind

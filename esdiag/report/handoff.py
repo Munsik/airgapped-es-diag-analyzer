@@ -7,6 +7,7 @@ Unlike the analysis report, it follows these rules:
   - Masking is applied to every string, and no summary is produced if an identifier survives (mask.Masker.leaks).
 """
 
+from .. import bottleneck as btl
 from ..i18n import T, N_, all_T
 from ..model import Severity
 from ..util import truncate
@@ -93,6 +94,17 @@ def render(result, masker, level, tool_version):
         md.append("| %s | %s | %d | %d | %d | %d |"
                   % (a["area"], a["status"], a["critical"], a["warning"], a["info"], a["ok"]))
     md.append("")
+
+    rows = result.bottleneck()
+    if rows:
+        md.append("## " + T("btl.title"))
+        md.append("")
+        md.append("| %s | %s | %s |" % (T("btl.col.q"), T("btl.col.v"), T("btl.col.b")))
+        md.append("| --- | --- | --- |")
+        for r in rows:
+            q, v, b, _nx = btl.cells(r)
+            md.append("| %s | %s | %s |" % (_cell(masker, q), _cell(masker, v), _cell(masker, b)))
+        md.append("")
 
     act = result.priority()
     md.append(T("report.handoff.render.16"))
