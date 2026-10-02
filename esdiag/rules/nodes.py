@@ -144,9 +144,9 @@ def r_gc(ctx):
 
 
 def r_os(ctx):
-    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window."""
+    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). A container node (os.cgroup present) with cpu% below load_host_cpu_pct_max is not rated: inside a container the load average can be the host's, so it is listed as Info. swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window."""
     out = []
-    rows, load_warn, load_crit, swap_on, throttle = [], [], [], [], []
+    rows, load_warn, load_crit, swap_on, throttle, load_host = [], [], [], [], [], []
     swap_used = []
     for n in ctx.nodes:
         cpus = n.processors or 0
@@ -155,7 +155,11 @@ def r_os(ctx):
         rows.append([n.name, ctx.tier_of(n) or ("master" if n.is_master_eligible else ",".join(n.roles)),
                      fmt_num(cpus), n.cpu_pct if n.cpu_pct is not None else "-",
                      l1, l5, l15, ("%.2f" % per) if per else "-", fmt_bytes(n.swap_total)])
-        if per is not None:
+        in_container = isinstance(dig(n.stats, "os", "cgroup"), dict) and bool(dig(n.stats, "os", "cgroup"))
+        if per is not None and per >= ctx.t["load_per_cpu_warn"] and in_container \
+                and n.cpu_pct is not None and n.cpu_pct < ctx.t["load_host_cpu_pct_max"]:
+            load_host.append(n.name)    # load average inside a container can be the host's; the node itself is idle
+        elif per is not None:
             if per >= ctx.t["load_per_cpu_crit"]:
                 load_crit.append(n.name)
             elif per >= ctx.t["load_per_cpu_warn"]:
@@ -188,6 +192,15 @@ def r_os(ctx):
             impact=T("rules.nodes.r_os.08"),
             recommend=T("rules.nodes.r_os.09"),
             evidence=ev, affected=load_crit + load_warn, source="nodes_stats.json"))
+    if load_host and not (load_crit or load_warn):
+        out.append(Finding(
+            "OS-001", CAT, Severity.INFO, T("rules.nodes.r_os.37"),
+            observed=T("rules.nodes.r_os.38") % (ctx.t["load_host_cpu_pct_max"], ", ".join(load_host)),
+            impact=T("rules.nodes.r_os.39"),
+            recommend=T("rules.nodes.r_os.40"),
+            evidence=ev, affected=load_host, source="nodes_stats.json"))
+    elif load_host:
+        out[-1].observed += T("rules.nodes.r_os.41") % ", ".join(load_host)
     if swap_on:
         out.append(Finding(
             "OS-002", CAT, Severity.WARNING, T("rules.nodes.r_os.10"),
@@ -260,7 +273,8 @@ def r_os(ctx):
 def r_write_latency(ctx):
     """Average flush, refresh and merge time per node (nodes_stats indices.flush/refresh/merges total_time / total).
 
-    Frozen-only nodes are skipped, and so is any metric with fewer than write_latency_min_ops operations.
+    Only nodes that hold write-target shards are rated: warm and cold nodes run ILM force merges, whose long merges are expected.
+    Any metric with fewer than write_latency_min_ops operations is skipped.
     Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
     and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;
     read them with IDX-005 (merge throttling) and IDX-014 (indexing throttled).
@@ -268,9 +282,12 @@ def r_write_latency(ctx):
     specs = (("flush", "flush", ctx.t["flush_avg_ms_info"], ctx.t["flush_avg_ms_warn"]),
              ("refresh", "refresh", ctx.t["refresh_avg_ms_info"], ctx.t["refresh_avg_ms_warn"]),
              ("merge", "merges", ctx.t["merge_avg_ms_info"], ctx.t["merge_avg_ms_warn"]))
+    from .shards import _write_targets_now
+    writes = _write_targets_now(ctx)
+    writers = set(s.get("node") for s in ctx.shards if s.get("index") in writes and s.get("node"))
     rows, warn, info = [], [], []
     for n in ctx.data_nodes:
-        if ctx.is_frozen_only(n):
+        if ctx.is_frozen_only(n) or n.name not in writers:
             continue
         cells, hit = [], None
         for key, sect, lim_info, lim_warn in specs:

@@ -405,13 +405,13 @@ old share = old collection_time / uptime, old GC per hour = old count / uptime (
 | Findings | OS-001 High CPU load / OS-002 Swap enabled / OS-003 Container CPU throttling occurred / OS-004 High file descriptor usage / OS-005 bootstrap.memory_lock not applied / OS-006 Recently restarted nodes / OS-007 Most nodes restarted recently |
 | Evidence basis | Official / Tool threshold |
 | Possible severities | Critical, Warning, Info |
-| Thresholds | `cgroup_throttle_ratio_crit` = 0.05 ([Tool] throttled / elapsed periods)<br>`cgroup_throttle_ratio_warn` = 0.01 ([Tool] throttled / elapsed periods)<br>`fd_used_pct_warn` = 70 ([Tool] Open files / maximum (official minimum limit is 65,535))<br>`load_per_cpu_crit` = 1.5 ([Tool] load15 / CPU cores)<br>`load_per_cpu_warn` = 1.0 ([Tool] load15 / CPU cores)<br>`restart_share_warn` = 0.5 ([Tool] Share of nodes restarted within uptime_short_hours)<br>`uptime_short_hours` = 6 ([Tool] Treats the node as recently restarted) |
+| Thresholds | `cgroup_throttle_ratio_crit` = 0.05 ([Tool] throttled / elapsed periods)<br>`cgroup_throttle_ratio_warn` = 0.01 ([Tool] throttled / elapsed periods)<br>`fd_used_pct_warn` = 70 ([Tool] Open files / maximum (official minimum limit is 65,535))<br>`load_host_cpu_pct_max` = 20 ([Tool] Container nodes below this CPU percentage are not rated on load average)<br>`load_per_cpu_crit` = 1.5 ([Tool] load15 / CPU cores)<br>`load_per_cpu_warn` = 1.0 ([Tool] load15 / CPU cores)<br>`restart_share_warn` = 0.5 ([Tool] Share of nodes restarted within uptime_short_hours)<br>`uptime_short_hours` = 6 ([Tool] Treats the node as recently restarted) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes.json / nodes_stats.json |
 
 **Decision logic**
 
-load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window.
+load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). A container node (os.cgroup present) with cpu% below load_host_cpu_pct_max is not rated: inside a container the load average can be the host's, so it is listed as Info. swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window.
 
 ### DISK-001, DISK-002, DISK-003, DISK-004, DISK-005: Disk flood stage exceeded
 
@@ -540,7 +540,8 @@ Different specs across tiers are normal design, so differences between tiers are
 
 Average flush, refresh and merge time per node (nodes_stats indices.flush/refresh/merges total_time / total).
 
-Frozen-only nodes are skipped, and so is any metric with fewer than write_latency_min_ops operations.
+Only nodes that hold write-target shards are rated: warm and cold nodes run ILM force merges, whose long merges are expected.
+Any metric with fewer than write_latency_min_ops operations is skipped.
 Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
 and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;
 read them with IDX-005 (merge throttling) and IDX-014 (indexing throttled).
@@ -734,7 +735,7 @@ merges.total_throttled_time / merges.total_time >= merge_throttle_ratio_warn and
 
 **Decision logic**
 
-For indices with query_total >= min_query_total_for_latency, average query latency = query_time / query_total. >= search_latency_ms_crit → Critical, >= warn → Warning (PERF-001). Average indexing time per document = index_time / index_total is rated the same way with index_latency_ms_crit / warn (PERF-002). These are cumulative averages, not p99.
+For indices with query_total >= min_query_total_for_latency, average query latency = query_time / query_total. >= search_latency_ms_crit → Critical, >= warn → Warning (PERF-001). Average indexing time per document = index_time / index_total is rated the same way with index_latency_ms_crit / warn (PERF-002). These are cumulative averages, not p99. Partially mounted (frozen) indices are not rated for search latency: they read from the snapshot repository on cache misses, so slower searches are expected there (see FRZ-001).
 
 ### IDX-006: Index/search failure counters are non-zero
 
@@ -750,6 +751,7 @@ For indices with query_total >= min_query_total_for_latency, average query laten
 **Decision logic**
 
 Indices with indexing.index_failed or search.query_failure > 0. Warning if user indices are included, Info if only system indices are.
+Sorted by the failure ratio, index_failed / (index_failed + index_total), so indices that lose a large share of their writes come first.
 
 ### MAP-001, MAP-002: Indices with a raised mapping field limit
 
@@ -766,7 +768,7 @@ Indices with indexing.index_failed or search.query_failure > 0. Warning if user 
 
 **Decision logic**
 
-User index with mapping.total_fields.limit > 1000 (the default) → Warning (MAP-001), or Info if all such indices have ignore_dynamic_beyond_limit=true. Total field count in cluster_stats > 100,000 → Info (MAP-002).
+User index with mapping.total_fields.limit > 1000 (the default) → Warning (MAP-001), or Info if all such indices have ignore_dynamic_beyond_limit=true. Searchable snapshot mounts are skipped (read-only). Total field count in cluster_stats > 100,000 → Info (MAP-002).
 
 ### IDX-007: Heavily indexed indices with refresh_interval explicitly set to 1s or less
 
@@ -1734,6 +1736,7 @@ Counts fields per index from the actual mappings in mapping.json, using the offi
 Field count >= total_fields.limit × mapping_fields_near_limit_pct → Warning (MAP-004; Info only if every listed index has ignore_dynamic_beyond_limit=true).
 Indices without ignore_dynamic_beyond_limit are listed first because they are the ones that can fail indexing; the table also shows
 who manages the data stream template (Fleet package or Elastic), since integration templates usually set the ignore option.
+Searchable snapshot mounts are skipped because they are read-only.
 text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × 80% → Warning (MAP-006).
 
 ### VEC-005: High-dimension float vectors in live indices are not quantized
@@ -2346,6 +2349,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `merge_avg_ms_info` | 20,000 | [Tool] Field baseline: average merge time per merge |
 | `merge_avg_ms_warn` | 40,000 | [Tool] Field baseline |
 | `write_latency_min_ops` | 100 | [Tool] Minimum flushes/refreshes/merges before a node average is rated |
+| `load_host_cpu_pct_max` | 20 | [Tool] Container nodes below this CPU percentage are not rated on load average |
 | `write_shard_skew_warn` | 0.5 | [Tool] (max - min) / average of write-target shards per node in a tier |
 | `write_shard_skew_min` | 3 | [Tool] Minimum difference in write-target shards before it is reported |
 | `restart_share_warn` | 0.5 | [Tool] Share of nodes restarted within uptime_short_hours |

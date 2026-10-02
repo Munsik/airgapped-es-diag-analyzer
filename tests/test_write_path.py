@@ -78,6 +78,11 @@ def build(root, version="9.4.4", uuid="uuid-A", name="c1", restart=False):
                          "refresh": {"total": 1000, "total_time_in_millis": 1000 * (50 if slow else 5)},
                          "merges": {"total": 1000, "total_time_in_millis": 1000 * 1000}}
         st["jvm"]["uptime_in_millis"] = 3600 * 1000 if restart else 10 ** 10
+        if st["name"] == "warm-1":       # ILM force merges: long merges, no write targets
+            st["indices"]["merges"]["total_time_in_millis"] = 1000 * 60000
+        if st["name"] == "frozen-1":     # container with host load but idle CPU
+            st["os"] = {"cpu": {"percent": 1, "load_average": {"1m": 4.0, "5m": 4.0, "15m": 4.0}},
+                        "cgroup": {"cpu": {"stat": {"number_of_elapsed_periods": 100, "number_of_times_throttled": 0}}}}
     w(root, "nodes.json", ni)
     w(root, "nodes_stats.json", ns)
     w(root, "version.json", {"cluster_name": name, "cluster_uuid": uuid, "version": {"number": version}})
@@ -94,10 +99,14 @@ def build(root, version="9.4.4", uuid="uuid-A", name="c1", restart=False):
     fields = dict(("f%03d" % i, {"type": "keyword"}) for i in range(95))
     w(root, "mapping.json", {
         ds[0]: {"mappings": {"properties": fields}},
-        "custom-wide": {"mappings": {"properties": fields}}})
+        "custom-wide": {"mappings": {"properties": fields}},
+        "partial-mounted-wide": {"mappings": {"properties": fields}}})
     b.settings[ds[0]]["settings"]["index"]["mapping"] = {"total_fields": {"limit": "100", "ignore_dynamic_beyond_limit": "true"}}
     b.settings["custom-wide"] = {"settings": {"index": {"number_of_shards": "1", "number_of_replicas": "0",
                                                         "mapping": {"total_fields": {"limit": "100"}}}}}
+    b.settings["partial-mounted-wide"] = {"settings": {"index": {
+        "number_of_shards": "1", "mapping": {"total_fields": {"limit": "100"}},
+        "store": {"type": "snapshot", "snapshot": {"partial": "true", "snapshot_name": "s"}}}}}
     w(root, "settings.json", b.settings)
     w(root, "index_templates.json", {"index_templates": [
         {"name": "logs-app-default-tpl", "index_template": {"index_patterns": ["logs-app-*"],
@@ -122,6 +131,11 @@ def run_lang(lang, tmp):
     check(pre + "PERF-012 lists hot-1 only", p12 and [r[0] for r in p12.evidence["rows"]] == ["hot-1"],
           p12 and p12.evidence["rows"])
     check(pre + "PERF-012 skips frozen", p12 and not any(r[0] == "frozen-1" for r in p12.evidence["rows"]))
+    check(pre + "PERF-012 skips warm (force merges, no write targets)",
+          p12 and not any(r[0] == "warm-1" for r in p12.evidence["rows"]))
+    o1 = f.get("OS-001")
+    check(pre + "OS-001 idle container node is Info only", o1 is not None and o1.severity == Severity.INFO
+          and "frozen-1" in (o1.observed or ""), o1 and (o1.severity, o1.observed))
 
     s16 = f.get("SHD-016")
     check(pre + "SHD-016 warning (write shards on hot-1)", s16 is not None and s16.severity == Severity.WARNING)
@@ -153,6 +167,9 @@ def run_lang(lang, tmp):
         rows = m4.evidence["rows"]
         check(pre + "MAP-004 lists the index without ignore first", rows[0][0] == "custom-wide", rows)
         check(pre + "MAP-004 shows the Fleet package", any(r[5] == "fleet:app" for r in rows), rows)
+        check(pre + "MAP-004 skips searchable snapshot mounts", not any(r[0] == "partial-mounted-wide" for r in rows), rows)
+    i6 = f.get("IDX-006")
+    check(pre + "IDX-006 not raised without failures", i6 is None)
 
     check(pre + "no OS-007 without a restart", "OS-007" not in f)
 

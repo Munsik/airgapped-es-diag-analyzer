@@ -90,6 +90,7 @@ DEFAULTS = {
     "merge_avg_ms_info": 20000,                      # [Tool] Field baseline: average merge time per merge
     "merge_avg_ms_warn": 40000,                      # [Tool] Field baseline
     "write_latency_min_ops": 100,                    # [Tool] Minimum flushes/refreshes/merges before a node average is rated
+    "load_host_cpu_pct_max": 20,                     # [Tool] Container node below this cpu% is not rated on load average
     "write_shard_skew_warn": 0.5,                    # [Tool] (max - min) / average of write-target shards per node in a tier
     "write_shard_skew_min": 3,                       # [Tool] Minimum difference in write-target shards before it is reported
     "restart_share_warn": 0.5,                       # [Tool] Share of nodes restarted within uptime_short_hours

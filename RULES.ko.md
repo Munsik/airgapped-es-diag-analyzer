@@ -405,13 +405,13 @@ old 비중 = old collection_time / uptime, 시간당 old GC = old count / uptime
 | 판정 항목 | OS-001 CPU load 높음 / OS-002 Swap 활성화 / OS-003 컨테이너 CPU throttling 발생 / OS-004 파일 디스크립터 사용률 높음 / OS-005 bootstrap.memory_lock 미적용 / OS-006 최근 재기동된 노드 존재 / OS-007 대부분의 노드가 최근 재시작함 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
 | 가능 심각도 | 치명, 주의, 참고 |
-| 임계값 | `cgroup_throttle_ratio_crit` = 0.05 — [도구] throttled / elapsed periods<br>`cgroup_throttle_ratio_warn` = 0.01 — [도구] throttled / elapsed periods<br>`fd_used_pct_warn` = 70 — [도구] 열린 파일 / 최대(공식 최소 한도는 65,535)<br>`load_per_cpu_crit` = 1.5 — [도구] load15 / CPU 코어<br>`load_per_cpu_warn` = 1.0 — [도구] load15 / CPU 코어<br>`restart_share_warn` = 0.5 — [도구] uptime_short_hours 안에 재시작한 노드 비율<br>`uptime_short_hours` = 6 — [도구] 최근 재기동 판단 |
+| 임계값 | `cgroup_throttle_ratio_crit` = 0.05 — [도구] throttled / elapsed periods<br>`cgroup_throttle_ratio_warn` = 0.01 — [도구] throttled / elapsed periods<br>`fd_used_pct_warn` = 70 — [도구] 열린 파일 / 최대(공식 최소 한도는 65,535)<br>`load_host_cpu_pct_max` = 20 — [도구] 이 cpu% 미만인 컨테이너 노드는 load average 로 판정하지 않음<br>`load_per_cpu_crit` = 1.5 — [도구] load15 / CPU 코어<br>`load_per_cpu_warn` = 1.0 — [도구] load15 / CPU 코어<br>`restart_share_warn` = 0.5 — [도구] uptime_short_hours 안에 재시작한 노드 비율<br>`uptime_short_hours` = 6 — [도구] 최근 재기동 판단 |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes.json / nodes_stats.json |
 
 **판정 로직**
 
-load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주의(OS-001, 두 구간의 노드를 모두 표시). swap_total > 0 이고 mlockall 이 true 가 아님 → 주의(OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → 치명, >= warn → 주의(OS-003). open_fd / max_fd >= fd_used_pct_warn → 주의(OS-004). mlockall=false 이고 swap 없음 → 참고(OS-005). uptime < uptime_short_hours → 주의(OS-006). uptime_short_hours 안에 재시작한 노드가 restart_share_warn 이상 → 주의(OS-007): 누적 카운터(GC, rejection, 캐시, 지연 평균)가 짧은 기간만 반영한다.
+load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주의(OS-001, 두 구간의 노드를 모두 표시). 컨테이너 노드(os.cgroup 있음)에서 cpu% 가 load_host_cpu_pct_max 미만이면 판정하지 않는다. 컨테이너 안의 load average 는 호스트 값일 수 있으므로 참고로만 표시한다. swap_total > 0 이고 mlockall 이 true 가 아님 → 주의(OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → 치명, >= warn → 주의(OS-003). open_fd / max_fd >= fd_used_pct_warn → 주의(OS-004). mlockall=false 이고 swap 없음 → 참고(OS-005). uptime < uptime_short_hours → 주의(OS-006). uptime_short_hours 안에 재시작한 노드가 restart_share_warn 이상 → 주의(OS-007): 누적 카운터(GC, rejection, 캐시, 지연 평균)가 짧은 기간만 반영한다.
 
 ### DISK-001, DISK-002, DISK-003, DISK-004, DISK-005 — 디스크 flood stage 초과
 
@@ -540,7 +540,8 @@ tier 가 다르면 스펙이 다른 것이 정상 설계이므로 tier 간 차�
 
 노드별 flush, refresh, merge 평균 시간(nodes_stats indices.flush/refresh/merges 의 total_time / total).
 
-frozen 전용 노드와 작업 수가 write_latency_min_ops 미만인 항목은 제외한다.
+쓰기 대상 shard 가 있는 노드만 판정한다. warm·cold 노드는 ILM force merge 를 하므로 merge 가 긴 것이 정상이다.
+작업 수가 write_latency_min_ops 미만인 항목은 제외한다.
 평균 >= *_avg_ms_warn → 주의, >= *_avg_ms_info → 참고(PERF-012). 공식 수치가 아닌 현장 기준값이며,
 노드 시작 이후 누적 평균이다. flush·merge 가 느리면 대개 스토리지가 따라가지 못하는 것이므로
 IDX-005(merge throttling), IDX-014(indexing throttle)와 함께 본다.
@@ -734,7 +735,7 @@ merges.total_throttled_time / merges.total_time >= merge_throttle_ratio_warn 이
 
 **판정 로직**
 
-query_total >= min_query_total_for_latency 인 인덱스의 평균 query 지연 = query_time / query_total. >= search_latency_ms_crit → 치명, >= warn → 주의(PERF-001). 문서당 평균 색인 시간 = index_time / index_total 에 대해 index_latency_ms_crit / warn 으로 동일 판정(PERF-002). 누적 평균이며 p99 가 아니다.
+query_total >= min_query_total_for_latency 인 인덱스의 평균 query 지연 = query_time / query_total. >= search_latency_ms_crit → 치명, >= warn → 주의(PERF-001). 문서당 평균 색인 시간 = index_time / index_total 에 대해 index_latency_ms_crit / warn 으로 동일 판정(PERF-002). 누적 평균이며 p99 가 아니다. partial mount(frozen) 인덱스는 캐시에 없는 데이터를 스냅샷 저장소에서 읽으므로 검색이 느린 것이 정상이라 검색 지연을 판정하지 않는다(FRZ-001 참고).
 
 ### IDX-006 — 색인/검색 실패 카운터 존재
 
@@ -750,6 +751,7 @@ query_total >= min_query_total_for_latency 인 인덱스의 평균 query 지연 
 **판정 로직**
 
 indexing.index_failed 또는 search.query_failure > 0 인 인덱스. 사용자 인덱스가 포함되면 주의, 시스템 인덱스뿐이면 참고.
+실패 비율 index_failed / (index_failed + index_total) 순으로 정렬해, 쓰기의 큰 비중을 잃는 인덱스를 앞에 둔다.
 
 ### MAP-001, MAP-002 — 매핑 필드 한도 상향 인덱스
 
@@ -766,7 +768,7 @@ indexing.index_failed 또는 search.query_failure > 0 인 인덱스. 사용자 �
 
 **판정 로직**
 
-사용자 인덱스의 mapping.total_fields.limit > 1000(기본값) → 주의(MAP-001). cluster_stats 전체 필드 수 > 100,000 → 주의(MAP-002).
+사용자 인덱스의 mapping.total_fields.limit > 1000(기본값) → 주의(MAP-001), 해당 인덱스가 모두 ignore_dynamic_beyond_limit=true 면 참고. searchable snapshot mount 는 읽기 전용이라 제외한다. cluster_stats 전체 필드 수 > 100,000 → 참고(MAP-002).
 
 ### IDX-007 — 대량 색인 인덱스에 refresh_interval 1초 이하 명시
 
@@ -1734,6 +1736,7 @@ mapping.json 의 실제 매핑으로 인덱스별 필드 수를 공식 산정 �
 필드 수 >= total_fields.limit × mapping_fields_near_limit_pct → 주의(MAP-004, ignore_dynamic_beyond_limit=true 면 참고).
 ignore_dynamic_beyond_limit 가 없는 인덱스는 색인이 실패할 수 있으므로 표의 앞에 둔다. data stream template 을 누가 관리하는지
 (Fleet package 또는 Elastic)도 함께 보여 준다. integration template 은 대개 ignore 옵션을 켜 두기 때문이다.
+searchable snapshot mount 는 읽기 전용이라 제외한다.
 text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_fields.limit × 80% → 주의(MAP-006).
 
 ### VEC-005 — 실제 인덱스의 고차원 float 벡터가 비양자화
@@ -2346,6 +2349,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `merge_avg_ms_info` | 20,000 | [도구] 현장 기준: merge 1회 평균 시간 |
 | `merge_avg_ms_warn` | 40,000 | [도구] 현장 기준 |
 | `write_latency_min_ops` | 100 | [도구] 노드 평균을 판정하기 위한 최소 flush/refresh/merge 횟수 |
+| `load_host_cpu_pct_max` | 20 | [도구] 이 cpu% 미만인 컨테이너 노드는 load average 로 판정하지 않음 |
 | `write_shard_skew_warn` | 0.5 | [도구] tier 안 노드별 쓰기 대상 shard 의 (최대 - 최소) / 평균 |
 | `write_shard_skew_min` | 3 | [도구] 보고할 최소 쓰기 대상 shard 차이 |
 | `restart_share_warn` | 0.5 | [도구] uptime_short_hours 안에 재시작한 노드 비율 |

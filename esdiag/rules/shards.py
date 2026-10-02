@@ -278,12 +278,12 @@ def r_merge_throttle(ctx):
 
 
 def r_search_latency(ctx):
-    """For indices with query_total >= min_query_total_for_latency, average query latency = query_time / query_total. >= search_latency_ms_crit → Critical, >= warn → Warning (PERF-001). Average indexing time per document = index_time / index_total is rated the same way with index_latency_ms_crit / warn (PERF-002). These are cumulative averages, not p99."""
+    """For indices with query_total >= min_query_total_for_latency, average query latency = query_time / query_total. >= search_latency_ms_crit → Critical, >= warn → Warning (PERF-001). Average indexing time per document = index_time / index_total is rated the same way with index_latency_ms_crit / warn (PERF-002). These are cumulative averages, not p99. Partially mounted (frozen) indices are not rated for search latency: they read from the snapshot repository on cache misses, so slower searches are expected there (see FRZ-001)."""
     rows_slow, rows_idx = [], []
     for name, st in ctx.indices_stats.items():
         qt = num(st, "total", "search", "query_total")
         qm = num(st, "total", "search", "query_time_in_millis")
-        if qt >= ctx.t["min_query_total_for_latency"]:
+        if qt >= ctx.t["min_query_total_for_latency"] and not ctx.is_partial_mount(name):
             avg = qm / float(qt)
             if avg >= ctx.t["search_latency_ms_warn"]:
                 rows_slow.append([name, fmt_num(qt), "%.1fms" % avg,
@@ -327,20 +327,23 @@ def r_search_latency(ctx):
 
 
 def r_index_failures(ctx):
-    """Indices with indexing.index_failed or search.query_failure > 0. Warning if user indices are included, Info if only system indices are."""
+    """Indices with indexing.index_failed or search.query_failure > 0. Warning if user indices are included, Info if only system indices are.
+    Sorted by the failure ratio, index_failed / (index_failed + index_total), so indices that lose a large share of their writes come first."""
     rows, user_rows = [], []
     for name, st in ctx.indices_stats.items():
         failed = num(st, "total", "indexing", "index_failed")
         qf = num(st, "total", "search", "query_failure")
         if failed or qf:
-            row = [name, fmt_num(failed), fmt_num(qf),
-                   fmt_num(dig(st, "total", "indexing", "index_total")), failed + qf]
+            it = num(st, "total", "indexing", "index_total")
+            ratio = failed / float(failed + it) if (failed + it) else 0
+            row = [name, fmt_num(failed), "%.1f%%" % (ratio * 100) if failed else "-", fmt_num(qf),
+                   fmt_num(it), (ratio, failed + qf)]
             rows.append(row)
             if not ctx.is_system_index(name):
                 user_rows.append(row)
     if not rows:
         return []
-    rows.sort(key=lambda r: -r[4])
+    rows.sort(key=lambda r: (-r[5][0], -r[5][1]))
     return [Finding(
         "IDX-006", CAT,
         Severity.WARNING if user_rows else Severity.INFO,
@@ -348,17 +351,17 @@ def r_index_failures(ctx):
         observed=T("rules.shards.r_index_failures.03") % len(rows),
         impact=T("rules.shards.r_index_failures.04"),
         recommend=T("rules.shards.r_index_failures.05"),
-        evidence=table(["index", "index_failed", "query_failure", "index_total"],
-                       [r[:4] for r in rows[: ctx.t["top_n"]]]),
+        evidence=table(["index", "index_failed", T("rules.shards.r_index_failures.06"), "query_failure", "index_total"],
+                       [r[:5] for r in rows[: ctx.t["top_n"]]]),
         source="indices_stats.json")]
 
 
 def r_mapping_limits(ctx):
-    """User index with mapping.total_fields.limit > 1000 (the default) → Warning (MAP-001), or Info if all such indices have ignore_dynamic_beyond_limit=true. Total field count in cluster_stats > 100,000 → Info (MAP-002)."""
+    """User index with mapping.total_fields.limit > 1000 (the default) → Warning (MAP-001), or Info if all such indices have ignore_dynamic_beyond_limit=true. Searchable snapshot mounts are skipped (read-only). Total field count in cluster_stats > 100,000 → Info (MAP-002)."""
     rows, ignored = [], 0
     for name in ctx.index_settings.keys():
-        if ctx.is_system_index(name):
-            continue        # System indices (Kibana, Security, etc.) use product-set values, nothing to act on
+        if ctx.is_system_index(name) or ctx.is_searchable_snapshot(name):
+            continue        # System indices use product-set values; searchable snapshot mounts are read-only, nothing to act on
         lim = ctx.index_setting(name, "index.mapping.total_fields.limit")
         if lim is None:
             continue

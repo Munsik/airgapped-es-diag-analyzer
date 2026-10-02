@@ -394,7 +394,7 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 120 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 121 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
@@ -437,7 +437,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 863 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 868 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 51 scenarios and checks the severity too | 51 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |

@@ -66,11 +66,14 @@ def r_mapping_limits_actual(ctx):
     Field count >= total_fields.limit × mapping_fields_near_limit_pct → Warning (MAP-004; Info only if every listed index has ignore_dynamic_beyond_limit=true).
     Indices without ignore_dynamic_beyond_limit are listed first because they are the ones that can fail indexing; the table also shows
     who manages the data stream template (Fleet package or Elastic), since integration templates usually set the ignore option.
+    Searchable snapshot mounts are skipped because they are read-only.
     text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × 80% → Warning (MAP-006).
     """
     near, fd_rows, nest_rows = [], [], []
     ignored = 0
     for name, m in _mappings(ctx):
+        if ctx.is_searchable_snapshot(name):
+            continue        # mounted indices are read-only: no new fields can arrive
         total, nested, fielddata = m["total"], m["nested"], m["fielddata"]
         try:
             limit = int(ctx.index_setting(name, "index.mapping.total_fields.limit") or 1000)
