@@ -21,10 +21,10 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 import re  # noqa: E402
 
-from esdiag.engine import analyze  # noqa: E402
-from esdiag.i18n import T, set_lang  # noqa: E402
-from esdiag.mask import Masker  # noqa: E402
-from esdiag.report import handoff  # noqa: E402
+from esdoctor.engine import analyze  # noqa: E402
+from esdoctor.i18n import T, set_lang  # noqa: E402
+from esdoctor.mask import Masker  # noqa: E402
+from esdoctor.report import handoff  # noqa: E402
 
 FAILS, N = [], [0]
 HANGUL = re.compile(u"[\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]")

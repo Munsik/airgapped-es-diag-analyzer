@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Catalog checks for esdiag/i18n/ko.txt and en.txt.
+"""Catalog checks for esdoctor/i18n/ko.txt and en.txt.
 
     python3 tests/i18n_check.py                      # check the full catalogs
     python3 tests/i18n_check.py --chunk en_part.txt  # check a partial English file against ko.txt
@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-from esdiag.i18n import parse  # noqa: E402
+from esdoctor.i18n import parse  # noqa: E402
 
 HANGUL = re.compile("[가-힣ㄱ-ㆎ]")
 DASHES = ("—", "–")
@@ -89,12 +89,12 @@ def check(ko, en, keys=None):
 
 
 def main():
-    ko, _ = load(os.path.join(ROOT, "esdiag", "i18n", "ko.txt"))
+    ko, _ = load(os.path.join(ROOT, "esdoctor", "i18n", "ko.txt"))
     if len(sys.argv) == 3 and sys.argv[1] == "--chunk":
         en, order = load(sys.argv[2])
         errs = check(ko, en, keys=order)
     else:
-        en, _ = load(os.path.join(ROOT, "esdiag", "i18n", "en.txt"))
+        en, _ = load(os.path.join(ROOT, "esdoctor", "i18n", "en.txt"))
         errs = check(ko, en)
     for e in errs:
         print(e)

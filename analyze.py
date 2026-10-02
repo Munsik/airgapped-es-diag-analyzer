@@ -23,14 +23,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from esdiag.i18n import LANGS, T, detect_lang, set_lang
-from esdiag import __version__
-from esdiag.engine import analyze
-from esdiag.rules import MODULES
-from esdiag.model import Severity
-from esdiag.report import html as html_report
-from esdiag.report import text as text_report
-from esdiag.thresholds import DEFAULTS
+from esdoctor.i18n import LANGS, T, detect_lang, set_lang
+from esdoctor import __version__
+from esdoctor.engine import analyze
+from esdoctor.rules import MODULES
+from esdoctor.model import Severity
+from esdoctor.report import html as html_report
+from esdoctor.report import text as text_report
+from esdoctor.thresholds import DEFAULTS
 
 
 def _safe_stdout():
@@ -98,11 +98,11 @@ def main(argv=None):
                    help=T("analyze.main.16"))
     p.add_argument("--debug", action="store_true", help=T("analyze.main.17"))
     p.add_argument("--check-env", action="store_true", help=T("analyze.main.18"))
-    p.add_argument("--version", action="version", version="esdiag %s" % __version__)
+    p.add_argument("--version", action="version", version="esdoctor %s" % __version__)
     args = p.parse_args(argv)
 
     if args.check_env:
-        from esdiag.envcheck import run as check_env
+        from esdoctor.envcheck import run as check_env
         return check_env(args.out_dir)
     if args.print_thresholds:
         print(json.dumps(DEFAULTS, indent=2, ensure_ascii=False))
@@ -205,8 +205,8 @@ def _support_summary(result, args, lang, multi, first_map, written):
     Returns (exit code, alias map of the first language). The map file is written once; a later language
     gets its own map file only if its aliases differ.
     """
-    from esdiag.mask import Masker
-    from esdiag.report import handoff
+    from esdoctor.mask import Masker
+    from esdoctor.report import handoff
     level = args.mask or "basic"
     masker = Masker(result.ctx, level=level)
     try:

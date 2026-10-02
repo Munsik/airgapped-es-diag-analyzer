@@ -14,12 +14,12 @@ import random
 import sys
 import traceback
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from esdiag.loader import Bundle
-from esdiag.context import Context
-from esdiag.thresholds import merge
-from esdiag.rules import all_rules
-from esdiag import diff as diff_mod
-from esdiag.i18n import set_lang
+from esdoctor.loader import Bundle
+from esdoctor.context import Context
+from esdoctor.thresholds import merge
+from esdoctor.rules import all_rules
+from esdoctor import diff as diff_mod
+from esdoctor.i18n import set_lang
 
 # Only exceptions are collected, so the output language does not matter.
 set_lang("en")

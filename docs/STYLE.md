@@ -1,6 +1,6 @@
 # Writing style and glossary
 
-This file applies to all user-facing text: `esdiag/i18n/ko.txt`, `esdiag/i18n/en.txt`, the READMEs, RULES, COVERAGE, and CLI help.
+This file applies to all user-facing text: `esdoctor/i18n/ko.txt`, `esdoctor/i18n/en.txt`, the READMEs, RULES, COVERAGE, and CLI help.
 `tests/i18n_check.py` enforces the mechanical rules (dashes, banned phrases, placeholders, tags, spaces).
 
 ## Common rules (both languages)

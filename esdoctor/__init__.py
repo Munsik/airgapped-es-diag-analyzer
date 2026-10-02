@@ -1,5 +1,5 @@
 """
-esdiag - Elastic support-diagnostics offline analyzer.
+esdoctor - Elastic support-diagnostics offline analyzer.
 
 Analyzes Elasticsearch support-diagnostics bundles in air-gapped environments.
 Uses only the Python 3.8+ standard library and makes no outbound network calls.

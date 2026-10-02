@@ -21,12 +21,12 @@ import sys
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, ROOT)
 
-import esdiag                                                  # noqa: E402
-from esdiag.basis import _MAP                                  # noqa: E402
-from esdiag.diff import DIFF_RULES                             # noqa: E402
-from esdiag.rules import MODULES, all_rules                    # noqa: E402
-from esdiag.settings_kb import KB, PREFIX_RULES                # noqa: E402
-from esdiag.thresholds import DEFAULTS                         # noqa: E402
+import esdoctor                                                  # noqa: E402
+from esdoctor.basis import _MAP                                  # noqa: E402
+from esdoctor.diff import DIFF_RULES                             # noqa: E402
+from esdoctor.rules import MODULES, all_rules                    # noqa: E402
+from esdoctor.settings_kb import KB, PREFIX_RULES                # noqa: E402
+from esdoctor.thresholds import DEFAULTS                         # noqa: E402
 
 FAILS, OKS = [], []
 
@@ -49,7 +49,7 @@ P = {
         thr="%d thresholds", kb_index="index settings knowledge base (%d settings)",
         chg_rules="%d single-bundle rules and %d bundle-comparison rules", chg_ids="%d finding IDs",
         chg_kb="%d settings in the knowledge base",
-        ver="**Version %s**", rules_ver="| Tool version | esdiag %s |",
+        ver="**Version %s**", rules_ver="| Tool version | esdoctor %s |",
         base="| Elasticsearch version used as the baseline | **%d.%d** |",
         checked="| Date checked against the official docs | %s |",
         opts="### Options", exit="\nExit codes:",
@@ -62,7 +62,7 @@ P = {
         thr="임계값 %d개", kb_index="인덱스 설정 지식 베이스(%d종)",
         chg_rules="단일 번들 판정 룰 %d개, 두 번들 비교 룰 %d개", chg_ids="판정 ID %d개",
         chg_kb="설정 지식 베이스 %d종",
-        ver="**버전 %s**", rules_ver="| 도구 버전 | esdiag %s |",
+        ver="**버전 %s**", rules_ver="| 도구 버전 | esdoctor %s |",
         base="| 판정 기준 Elasticsearch 버전 | **%d.%d** |",
         checked="| 공식 문서 대조 시점 | %s |",
         opts="### 옵션", exit="\n종료 코드:",
@@ -94,12 +94,12 @@ def check_lang(lang, bundle):
     check(tag + "CHANGELOG finding id count", p["chg_ids"] % len(_MAP) in chg, "code: %d" % len(_MAP))
     check(tag + "CHANGELOG KB count", p["chg_kb"] % n_kb in chg)
 
-    check(tag + "README tool version", p["ver"] % esdiag.__version__ in readme, "code: %s" % esdiag.__version__)
-    check(tag + "CHANGELOG latest version", "## [%s]" % esdiag.__version__ in chg, "code: %s" % esdiag.__version__)
-    check(tag + "RULES tool version", p["rules_ver"] % esdiag.__version__ in rules_md)
-    check(tag + "README baseline version", p["base"] % esdiag.ES_BASELINE in readme)
-    check(tag + "README docs check date", p["checked"] % esdiag.DOCS_CHECKED in readme)
-    for ver, target, _desc in esdiag.VERSION_GATES:
+    check(tag + "README tool version", p["ver"] % esdoctor.__version__ in readme, "code: %s" % esdoctor.__version__)
+    check(tag + "CHANGELOG latest version", "## [%s]" % esdoctor.__version__ in chg, "code: %s" % esdoctor.__version__)
+    check(tag + "RULES tool version", p["rules_ver"] % esdoctor.__version__ in rules_md)
+    check(tag + "README baseline version", p["base"] % esdoctor.ES_BASELINE in readme)
+    check(tag + "README docs check date", p["checked"] % esdoctor.DOCS_CHECKED in readme)
+    for ver, target, _desc in esdoctor.VERSION_GATES:
         check(tag + "README version gate %d.%d %s" % (ver + (target,)),
               "| %d.%d | %s |" % (ver + (target,)) in readme.replace("\\*", "*"))
 
@@ -110,7 +110,7 @@ def check_lang(lang, bundle):
     missing = [o for o in opts if o not in table]
     check(tag + "README options table lists every CLI option", not missing, "missing: %s" % missing)
 
-    for name in re.findall(r"`((?:esdiag|tools|tests|docs)/[\w/]+\.(?:py|sh|md))`", readme + cov + chg):
+    for name in re.findall(r"`((?:esdoctor|tools|tests|docs)/[\w/]+\.(?:py|sh|md))`", readme + cov + chg):
         check(tag + "referenced file exists: %s" % name, os.path.exists(os.path.join(ROOT, name)))
     for name in re.findall(r"\]\(([A-Za-z]+(?:\.ko)?\.md)\)", readme + cov + chg + rules_md):
         check(tag + "linked document exists: %s" % name, os.path.exists(os.path.join(ROOT, name)))
@@ -152,8 +152,8 @@ def main():
         break
 
     emitted = set()
-    for path in [os.path.join(ROOT, "esdiag", "rules", f) for f in os.listdir(os.path.join(ROOT, "esdiag", "rules"))
-                 if f.endswith(".py")] + [os.path.join(ROOT, "esdiag", "engine.py")]:
+    for path in [os.path.join(ROOT, "esdoctor", "rules", f) for f in os.listdir(os.path.join(ROOT, "esdoctor", "rules"))
+                 if f.endswith(".py")] + [os.path.join(ROOT, "esdoctor", "engine.py")]:
         for node in ast.walk(ast.parse(read(os.path.relpath(path, ROOT)))):
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Finding" and node.args:
                 a = node.args[0]

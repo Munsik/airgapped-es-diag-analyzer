@@ -1,10 +1,10 @@
-# esdiag: offline analyzer for Elasticsearch diagnostic bundles
+# esdoctor: offline analyzer for Elasticsearch diagnostic bundles
 
 English · [한국어](README.ko.md)
 
 **Version 0.14.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
 
-esdiag analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
+esdoctor analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
 
 It is built for environments where security policy does not allow diagnostic files to leave the site.
 It makes no network calls and uses only the Python standard library.
@@ -91,7 +91,7 @@ On an air-gapped network, download the repository as a zip, carry it in, unzip i
 | `--support-summary FILE` | Also write a summary (Markdown) for a case with Elastic Support. Written only when specified |
 | `--mask none\|basic\|strict` | Masking level for the summary (default `basic`). Use with `--support-summary` |
 | `--mask-map FILE` | Path of the alias-to-original-name mapping JSON (default: summary file name + `.mask-map.json`). Use with `--support-summary` |
-| `--lang both\|ko\|en\|auto` | Output language (default `both`). `both` writes Korean and English and adds `.ko` / `.en` to the file name (`report.html` becomes `report.ko.html` and `report.en.html`). `ko` and `en` write one language and use the name exactly as given. `auto` follows the locale. The environment variable `ESDIAG_LANG` also sets it |
+| `--lang both\|ko\|en\|auto` | Output language (default `both`). `both` writes Korean and English and adds `.ko` / `.en` to the file name (`report.html` becomes `report.ko.html` and `report.en.html`). `ko` and `en` write one language and use the name exactly as given. `auto` follows the locale. The environment variable `ESDOCTOR_LANG` also sets it |
 | `--no-ok` | Hide OK findings |
 | `--only MODULE` | Run only the given rule modules (`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `cost` `ops` `deep` `runtime` `syscalls`). Can be repeated |
 | `--thresholds FILE` | JSON file that overrides thresholds (unknown keys are ignored with a warning) |
@@ -128,8 +128,8 @@ If the console cannot display Korean, the analysis still runs. File output is al
 | --- | --- |
 | Source clone (default) | `git clone`, then `python3 analyze.py ...` |
 | Source zip | Download the zip from GitHub and unzip it, then `python3 analyze.py ...` |
-| Single file (optional) | Build `dist/esdiag.pyz` with `python3 tools/build_pyz.py`, then `python3 esdiag.pyz ...` |
-| Standalone executable (optional) | Build `dist/esdiag` with `bash tools/build_binary.sh`, then `./esdiag ...` (no Python needed) |
+| Single file (optional) | Build `dist/esdoctor.pyz` with `python3 tools/build_pyz.py`, then `python3 esdoctor.pyz ...` |
+| Standalone executable (optional) | Build `dist/esdoctor` with `bash tools/build_binary.sh`, then `./esdoctor ...` (no Python needed) |
 
 ### Choosing by environment
 
@@ -146,7 +146,7 @@ In every case the diagnostic bundle stays inside the air-gapped network. You can
 ### Building the standalone executable (optional)
 
 ```bash
-bash tools/build_binary.sh     # dist/esdiag (PyInstaller, uses a build-only virtual environment)
+bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, uses a build-only virtual environment)
 ```
 
 - PyInstaller is needed only on the build machine. The result runs without Python.
@@ -184,7 +184,7 @@ Logs show when an event happened, so collect in `local` or `remote` mode when yo
 | Large bundle check | 9.5.3 bundle (2,494 indices, cluster\_state 190MB, mapping 178MB): analysis in 7 seconds, peak memory about 0.9GB |
 | Minimum supported version | 8.0 (earlier versions work only for the APIs that exist in that version) |
 
-The baseline is fixed in `esdiag/__init__.py` and printed at the top of every report.
+The baseline is fixed in `esdoctor/__init__.py` and printed at the top of every report.
 If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 
 ### Findings that depend on the version
@@ -275,7 +275,7 @@ Settings that differ from the default are reported with the **original default /
 
 The official precedence applies (transient > persistent > elasticsearch.yml > default).
 `cluster_settings_defaults` in the bundle already reflects yml values, and a key set through the API does not report its default.
-So the **original default comes from a knowledge base built from the official docs (`esdiag/settings_kb.py`)**. Settings not registered there are reported with the value only and marked "no description registered".
+So the **original default comes from a knowledge base built from the official docs (`esdoctor/settings_kb.py`)**. Settings not registered there are reported with the value only and marked "no description registered".
 Settings judged by a dedicated rule (for example ARS, reported as CLU-014) are marked `[finding: rule ID]` in the table and left out of the SET severity, so nothing is reported twice.
 
 ### Oversharding analysis
@@ -363,7 +363,7 @@ A cause counts when its finding is Critical or Warning (PERF-013 also at Info). 
 
 ## Elastic Support summary
 
-With `--support-summary FILE`, esdiag writes a Markdown summary, separate from the analysis report, that you can attach to a case with Elastic Support. Without the option, no summary is written.
+With `--support-summary FILE`, esdoctor writes a Markdown summary, separate from the analysis report, that you can attach to a case with Elastic Support. Without the option, no summary is written.
 
 ```bash
 python3 analyze.py diagnostic.zip --support-summary support-summary.md            # default basic masking
@@ -412,17 +412,17 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 141 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 141 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdoctor/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
 ## Adding rules
 
-1. Write a function in the matching module (`esdiag/rules/*.py`) and register it in `RULES`.
+1. Write a function in the matching module (`esdoctor/rules/*.py`) and register it in `RULES`.
 2. State the exact condition in the function docstring. It is copied as is into RULES.md.
-3. Declare the input files it needs in `REQUIRES` in `esdiag/rules/__init__.py`.
-4. Register the evidence basis of the finding ID in `esdiag/basis.py`.
-5. Add any new threshold to `esdiag/thresholds.py` with a source comment.
+3. Declare the input files it needs in `REQUIRES` in `esdoctor/rules/__init__.py`.
+4. Register the evidence basis of the finding ID in `esdoctor/basis.py`.
+5. Add any new threshold to `esdoctor/thresholds.py` with a source comment.
 6. Read numeric fields with `num()`, lists of dicts with `dicts()`, lists of strings with `strs()` and dict entries with `items()`. This absorbs format differences between versions.
 7. Add a scenario to `tests/drive_branches.py` that makes the finding actually fire, so no branch is left unexecuted.
 8. Confirm that `bash tests/run_all.sh <bundle>` passes.
@@ -441,7 +441,7 @@ def r_example(ctx):
                     source="nodes_stats.json")]
 ```
 
-Do not write user-facing text in the code. Add it under the same key to `esdiag/i18n/ko.txt` and `en.txt` and read it with `T("key")`. Text inside tables is marked with `N_("key")` and converted with `tr()` where it is used. Follow [docs/STYLE.md](docs/STYLE.md) for style and terms. `tests/i18n_check.py` checks the keys, `%` fields and dashes of both catalogs.
+Do not write user-facing text in the code. Add it under the same key to `esdoctor/i18n/ko.txt` and `en.txt` and read it with `T("key")`. Text inside tables is marked with `N_("key")` and converted with `tr()` where it is used. Follow [docs/STYLE.md](docs/STYLE.md) for style and terms. `tests/i18n_check.py` checks the keys, `%` fields and dashes of both catalogs.
 
 When a string contains a literal `%` and a `%` format is applied to it, write `%%` (`tests/lint_format.py` checks this).
 
@@ -495,7 +495,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 .
 ├── analyze.py                  # CLI entry point
 ├── requirements.txt            # no external dependencies (for the record)
-├── esdiag/
+├── esdoctor/
 │   ├── __init__.py             # version, baseline, version gates
 │   ├── loader.py               # zip/directory loading, absorbs api, local and remote layouts
 │   ├── context.py              # normalization layer: effective watermarks, tiers, index classification, write targets, deployment type
@@ -514,7 +514,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 │   └── report/                 # text (console, Markdown) · html (single file) · handoff (Support summary)
 ├── tools/
 │   ├── gen_rules_doc.py        # RULES.md generator + consistency check
-│   ├── build_pyz.py            # build the single-file distribution (esdiag.pyz), optional
+│   ├── build_pyz.py            # build the single-file distribution (esdoctor.pyz), optional
 │   └── build_binary.sh         # build the standalone executable, optional
 ├── tests/
 │   ├── run_all.sh              # run all checks
@@ -542,12 +542,12 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 ## Release procedure
 
 ```bash
-# 1) Update __version__ in esdiag/__init__.py and CHANGELOG.md
+# 1) Update __version__ in esdoctor/__init__.py and CHANGELOG.md
 # 2) Regenerate the specification and run all checks
 python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <bundle-for-validation.zip>
 # 3) (optional) Build the single-file distribution and attach it to GitHub Releases (do not commit it)
-python3 tools/build_pyz.py        # dist/esdiag.pyz
+python3 tools/build_pyz.py        # dist/esdoctor.pyz
 git tag v0.13.0
 ```
 

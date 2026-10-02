@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Message catalogs and language selection.
 
-All user-facing text lives in esdiag/i18n/<lang>.txt, one entry per line:
+All user-facing text lives in esdoctor/i18n/<lang>.txt, one entry per line:
 
     key = "text"
 
@@ -13,7 +13,7 @@ between ko.txt and en.txt, in the same order. Call sites keep the % operator:
 Language is process-wide state set once per output run with set_lang(). Rules and renderers
 never cache translated text across a language switch.
 
-Catalogs are read with pkgutil.get_data so they also work from a zipapp (esdiag.pyz) and from a
+Catalogs are read with pkgutil.get_data so they also work from a zipapp (esdoctor.pyz) and from a
 PyInstaller bundle.
 """
 
@@ -79,8 +79,8 @@ def catalog(lang):
 
 
 def detect_lang():
-    """ESDIAG_LANG, then the locale: ko when it starts with ko, otherwise en."""
-    env = os.environ.get("ESDIAG_LANG", "").strip().lower()
+    """ESDOCTOR_LANG, then the locale: ko when it starts with ko, otherwise en."""
+    env = os.environ.get("ESDOCTOR_LANG", "").strip().lower()
     if env in LANGS:
         return env
     loc = os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES") or os.environ.get("LANG") or ""

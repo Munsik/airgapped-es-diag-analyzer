@@ -22,7 +22,7 @@ import sys
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 
-from esdiag.i18n import parse  # noqa: E402
+from esdoctor.i18n import parse  # noqa: E402
 
 SPEC = re.compile(r"%(\([^)]*\))?[#0\- +]*(\*|\d+)?(\.(\*|\d+))?[diouxXeEfFgGcrsa%]")
 MARKER = re.compile(r"\[[^\[\]|%]*\|[^\[\]|%]*\]")
@@ -44,7 +44,7 @@ def count_specs(fmt):
 
 
 def load(lang):
-    with open(os.path.join(ROOT, "esdiag", "i18n", lang + ".txt"), encoding="utf-8") as fh:
+    with open(os.path.join(ROOT, "esdoctor", "i18n", lang + ".txt"), encoding="utf-8") as fh:
         return parse(fh.read(), lang + ".txt")
 
 
@@ -61,7 +61,7 @@ def main():
     problems = []
     used = set()
     checked = 0
-    files = sorted(glob.glob(os.path.join(ROOT, "esdiag", "**", "*.py"), recursive=True)) + \
+    files = sorted(glob.glob(os.path.join(ROOT, "esdoctor", "**", "*.py"), recursive=True)) + \
         [os.path.join(ROOT, "analyze.py")]
     for path in files:
         rel = os.path.relpath(path, ROOT)

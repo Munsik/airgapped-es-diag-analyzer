@@ -14,11 +14,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from esdiag.basis import _MAP, basis_of                      # noqa: E402
-from esdiag.i18n import T, tr, set_lang, get_lang            # noqa: E402
-from esdiag.model import Severity                            # noqa: E402
-from esdiag.rules.guidance import _gc_logging_enabled        # noqa: E402
-from esdiag.util import parse_bytes, parse_time_ms           # noqa: E402
+from esdoctor.basis import _MAP, basis_of                      # noqa: E402
+from esdoctor.i18n import T, tr, set_lang, get_lang            # noqa: E402
+from esdoctor.model import Severity                            # noqa: E402
+from esdoctor.rules.guidance import _gc_logging_enabled        # noqa: E402
+from esdoctor.util import parse_bytes, parse_time_ms           # noqa: E402
 
 GB, TB = 1024 ** 3, 1024 ** 4
 PASS, FAIL = [], []
@@ -68,7 +68,7 @@ def test_units():
 
 
 def test_watermark():
-    from esdiag.context import Context
+    from esdoctor.context import Context
     defaults = {
         "cluster.routing.allocation.disk.watermark.low": "85%",
         "cluster.routing.allocation.disk.watermark.high": "90%",
@@ -111,7 +111,7 @@ def test_basis():
 
 
 def test_bundle(path):
-    from esdiag.engine import analyze
+    from esdoctor.engine import analyze
     r = analyze(path)
     check("healthy bundle: zero rule errors", not r.errors, str([e["rule"] for e in r.errors]))
     unmapped = sorted(set(f.id.split(".")[0] for f in r.findings
@@ -136,7 +136,7 @@ def test_bundle(path):
 
 
 def test_settings_kb():
-    from esdiag.settings_kb import compare, KB, DOCS
+    from esdoctor.settings_kb import compare, KB, DOCS
     ch, d, *_ = compare("indices.recovery.max_bytes_per_sec", "100mb")
     check("setting compare: 40mb to 100mb is an increase", ch and d == "up")
     ch, d, *_ = compare("indices.recovery.max_bytes_per_sec", "40mb")
@@ -155,9 +155,9 @@ def test_settings_kb():
 
 def test_kb_against_bundle(path):
     """Compare KB defaults with the defaults ES reported. Only keys set in yml and auto-computed keys may differ."""
-    from esdiag.loader import Bundle
-    from esdiag.settings_kb import KB, compare, AUTO_DEFAULT
-    from esdiag.rules.settings import _flat
+    from esdoctor.loader import Bundle
+    from esdoctor.settings_kb import KB, compare, AUTO_DEFAULT
+    from esdoctor.rules.settings import _flat
     b = Bundle(path)
     d = _flat((b.json("cluster_settings_defaults.json") or {}).get("defaults") or {})
     yml = set()
@@ -175,8 +175,8 @@ def test_kb_against_bundle(path):
 def test_multitier(path):
     """Recreate a multi-tier, rollover and searchable snapshot setup (regression guard for false positives seen in a 9.5 multi-tier customer bundle)."""
     import json, shutil, tempfile, zipfile
-    from esdiag.engine import analyze
-    from esdiag.rules.runtime import _classify
+    from esdoctor.engine import analyze
+    from esdoctor.rules.runtime import _classify
     tmp = tempfile.mkdtemp()
     try:
         with zipfile.ZipFile(path) as z:
@@ -254,7 +254,7 @@ def test_multitier(path):
 def test_capacity_and_mounts(path):
     """Regression guard: hot tier saturation, warning-level nodes listed, fully/partial mount size findings, empty write index."""
     import json, shutil, tempfile, zipfile
-    from esdiag.engine import analyze
+    from esdoctor.engine import analyze
     tmp = tempfile.mkdtemp()
     try:
         with zipfile.ZipFile(path) as z:
@@ -324,8 +324,8 @@ def test_partial_bundle(path):
     """Partial bundle with core files only: there must be no false "not configured" findings."""
     import shutil
     import tempfile
-    from esdiag.engine import analyze
-    from esdiag.loader import Bundle
+    from esdoctor.engine import analyze
+    from esdoctor.loader import Bundle
     src = Bundle(path)
     tmp = tempfile.mkdtemp()
     try:
@@ -354,7 +354,7 @@ def test_partial_bundle(path):
 
 def test_thresholds():
     import io, contextlib
-    from esdiag.thresholds import merge, DEFAULTS
+    from esdoctor.thresholds import merge, DEFAULTS
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
         t = merge({"heap_used_pct_warnn": 1, "heap_used_pct_warn": 70})

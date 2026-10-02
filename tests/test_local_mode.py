@@ -14,9 +14,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from esdiag.engine import Result, analyze  # noqa: E402
-from esdiag.i18n import set_lang  # noqa: E402
-from esdiag.model import Finding  # noqa: E402
+from esdoctor.engine import Result, analyze  # noqa: E402
+from esdoctor.i18n import set_lang  # noqa: E402
+from esdoctor.model import Finding  # noqa: E402
 
 FAILS, N = [], [0]
 

@@ -21,13 +21,13 @@ import sys
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 
-import esdiag                                                     # noqa: E402
-from esdiag import rules as rules_pkg                             # noqa: E402
-from esdiag.basis import OFFICIAL, FACT, TOOL, CALC, basis_of     # noqa: E402
-from esdiag.basis import label as basis_label                     # noqa: E402
-from esdiag.i18n import LANGS, T, catalog, set_lang, tr           # noqa: E402
-from esdiag.model import Severity                                 # noqa: E402
-from esdiag.thresholds import DEFAULTS                            # noqa: E402
+import esdoctor                                                     # noqa: E402
+from esdoctor import rules as rules_pkg                             # noqa: E402
+from esdoctor.basis import OFFICIAL, FACT, TOOL, CALC, basis_of     # noqa: E402
+from esdoctor.basis import label as basis_label                     # noqa: E402
+from esdoctor.i18n import LANGS, T, catalog, set_lang, tr           # noqa: E402
+from esdoctor.model import Severity                                 # noqa: E402
+from esdoctor.thresholds import DEFAULTS                            # noqa: E402
 
 MODULES = ["cluster", "settings", "nodes", "shards", "sharding", "guidance", "hotspot", "cost", "ops", "deep",
            "runtime", "syscalls", "diff"]
@@ -103,7 +103,7 @@ def collect():
     import importlib
     out = []
     for mod in MODULES:
-        modname = "esdiag.diff" if mod == "diff" else "esdiag.rules." + mod
+        modname = "esdoctor.diff" if mod == "diff" else "esdoctor.rules." + mod
         module_obj = importlib.import_module(modname)
         path = module_obj.__file__
         tree = ast.parse(io.open(path, encoding="utf-8").read())
@@ -162,19 +162,19 @@ def render(data, unused, filename):
     w("")
     w(T("gen.th.item.value"))
     w("| --- | --- |")
-    w(T("gen.row.version") % esdiag.__version__)
-    w(T("gen.row.baseline") % esdiag.ES_BASELINE)
-    w(T("gen.row.docs") % esdiag.DOCS_CHECKED)
-    w(T("gen.row.validated") % tr(esdiag.VALIDATED_BUNDLE))
-    w(T("gen.row.field") % tr(esdiag.FIELD_TESTED))
-    w(T("gen.row.modes") % tr(esdiag.VALIDATED_MODES))
-    w(T("gen.row.min") % esdiag.SUPPORTED_MIN)
+    w(T("gen.row.version") % esdoctor.__version__)
+    w(T("gen.row.baseline") % esdoctor.ES_BASELINE)
+    w(T("gen.row.docs") % esdoctor.DOCS_CHECKED)
+    w(T("gen.row.validated") % tr(esdoctor.VALIDATED_BUNDLE))
+    w(T("gen.row.field") % tr(esdoctor.FIELD_TESTED))
+    w(T("gen.row.modes") % tr(esdoctor.VALIDATED_MODES))
+    w(T("gen.row.min") % esdoctor.SUPPORTED_MIN)
     w("")
     w(T("gen.h.gates"))
     w("")
     w(T("gen.th.gates"))
     w("| --- | --- | --- |")
-    for ver, target, desc in esdiag.VERSION_GATES:
+    for ver, target, desc in esdoctor.VERSION_GATES:
         w("| %d.%d | %s | %s |" % (ver + (target, tr(desc))))
     w("")
     w(T("gen.gate.note"))
@@ -222,7 +222,7 @@ def render(data, unused, filename):
             if it["th"]:
                 w(T("gen.row.thresholds") % "<br>".join(
                     "`%s` = %s%s" % (k, _fmt_val(DEFAULTS.get(k)),
-                                     (T("gen.th.suffix") % T("th." + k)) if ("th." + k) in catalog(esdiag_lang()) else "")
+                                     (T("gen.th.suffix") % T("th." + k)) if ("th." + k) in catalog(esdoctor_lang()) else "")
                     for k in sorted(it["th"])))
             req = rules_pkg.REQUIRES.get(it["name"])
             if req:
@@ -237,7 +237,7 @@ def render(data, unused, filename):
             w("")
             w(doc.replace("\n    ", "\n").strip())
             w("")
-    from esdiag import settings_kb as kb
+    from esdoctor import settings_kb as kb
     w(T("gen.h.kb"))
     w("")
     w(T("gen.kb.intro"))
@@ -245,7 +245,7 @@ def render(data, unused, filename):
     w(T("gen.kb.b1"))
     w(T("gen.kb.b2"))
     w(T("gen.kb.b3"))
-    w(T("gen.kb.b4") % esdiag.ES_BASELINE)
+    w(T("gen.kb.b4") % esdoctor.ES_BASELINE)
     w(T("gen.kb.b5"))
     w("")
     w(T("gen.th.kb"))
@@ -287,7 +287,7 @@ def render(data, unused, filename):
     w(T("gen.th.all"))
     w("| --- | --- | --- |")
     for k in DEFAULTS:
-        w("| `%s` | %s | %s |" % (k, _fmt_val(DEFAULTS[k]), catalog(esdiag_lang()).get("th." + k, "")))
+        w("| `%s` | %s | %s |" % (k, _fmt_val(DEFAULTS[k]), catalog(esdoctor_lang()).get("th." + k, "")))
     w("")
     if unused:
         w(T("gen.unused") % ", ".join("`%s`" % u for u in unused))
@@ -295,8 +295,8 @@ def render(data, unused, filename):
     return "\n".join(L)
 
 
-def esdiag_lang():
-    from esdiag.i18n import get_lang
+def esdoctor_lang():
+    from esdoctor.i18n import get_lang
     return get_lang()
 
 

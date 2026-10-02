@@ -1,14 +1,14 @@
 # 판정 룰 명세 (RULES.ko.md)
 
 > 이 문서는 `tools/gen_rules_doc.py` 가 소스 코드에서 자동 생성합니다. 직접 수정하지 마십시오.
-> 임계값은 `esdiag/thresholds.py` 의 현재 기본값이며, `--thresholds` 로 재정의할 수 있습니다.
+> 임계값은 `esdoctor/thresholds.py` 의 현재 기본값이며, `--thresholds` 로 재정의할 수 있습니다.
 > English version: [RULES.md](RULES.md)
 
 ## 기준점
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdiag 0.14.0 |
+| 도구 버전 | esdoctor 0.14.0 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
 | 공식 문서 대조 시점 | 2026-10 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -42,7 +42,7 @@
 
 ## 입력 파일 규칙
 
-각 룰은 필요한 입력 파일을 선언합니다(`esdiag/rules/__init__.py` 의 `REQUIRES`). 파일이 번들에 없으면 해당 룰을 실행하지 않고 리포트의 '입력 미수집으로 판정하지 않은 항목' 에 기록합니다. '파일 없음(미수집)' 과 '설정 없음(미설정)' 을 구분하기 위함입니다.
+각 룰은 필요한 입력 파일을 선언합니다(`esdoctor/rules/__init__.py` 의 `REQUIRES`). 파일이 번들에 없으면 해당 룰을 실행하지 않고 리포트의 '입력 미수집으로 판정하지 않은 항목' 에 기록합니다. '파일 없음(미수집)' 과 '설정 없음(미설정)' 을 구분하기 위함입니다.
 
 ## 목차
 
@@ -2427,7 +2427,7 @@ query_total 증가량을 초당 작업 수로 바꾼다(replica 작업 포함). 
 
 ## 설정 지식 베이스
 
-SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 영향입니다(`esdiag/settings_kb.py`).
+SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 영향입니다(`esdoctor/settings_kb.py`).
 
 - 적용 우선순위(공식): transient > persistent > elasticsearch.yml > 기본값
 - dynamic 은 `PUT _cluster/settings`(또는 인덱스 설정 API)로 바꿀 수 있고, `null` 로 지정하면 기본값으로 돌아갑니다.

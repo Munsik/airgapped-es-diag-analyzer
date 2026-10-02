@@ -18,8 +18,8 @@ import tempfile
 import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from esdiag.engine import analyze  # noqa: E402
-from esdiag.i18n import set_lang  # noqa: E402
+from esdoctor.engine import analyze  # noqa: E402
+from esdoctor.i18n import set_lang  # noqa: E402
 
 # Checks use finding ids and severities only, so they do not depend on the language.
 set_lang("en")

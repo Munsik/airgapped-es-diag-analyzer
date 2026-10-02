@@ -1,4 +1,4 @@
-# esdiag — Elasticsearch 진단 번들 오프라인 분석기
+# esdoctor — Elasticsearch 진단 번들 오프라인 분석기
 
 [English](README.md) · 한국어
 
@@ -91,7 +91,7 @@ python3 analyze.py diag-0814-1800.zip --baseline diag-0814-0900.zip --baseline d
 | `--support-summary FILE` | Elastic 공식 Support 팀 문의용 요약(Markdown)을 함께 만듭니다. 지정한 때만 생성 |
 | `--mask none\|basic\|strict` | 요약의 마스킹 단계(기본 `basic`). `--support-summary` 와 함께 사용 |
 | `--mask-map FILE` | 별칭 ↔ 원래 이름 매핑 JSON 경로(기본: 요약 파일명 + `.mask-map.json`). `--support-summary` 와 함께 사용 |
-| `--lang both\|ko\|en\|auto` | 출력 언어(기본 `both`). `both` 는 한국어와 영어를 모두 만들며 파일명에 `.ko` / `.en` 을 붙입니다(`report.html` → `report.ko.html`, `report.en.html`). `ko` / `en` 은 한 언어만 지정한 이름 그대로 씁니다. `auto` 는 로캘을 따릅니다. 환경 변수 `ESDIAG_LANG` 으로도 지정합니다 |
+| `--lang both\|ko\|en\|auto` | 출력 언어(기본 `both`). `both` 는 한국어와 영어를 모두 만들며 파일명에 `.ko` / `.en` 을 붙입니다(`report.html` → `report.ko.html`, `report.en.html`). `ko` / `en` 은 한 언어만 지정한 이름 그대로 씁니다. `auto` 는 로캘을 따릅니다. 환경 변수 `ESDOCTOR_LANG` 으로도 지정합니다 |
 | `--no-ok` | 정상 판정 숨김 |
 | `--only MODULE` | 특정 룰 모듈만 실행(`cluster` `settings` `nodes` `shards` `sharding` `guidance` `hotspot` `cost` `ops` `deep` `runtime` `syscalls`), 반복 지정 가능 |
 | `--thresholds FILE` | 임계값 재정의 JSON(알 수 없는 키는 경고 후 무시) |
@@ -128,8 +128,8 @@ zlib 이 빠진 최소 빌드 Python 이면 번들을 압축 해제한 디렉터
 | --- | --- |
 | 소스 클론(기본) | `git clone` 후 `python3 analyze.py ...` |
 | 소스 zip 반입 | GitHub 에서 zip 다운로드 후 압축 해제 → `python3 analyze.py ...` |
-| 단일 파일(선택) | `python3 tools/build_pyz.py` 로 `dist/esdiag.pyz` 생성 → `python3 esdiag.pyz ...` |
-| 단독 실행 파일(선택) | `bash tools/build_binary.sh` 로 `dist/esdiag` 생성 → `./esdiag ...` (Python 불필요) |
+| 단일 파일(선택) | `python3 tools/build_pyz.py` 로 `dist/esdoctor.pyz` 생성 → `python3 esdoctor.pyz ...` |
+| 단독 실행 파일(선택) | `bash tools/build_binary.sh` 로 `dist/esdoctor` 생성 → `./esdoctor ...` (Python 불필요) |
 
 ### 환경별 선택
 
@@ -146,7 +146,7 @@ zlib 이 빠진 최소 빌드 Python 이면 번들을 압축 해제한 디렉터
 ### 단독 실행 파일 빌드(선택)
 
 ```bash
-bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상환경 사용)
+bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, 빌드 전용 가상환경 사용)
 ```
 
 - PyInstaller 는 빌드 머신에만 필요합니다. 결과물은 Python 없이 실행됩니다.
@@ -184,7 +184,7 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 | 대형 번들 검증 | 9.5.3 번들(인덱스 2,494개, cluster\_state 190MB, mapping 178MB): 분석 7초, 최대 메모리 약 0.9GB |
 | 지원 최소 버전 | 8.0(미만은 해당 버전에 있는 API 범위에서만 동작) |
 
-기준은 `esdiag/__init__.py` 에 고정되어 있고 모든 리포트 상단에 표기됩니다.
+기준은 `esdoctor/__init__.py` 에 고정되어 있고 모든 리포트 상단에 표기됩니다.
 기준보다 새로운 버전을 분석하면 `VER-001`(참고)이 표시됩니다.
 
 ### 버전에 따라 판정이 갈리는 지점
@@ -275,7 +275,7 @@ frozen 전용 노드는 shared cache 가 디스크 대부분을 미리 점유하
 
 공식 적용 우선순위(transient > persistent > elasticsearch.yml > 기본값)를 따릅니다.
 번들의 `cluster_settings_defaults` 는 yml 값이 반영된 값이고, API 로 명시한 키는 기본값을 보고하지 않습니다.
-그래서 **원래 기본값은 공식 문서 기준 지식 베이스(`esdiag/settings_kb.py`)** 를 쓰고, 등록되지 않은 설정은 "설명 미등록" 으로 값만 보고합니다.
+그래서 **원래 기본값은 공식 문서 기준 지식 베이스(`esdoctor/settings_kb.py`)** 를 쓰고, 등록되지 않은 설정은 "설명 미등록" 으로 값만 보고합니다.
 전용 룰이 따로 판정하는 설정(예: ARS → CLU-014)은 표에 `[판정: 룰ID]` 로 표시하고 SET 심각도에서 빼서 이중 판정을 막습니다.
 
 ### 과다 샤딩 분석
@@ -412,17 +412,17 @@ python3 analyze.py --print-thresholds > my.json   # 기본값 추출
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 141개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
+임계값 141개의 출처(`[공식]` / `[도구]`)는 `esdoctor/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
 
 ---
 
 ## 룰 추가
 
-1. 해당 모듈(`esdiag/rules/*.py`)에 함수를 만들고 `RULES` 에 등록합니다.
+1. 해당 모듈(`esdoctor/rules/*.py`)에 함수를 만들고 `RULES` 에 등록합니다.
 2. 함수 docstring 에 판정 조건을 정확히 적습니다(RULES.md 에 그대로 실립니다).
-3. 필요한 입력 파일을 `esdiag/rules/__init__.py` 의 `REQUIRES` 에 선언합니다.
-4. 판정 ID 의 근거 구분을 `esdiag/basis.py` 에 등록합니다.
-5. 새 임계값은 `esdiag/thresholds.py` 에 출처 주석과 함께 추가합니다.
+3. 필요한 입력 파일을 `esdoctor/rules/__init__.py` 의 `REQUIRES` 에 선언합니다.
+4. 판정 ID 의 근거 구분을 `esdoctor/basis.py` 에 등록합니다.
+5. 새 임계값은 `esdoctor/thresholds.py` 에 출처 주석과 함께 추가합니다.
 6. 숫자 필드는 `num()`, dict 목록은 `dicts()`, 문자열 목록은 `strs()`, dict 항목은 `items()` 로 읽습니다(버전별 형식 차이 대응).
 7. `tests/drive_branches.py` 에 판정이 실제로 발생하는 시나리오를 추가합니다(미실행 분기가 남지 않게).
 8. `bash tests/run_all.sh <번들>` 이 통과하는지 확인합니다.
@@ -440,7 +440,7 @@ def r_example(ctx):
                     source="nodes_stats.json")]
 ```
 
-사용자에게 보이는 문구는 코드에 직접 쓰지 않고 `esdiag/i18n/ko.txt` 와 `en.txt` 에 같은 키로 넣고 `T("키")` 로 읽습니다. 표 안의 문구는 `N_("키")` 로 표시하고 쓰는 곳에서 `tr()` 로 바꿉니다. 문체와 용어는 [docs/STYLE.md](docs/STYLE.md) 를 따르고, `tests/i18n_check.py` 가 두 카탈로그의 키·`%` 필드·대시를 검사합니다.
+사용자에게 보이는 문구는 코드에 직접 쓰지 않고 `esdoctor/i18n/ko.txt` 와 `en.txt` 에 같은 키로 넣고 `T("키")` 로 읽습니다. 표 안의 문구는 `N_("키")` 로 표시하고 쓰는 곳에서 `tr()` 로 바꿉니다. 문체와 용어는 [docs/STYLE.md](docs/STYLE.md) 를 따르고, `tests/i18n_check.py` 가 두 카탈로그의 키·`%` 필드·대시를 검사합니다.
 
 문자열에 `%` 를 쓰고 `%` 포맷을 적용할 때는 `%%` 로 씁니다(`tests/lint_format.py` 가 검사합니다).
 
@@ -494,7 +494,7 @@ bash tests/run_all.sh diagnostic.zip
 .
 ├── analyze.py                  # CLI 진입점
 ├── requirements.txt            # 외부 의존성 없음(명시용)
-├── esdiag/
+├── esdoctor/
 │   ├── __init__.py             # 버전, 판정 기준점, 버전 분기
 │   ├── loader.py               # zip/디렉터리 로딩, api·local·remote 레이아웃 흡수
 │   ├── context.py              # 정규화 계층: 실효 워터마크, tier, 인덱스 분류, 쓰기 대상, 배포 형태
@@ -513,7 +513,7 @@ bash tests/run_all.sh diagnostic.zip
 │   └── report/                 # text(콘솔·Markdown) · html(단일 파일) · handoff(Support 팀 요약)
 ├── tools/
 │   ├── gen_rules_doc.py        # RULES.md 생성기 + 정합성 검사
-│   ├── build_pyz.py            # 단일 파일 배포본(esdiag.pyz) 빌드(선택)
+│   ├── build_pyz.py            # 단일 파일 배포본(esdoctor.pyz) 빌드(선택)
 │   └── build_binary.sh         # 단독 실행 파일 빌드(선택)
 ├── tests/
 │   ├── run_all.sh              # 전체 검증
@@ -541,12 +541,12 @@ bash tests/run_all.sh diagnostic.zip
 ## 릴리스 절차
 
 ```bash
-# 1) esdiag/__init__.py 의 __version__ 과 CHANGELOG.md 를 갱신
+# 1) esdoctor/__init__.py 의 __version__ 과 CHANGELOG.md 를 갱신
 # 2) 명세 재생성과 전체 검증
 python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <검증용 번들.zip>
 # 3) (선택) 단일 파일 배포본 생성 → GitHub Releases 에 첨부(저장소에는 넣지 않음)
-python3 tools/build_pyz.py        # dist/esdiag.pyz
+python3 tools/build_pyz.py        # dist/esdoctor.pyz
 git tag v0.13.0
 ```
 

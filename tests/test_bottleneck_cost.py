@@ -20,13 +20,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 sys.path.insert(0, HERE)
 
-from esdiag.engine import analyze  # noqa: E402
-from esdiag.i18n import set_lang  # noqa: E402
-from esdiag.mask import Masker  # noqa: E402
-from esdiag.model import Severity  # noqa: E402
-from esdiag.report import handoff as handoff_report  # noqa: E402
-from esdiag.report import html as html_report  # noqa: E402
-from esdiag.report import text as text_report  # noqa: E402
+from esdoctor.engine import analyze  # noqa: E402
+from esdoctor.i18n import set_lang  # noqa: E402
+from esdoctor.mask import Masker  # noqa: E402
+from esdoctor.model import Severity  # noqa: E402
+from esdoctor.report import handoff as handoff_report  # noqa: E402
+from esdoctor.report import html as html_report  # noqa: E402
+from esdoctor.report import text as text_report  # noqa: E402
 from test_logsdb import Bundle, COLLECTED_MS, GB, M, w  # noqa: E402
 
 HANGUL = re.compile(u"[가-힣]")
@@ -228,7 +228,7 @@ def run_lang(lang, tmp):
         md = text_report.markdown(res, show_ok=True)
         ht = html_report.render(res)
         hf = handoff_report.render(res, Masker(res.ctx, level="basic"), "basic", "test")
-        from esdiag.i18n import T
+        from esdoctor.i18n import T
         title = T("btl.title")
         check(pre + "summary in every report", all(title in x for x in (out, md, ht, hf)))
     except Exception as exc:  # noqa: BLE001
@@ -382,7 +382,7 @@ def run_variants(tmp):
 
 def run_review(tmp):
     """Cases from the review of a real 14-node bundle."""
-    from esdiag import diff as diff_mod
+    from esdoctor import diff as diff_mod
     set_lang("en")
 
     # bottleneck: a cause on another tier does not explain the symptom

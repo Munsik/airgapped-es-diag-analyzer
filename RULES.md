@@ -1,14 +1,14 @@
 # Rule reference (RULES.md)
 
 > This document is generated from the source code by `tools/gen_rules_doc.py`. Do not edit it by hand.
-> Thresholds are the current defaults in `esdiag/thresholds.py`. Override them with `--thresholds`.
+> Thresholds are the current defaults in `esdoctor/thresholds.py`. Override them with `--thresholds`.
 > Korean version: [RULES.ko.md](RULES.ko.md)
 
 ## Baseline
 
 | Item | Value |
 | --- | --- |
-| Tool version | esdiag 0.14.0 |
+| Tool version | esdoctor 0.14.0 |
 | Elasticsearch baseline version | 9.4 |
 | Official docs checked | 2026-10 |
 | Validated on real bundles | 9.4.4 (ECH, 3 nodes, single tier) / 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), api mode |
@@ -42,7 +42,7 @@ If the analyzed cluster is newer than the baseline version, the report shows `VE
 
 ## Input file rules
 
-Each rule declares the input files it needs (`REQUIRES` in `esdiag/rules/__init__.py`). If a file is missing from the bundle, the rule is not run and is listed in the report under 'Not evaluated: input not collected'. This keeps 'file missing (not collected)' apart from 'setting missing (not set)'.
+Each rule declares the input files it needs (`REQUIRES` in `esdoctor/rules/__init__.py`). If a file is missing from the bundle, the rule is not run and is listed in the report under 'Not evaluated: input not collected'. This keeps 'file missing (not collected)' apart from 'setting missing (not set)'.
 
 ## Contents
 
@@ -2427,7 +2427,7 @@ Compares the Critical and Warning finding ids of the previous and current bundle
 
 ## Settings knowledge base
 
-Official default, kind, meaning and effect of change for each setting used by SET-001 to SET-006 (`esdiag/settings_kb.py`).
+Official default, kind, meaning and effect of change for each setting used by SET-001 to SET-006 (`esdoctor/settings_kb.py`).
 
 - Precedence (official): transient > persistent > elasticsearch.yml > default
 - A dynamic setting can be changed with `PUT _cluster/settings` (or the index settings API). Setting it to `null` restores the default.

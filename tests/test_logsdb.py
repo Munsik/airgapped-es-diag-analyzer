@@ -19,11 +19,11 @@ import tempfile
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 
-from esdiag.engine import analyze  # noqa: E402
-from esdiag.i18n import set_lang  # noqa: E402
-from esdiag.model import Severity  # noqa: E402
-from esdiag.report import html as html_report  # noqa: E402
-from esdiag.report import text as text_report  # noqa: E402
+from esdoctor.engine import analyze  # noqa: E402
+from esdoctor.i18n import set_lang  # noqa: E402
+from esdoctor.model import Severity  # noqa: E402
+from esdoctor.report import html as html_report  # noqa: E402
+from esdoctor.report import text as text_report  # noqa: E402
 
 GB = 1024 ** 3
 M = 1000 * 1000
