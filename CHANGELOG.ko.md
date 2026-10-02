@@ -3,6 +3,34 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.13.0] - 2026-10-02
+
+다른 진단 도구의 판정 기준과 비교해 빠져 있던 쓰기 경로·운영 판정을 추가했습니다. 공식 수치가 없는 임계값은 모두 `[도구]` 로 표기하고 `--thresholds` 로 바꿀 수 있습니다.
+
+### 추가
+
+- PERF-012(도구 판단): 노드별 flush·refresh·merge 평균 시간. flush 800ms / 1200ms, refresh 40ms / 70ms, merge 20초 / 40초 이상이면 참고 / 주의. frozen 전용 노드와 작업 수가 적은 항목은 제외
+- SHD-016(주의, 도구 판단): tier 안에서 쓰기 대상 shard(write index, alias write index, 수집 시점에 색인 중인 index)가 일부 노드에 몰림. (최대 - 최소) / 평균 >= 0.5 이고 차이 3개 이상. SHD-006 은 전체 shard 수를 비교
+- IDX-014(사실 보고): merge 가 밀려 색인이 throttle 됨. 수집 시점에 `is_throttled=true` 면 주의, 누적 throttle 시간만 있으면 참고
+- IDX-015(주의, 공식 기준): shard 복제본당 미커밋 translog 가 `index.translog.flush_threshold_size`(8.8+ 기본 10GB, 이전 512MB) 이상. 1GB 같은 고정 기준은 기본값이 10GB 인 버전에서 오탐이라 쓰지 않음
+- OS-007(주의, 도구 판단): 노드의 절반 이상이 6시간 안에 재시작. 누적 카운터 기반 판정이 짧은 기간만 반영한다고 알림
+- DIF-013(주의): 비교 모드에서 두 번들의 cluster_uuid 가 다르거나(uuid 가 없으면 이름이 다르고 노드가 절반 미만 겹침) 다른 클러스터로 보이면 경고
+- `tests/test_write_path.py`: 새 판정의 분기를 합성 데이터로 두 언어 모두 검증(외부 번들 불필요)
+- 임계값 14개
+
+### 변경
+
+- CLU-017: 5분 이상 task 를 모두 주의로 표시 → action 별로 묶어 task 수와 가장 긴 실행 시간을 표시. 1시간 이상이면 주의, 5분 이상이면 참고. 모니터링·내부 task(`cluster:monitor/*`, `indices:monitor/*`, `internal:*`)는 24시간을 넘을 때만 보고. 쓰기 경로(bulk, reindex, update/delete by query, forcemerge, shrink/split/clone)를 구분해 표시. 실행 시간 정렬이 문자열 순으로 되던 문제도 수정
+- MAP-004: ignore_dynamic_beyond_limit 가 없어 색인이 실패할 수 있는 인덱스를 표 앞에 표시(같은 사용률이면 integration 인덱스가 15행을 채워 가려지던 것), data stream template 관리 주체(`fleet:<package>` / `elastic`) 열 추가
+- 단일 번들 판정 룰 114개, 두 번들 비교 룰 10개(판정 ID 176개 + 비교 DIF-001~013)
+
+### 검토했지만 넣지 않은 것
+
+- 디스크 read/write 지연(ms/op): nodes stats 의 `fs.io_stats` 에는 작업 수와 `io_time_in_millis` 만 있고 read/write 시간 필드가 없어 계산할 수 없음(Elasticsearch `FsInfo` 소스로 확인)
+- OS 메모리 사용률 95% 이상: ES 노드는 filesystem cache 로 메모리를 거의 다 쓰는 것이 정상이라 상시 오탐
+- old GC 1회 이상, heap 32GB 초과 추정, load1m 기준: 이미 시간당 비율(JVM-005), 실제 compressed oops 값(JVM-002~004), load15 기준(OS-001)으로 더 정확하게 판정 중
+- Enterprise ERU 사용량: 계산식을 공식 문서로 확인한 뒤 판단
+
 ## [0.12.0] - 2026-10-02
 
 ### 추가

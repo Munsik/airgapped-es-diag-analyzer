@@ -212,6 +212,19 @@ Limits of the diagnostics bundle: `cluster_settings_defaults` does not hold pure
 | Priority between the implicit 200M condition and `min_*` conditions | Not implemented | The official docs do not describe how they interact |
 | `logsdb_columnar` mode | Not implemented | GA status not confirmed |
 
+
+### 10-2. Write path and operations
+
+| Item | Status | Rule |
+| --- | --- | --- |
+| Indexing is throttled when merges fall behind (Merge settings) | Implemented | IDX-014 |
+| `index.translog.flush_threshold_size` defaults to 10GB (8.8+); uncommitted operations are replayed on recovery (Translog settings) | Implemented | IDX-015 |
+| Average flush, refresh and merge time | Tool threshold | PERF-012 (field baseline, not an official number) |
+| Write-target shards concentrated on some nodes | Tool threshold | SHD-016 |
+| Reliability of cumulative counters after a mass restart | Tool threshold | OS-007 |
+| Whether the compared bundles are from the same cluster | Implemented | DIF-013 |
+| Disk read/write latency (ms/op) | Cannot be evaluated | nodes stats `fs.io_stats` has no read or write time fields |
+
 ---
 
 ## 11. Troubleshooting documents (operational criteria)

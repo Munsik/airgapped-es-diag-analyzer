@@ -103,6 +103,27 @@ def _sign_bytes(v):
 
 
 # ---------------------------------------------------------------- rules
+def r_cluster_identity(base, cur, hours, t):
+    """The two bundles come from different clusters (DIF-013, Warning): cluster_uuid differs, or, without a uuid,
+    the cluster name differs and fewer than half of the node names overlap. The deltas are then not a trend of one cluster."""
+    bu, cu = base.version_doc.get("cluster_uuid"), cur.version_doc.get("cluster_uuid")
+    reasons = []
+    if bu and cu and bu != cu:
+        reasons.append(T("diff.r_cluster_identity.01") % (bu, cu))
+    bn, cn = set(n.name for n in base.nodes), set(n.name for n in cur.nodes)
+    overlap = len(bn & cn) / float(max(len(bn), len(cn), 1))
+    if not (bu and cu) and base.cluster_name != cur.cluster_name and overlap < 0.5:
+        reasons.append(T("diff.r_cluster_identity.02") % (base.cluster_name, cur.cluster_name, overlap * 100))
+    if not reasons:
+        return []
+    return [Finding(
+        "DIF-013", CAT, Severity.WARNING, T("diff.r_cluster_identity.03"),
+        observed=" ".join(reasons),
+        impact=T("diff.r_cluster_identity.04"),
+        recommend=T("diff.r_cluster_identity.05"),
+        source="version.json / nodes.json")]
+
+
 def r_status_change(base, cur, hours, t):
     """When the cluster status differs between the two bundles. Worse -> critical, better -> info."""
     b, c = (base.health.get("status") or "").lower(), (cur.health.get("status") or "").lower()
@@ -373,7 +394,7 @@ def r_index_growth(base, cur, hours, t):
     return out
 
 
-DIFF_RULES = [r_status_change, r_node_restart, r_rejections_delta, r_gc_delta,
+DIFF_RULES = [r_cluster_identity, r_status_change, r_node_restart, r_rejections_delta, r_gc_delta,
               r_breaker_delta, r_disk_projection, r_throughput, r_index_growth]
 
 

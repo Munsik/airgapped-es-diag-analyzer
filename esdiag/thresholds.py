@@ -83,6 +83,20 @@ DEFAULTS = {
 
     # --- Official guidance (production guidance) ---
     "docs_per_shard_warn": 200000000,                # [Official] Fewer than 200 million documents per shard recommended
+    "flush_avg_ms_info": 800,                        # [Tool] Field baseline: average flush time per flush
+    "flush_avg_ms_warn": 1200,                       # [Tool] Field baseline
+    "refresh_avg_ms_info": 40,                       # [Tool] Field baseline: average refresh time per refresh
+    "refresh_avg_ms_warn": 70,                       # [Tool] Field baseline
+    "merge_avg_ms_info": 20000,                      # [Tool] Field baseline: average merge time per merge
+    "merge_avg_ms_warn": 40000,                      # [Tool] Field baseline
+    "write_latency_min_ops": 100,                    # [Tool] Minimum flushes/refreshes/merges before a node average is rated
+    "write_shard_skew_warn": 0.5,                    # [Tool] (max - min) / average of write-target shards per node in a tier
+    "write_shard_skew_min": 3,                       # [Tool] Minimum difference in write-target shards before it is reported
+    "restart_share_warn": 0.5,                       # [Tool] Share of nodes restarted within uptime_short_hours
+    "long_running_task_ms_high": 3600000,            # [Tool] 1 hour: long task becomes a Warning
+    "monitoring_task_ms_info": 86400000,             # [Tool] 24 hours: monitoring/internal tasks are reported only past this
+    "translog_flush_threshold_default": "10gb",      # [Official] index.translog.flush_threshold_size default (8.8+)
+    "translog_flush_threshold_legacy": "512mb",      # [Official] Default before 8.8
     "docs_rollover_overshoot_pct": 5,                # [Tool] Allowed overshoot of a rolled-over shard past 200M docs (ILM checks every poll_interval)
     "docs_per_shard_crit": 1500000000,               # [Tool] Alert when approaching the Lucene limit (2,147,483,519)
     "indices_per_gb_master_heap": 3000,              # [Official] 3000 indices per 1GB of master heap

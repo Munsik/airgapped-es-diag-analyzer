@@ -8,7 +8,7 @@
 
 | Item | Value |
 | --- | --- |
-| Tool version | esdiag 0.12.0 |
+| Tool version | esdiag 0.13.0 |
 | Elasticsearch baseline version | 9.4 |
 | Official docs checked | 2026-09 |
 | Validated on real bundles | 9.4.4 (ECH, 3 nodes, single tier) / 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), api mode |
@@ -23,6 +23,7 @@
 | 8.0 | SET-* | action.destructive_requires_name defaults to true |
 | 8.3 | SHD-001 | The 20-shards-per-1-GB-heap guideline applies only below 8.3 |
 | 8.5 | DISK-* | Disk watermark max_headroom (200/150/100 GB) applies |
+| 8.8 | IDX-015 | index.translog.flush_threshold_size defaults to 10GB (512MB before) |
 | 8.14 | VEC-002 | dense_vector defaults to int8_hnsw (quantized) when index_options is not set |
 | 9.0 | IDX-013 | logsdb applies automatically to new logs-*-* data streams only |
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq_hnsw |
@@ -47,8 +48,8 @@ Each rule declares the input files it needs (`REQUIRES` in `esdiag/rules/__init_
 
 - [Cluster](#cluster): 12 rules
 - [Settings changes (versus defaults)](#settings-changes-versus-defaults): 5 rules
-- [Nodes (JVM, OS, disk, thread pools)](#nodes-jvm-os-disk-thread-pools): 11 rules
-- [Shards and indices](#shards-and-indices): 18 rules
+- [Nodes (JVM, OS, disk, thread pools)](#nodes-jvm-os-disk-thread-pools): 12 rules
+- [Shards and indices](#shards-and-indices): 21 rules
 - [Oversharding and small shards](#oversharding-and-small-shards): 3 rules
 - [Official guidance baselines (settings, shards, performance, disk, vectors)](#official-guidance-baselines-settings-shards-performance-disk-vectors): 25 rules
 - [Hot spots and balancing](#hot-spots-and-balancing): 7 rules
@@ -56,7 +57,7 @@ Each rule declares the input files it needs (`REQUIRES` in `esdiag/rules/__init_
 - [Mappings, ILM policies, cluster coordination, detailed stats](#mappings-ilm-policies-cluster-coordination-detailed-stats): 17 rules
 - [Runtime (hot threads, logs)](#runtime-hot-threads-logs): 2 rules
 - [OS settings (syscalls/ in local and remote mode)](#os-settings-syscalls-in-local-and-remote-mode): 1 rule
-- [Trend (--baseline comparison mode)](#trend---baseline-comparison-mode): 9 rules
+- [Trend (--baseline comparison mode)](#trend---baseline-comparison-mode): 10 rules
 - [Settings knowledge base](#settings-knowledge-base)
 - [All thresholds](#all-thresholds)
 
@@ -207,14 +208,19 @@ Warning if there is 1 or more dangling index.
 | --- | --- |
 | Function | `cluster.r_long_tasks` |
 | Evidence basis | Tool threshold |
-| Possible severities | Warning |
-| Thresholds | `long_running_task_ms_warn` = 300,000 ([Tool] 5 minutes)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Possible severities | Warning, Info |
+| Thresholds | `long_running_task_ms_high` = 3,600,000 ([Tool] 1 hour: long task becomes a Warning)<br>`long_running_task_ms_warn` = 300,000 ([Tool] 5 minutes)<br>`monitoring_task_ms_info` = 86,400,000 ([Tool] 24 hours: monitoring/internal tasks are reported only past this)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (tasks.json) |
 | Source files | tasks.json |
 
 **Decision logic**
 
-Tasks with running_time >= long_running_task_ms_warn (always-running persistent tasks are excluded) → Warning.
+Long-running tasks grouped by action (CLU-017). Always-running persistent tasks are excluded.
+
+Monitoring and internal tasks (cluster:monitor/*, indices:monitor/*, internal:*) are reported only past
+monitoring_task_ms_info. Other tasks: longest run >= long_running_task_ms_high → Warning, >= long_running_task_ms_warn → Info.
+Write-path actions (bulk, reindex, update/delete by query, forcemerge, shrink/split/clone) are marked, because a stuck
+write task holds resources and blocks follow-up work. One row per action with the task count and the longest run.
 
 ### CLU-018, CLU-019: Data nodes are unevenly spread across availability zones
 
@@ -391,21 +397,21 @@ heap_max >= heap_max_bytes_crit (32GiB) or using_compressed_ordinary_object_poin
 
 old share = old collection_time / uptime, old GC per hour = old count / uptime (h), young share = young time / uptime. old share >= old_gc_time_ratio_crit or per-hour >= old_gc_per_hour_crit → Critical. Any of old share >= warn, per-hour >= warn, or young share >= young_gc_time_ratio_warn → Warning. Otherwise OK. These are cumulative values, so compare mode (DIF-006) is more accurate.
 
-### OS-001, OS-002, OS-003, OS-004, OS-005, OS-006: High CPU load
+### OS-001, OS-002, OS-003, OS-004, OS-005, OS-006, OS-007: High CPU load
 
 | Item | Details |
 | --- | --- |
 | Function | `nodes.r_os` |
-| Findings | OS-001 High CPU load / OS-002 Swap enabled / OS-003 Container CPU throttling occurred / OS-004 High file descriptor usage / OS-005 bootstrap.memory_lock not applied / OS-006 Recently restarted nodes |
+| Findings | OS-001 High CPU load / OS-002 Swap enabled / OS-003 Container CPU throttling occurred / OS-004 High file descriptor usage / OS-005 bootstrap.memory_lock not applied / OS-006 Recently restarted nodes / OS-007 Most nodes restarted recently |
 | Evidence basis | Official / Tool threshold |
 | Possible severities | Critical, Warning, Info |
-| Thresholds | `cgroup_throttle_ratio_crit` = 0.05 ([Tool] throttled / elapsed periods)<br>`cgroup_throttle_ratio_warn` = 0.01 ([Tool] throttled / elapsed periods)<br>`fd_used_pct_warn` = 70 ([Tool] Open files / maximum (official minimum limit is 65,535))<br>`load_per_cpu_crit` = 1.5 ([Tool] load15 / CPU cores)<br>`load_per_cpu_warn` = 1.0 ([Tool] load15 / CPU cores)<br>`uptime_short_hours` = 6 ([Tool] Treats the node as recently restarted) |
+| Thresholds | `cgroup_throttle_ratio_crit` = 0.05 ([Tool] throttled / elapsed periods)<br>`cgroup_throttle_ratio_warn` = 0.01 ([Tool] throttled / elapsed periods)<br>`fd_used_pct_warn` = 70 ([Tool] Open files / maximum (official minimum limit is 65,535))<br>`load_per_cpu_crit` = 1.5 ([Tool] load15 / CPU cores)<br>`load_per_cpu_warn` = 1.0 ([Tool] load15 / CPU cores)<br>`restart_share_warn` = 0.5 ([Tool] Share of nodes restarted within uptime_short_hours)<br>`uptime_short_hours` = 6 ([Tool] Treats the node as recently restarted) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes.json / nodes_stats.json |
 
 **Decision logic**
 
-load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006).
+load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window.
 
 ### DISK-001, DISK-002, DISK-003, DISK-004, DISK-005: Disk flood stage exceeded
 
@@ -519,6 +525,25 @@ Different heap or CPU count within the same tier (data role combination) → War
 
 Different specs across tiers are normal design, so differences between tiers are not rated; only a spec table per tier is reported as Info
 (NODE-003). Within a tier, shards are spread evenly, so the smaller node saturates first and sets the processing limit of that tier.
+
+### PERF-012: Slow average flush, refresh or merge
+
+| Item | Details |
+| --- | --- |
+| Function | `nodes.r_write_latency` |
+| Evidence basis | Tool threshold |
+| Possible severities | Warning, Info |
+| Thresholds | `flush_avg_ms_info` = 800 ([Tool] Field baseline: average flush time per flush)<br>`flush_avg_ms_warn` = 1,200 ([Tool] Field baseline)<br>`merge_avg_ms_info` = 20,000 ([Tool] Field baseline: average merge time per merge)<br>`merge_avg_ms_warn` = 40,000 ([Tool] Field baseline)<br>`refresh_avg_ms_info` = 40 ([Tool] Field baseline: average refresh time per refresh)<br>`refresh_avg_ms_warn` = 70 ([Tool] Field baseline)<br>`write_latency_min_ops` = 100 ([Tool] Minimum flushes/refreshes/merges before a node average is rated) |
+| Source files | nodes_stats.json (indices.flush / refresh / merges) |
+
+**Decision logic**
+
+Average flush, refresh and merge time per node (nodes_stats indices.flush/refresh/merges total_time / total).
+
+Frozen-only nodes are skipped, and so is any metric with fewer than write_latency_min_ops operations.
+Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
+and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;
+read them with IDX-005 (merge throttling) and IDX-014 (indexing throttled).
 
 ## Shards and indices
 
@@ -814,6 +839,62 @@ Whether the data tier an index requires actually exists on the nodes.
 **Decision logic**
 
 Average size per shard (store / shards) < 200MB, shards >= 300, and total store > 50GB → Warning. Otherwise only a size summary is shown as Info.
+
+### SHD-016: Write-target shards concentrated on some nodes
+
+| Item | Details |
+| --- | --- |
+| Function | `shards.r_write_hotspot` |
+| Evidence basis | Tool threshold |
+| Possible severities | Warning |
+| Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table)<br>`write_shard_skew_min` = 3 ([Tool] Minimum difference in write-target shards before it is reported)<br>`write_shard_skew_warn` = 0.5 ([Tool] (max - min) / average of write-target shards per node in a tier) |
+| Source files | indices.json / data_stream.json / alias.json / indices_stats.json |
+
+**Decision logic**
+
+Write-target shards per node within a tier (SHD-016).
+
+Write targets are data stream write indices, alias write indices and indices indexing at collection time; replicas count
+because they index too. Per tier (frozen skipped, tiers with fewer than 2 nodes skipped):
+(max - min) / average >= write_shard_skew_warn and max - min >= write_shard_skew_min → Warning. SHD-006 compares all shards;
+this one compares only shards that take writes, which is where indexing load lands.
+
+### IDX-014: Indexing throttled because merges fell behind
+
+| Item | Details |
+| --- | --- |
+| Function | `shards.r_indexing_throttle` |
+| Evidence basis | Reported fact |
+| Possible severities | Warning, Info |
+| Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Source files | indices_stats.json |
+| References | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+
+**Decision logic**
+
+Indexing throttled because merges fell behind (IDX-014).
+
+Official: once merging is fully unthrottled and still behind, indexing for the shard is throttled until merges catch up.
+indices_stats indexing.is_throttled = true at collection time → Warning. Only cumulative indexing.throttle_time > 0 → Info.
+
+### IDX-015: Uncommitted translog above the flush threshold
+
+| Item | Details |
+| --- | --- |
+| Function | `shards.r_translog_uncommitted` |
+| Evidence basis | Official |
+| Possible severities | Warning |
+| Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table)<br>`translog_flush_threshold_default` = 10gb ([Official] index.translog.flush_threshold_size default (8.8+))<br>`translog_flush_threshold_legacy` = 512mb ([Official] Default before 8.8) |
+| Source files | indices_stats.json / settings.json |
+| References | [Translog settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog) |
+
+**Decision logic**
+
+Uncommitted translog per shard copy against index.translog.flush_threshold_size (IDX-015).
+
+Official: a flush runs once the uncommitted translog reaches flush_threshold_size (default 10GB), and uncommitted
+operations are replayed on recovery (the default was 512MB before 8.8). Average uncommitted size per shard copy (index total / copies) at or above the
+effective threshold → Warning: flushes are not keeping up, and recovery of those shards will replay that much.
 
 ## Oversharding and small shards
 
@@ -1651,6 +1732,8 @@ on a hosted instance). Such a node is shown as "cannot be determined" and is not
 Counts fields per index from the actual mappings in mapping.json, using the official counting method (each field, object, multi-field and runtime field counts as 1).
 
 Field count >= total_fields.limit × mapping_fields_near_limit_pct → Warning (MAP-004; Info only if every listed index has ignore_dynamic_beyond_limit=true).
+Indices without ignore_dynamic_beyond_limit are listed first because they are the ones that can fail indexing; the table also shows
+who manages the data stream template (Fleet package or Elastic), since integration templates usually set the ignore option.
 text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × 80% → Warning (MAP-006).
 
 ### VEC-005: High-dimension float vectors in live indices are not quantized
@@ -1947,6 +2030,20 @@ vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimu
 
 ## Trend (--baseline comparison mode)
 
+### DIF-013: Bundles from different clusters
+
+| Item | Details |
+| --- | --- |
+| Function | `diff.r_cluster_identity` |
+| Evidence basis | Computed |
+| Possible severities | Warning |
+| Source files | version.json / nodes.json |
+
+**Decision logic**
+
+The two bundles come from different clusters (DIF-013, Warning): cluster_uuid differs, or, without a uuid,
+the cluster name differs and fewer than half of the node names overlap. The deltas are then not a trend of one cluster.
+
 ### DIF-001: Cluster status %s
 
 | Item | Details |
@@ -2242,6 +2339,20 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `hot_thread_pct_warn` | 50 | [Tool] CPU% of a single thread |
 | `log_scan_bytes` | 8MiB | [Tool] Bytes scanned per log file (from the end) |
 | `docs_per_shard_warn` | 200,000,000 | [Official] Fewer than 200 million documents per shard recommended |
+| `flush_avg_ms_info` | 800 | [Tool] Field baseline: average flush time per flush |
+| `flush_avg_ms_warn` | 1,200 | [Tool] Field baseline |
+| `refresh_avg_ms_info` | 40 | [Tool] Field baseline: average refresh time per refresh |
+| `refresh_avg_ms_warn` | 70 | [Tool] Field baseline |
+| `merge_avg_ms_info` | 20,000 | [Tool] Field baseline: average merge time per merge |
+| `merge_avg_ms_warn` | 40,000 | [Tool] Field baseline |
+| `write_latency_min_ops` | 100 | [Tool] Minimum flushes/refreshes/merges before a node average is rated |
+| `write_shard_skew_warn` | 0.5 | [Tool] (max - min) / average of write-target shards per node in a tier |
+| `write_shard_skew_min` | 3 | [Tool] Minimum difference in write-target shards before it is reported |
+| `restart_share_warn` | 0.5 | [Tool] Share of nodes restarted within uptime_short_hours |
+| `long_running_task_ms_high` | 3,600,000 | [Tool] 1 hour: long task becomes a Warning |
+| `monitoring_task_ms_info` | 86,400,000 | [Tool] 24 hours: monitoring/internal tasks are reported only past this |
+| `translog_flush_threshold_default` | 10gb | [Official] index.translog.flush_threshold_size default (8.8+) |
+| `translog_flush_threshold_legacy` | 512mb | [Official] Default before 8.8 |
 | `docs_rollover_overshoot_pct` | 5 | [Tool] Allowed overshoot of a rolled-over shard past 200M docs (ILM checks every poll_interval) |
 | `docs_per_shard_crit` | 1,500,000,000 | [Tool] Alert when approaching the Lucene limit (2,147,483,519) |
 | `indices_per_gb_master_heap` | 3,000 | [Official] 3000 indices per 1GB of master heap |

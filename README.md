@@ -2,7 +2,7 @@
 
 English · [한국어](README.ko.md)
 
-**Version 0.12.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
+**Version 0.13.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
 
 esdiag analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
 
@@ -39,7 +39,7 @@ It makes no network calls and uses only the Python standard library.
 
 - **Built for air-gapped networks**: no external communication, CDN, fonts or package installs. Copy the repository in and run it
 - **No dependencies**: Python 3.8 or later, standard library only
-- **119 rules**: 110 for a single bundle and 9 for comparing two bundles
+- **124 rules**: 114 for a single bundle and 10 for comparing two bundles
 - **Action priority by root cause**: findings that come from the same cause (for example yellow status, unassigned shards, allocation explain and replicas above the node count) are grouped under one representative finding, and the rest are shown as related findings
 - **Evidence basis on every finding**: Official / Reported fact / Tool threshold / Computed
 - **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 94 settings)
@@ -189,6 +189,7 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 | 8.0 | SET-\* | `action.destructive_requires_name` defaults to true |
 | 8.3 | SHD-001 | The 20 shards per 1GB of heap guideline applies only below 8.3 (officially retired in 8.3) |
 | 8.5 | DISK-\* | Disk watermarks use max\_headroom (low 200GB / high 150GB / flood 100GB) |
+| 8.8 | IDX-015 | `index.translog.flush_threshold_size` defaults to 10GB (512MB before) |
 | 8.14 | VEC-002 | dense\_vector defaults to int8\_hnsw when index\_options is not set |
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq\_hnsw |
 | 9.0 | IDX-013 | logsdb applies automatically to new `logs-*-*` data streams. Data streams that existed before an upgrade from 8.x stay as they are |
@@ -211,10 +212,10 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 
 | Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
-| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 68 |
-| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 56 |
-| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 47 |
-| Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-012 |
+| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 69 |
+| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 57 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 50 |
+| Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-013 |
 
 When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
 
@@ -310,6 +311,7 @@ logsdb stores data efficiently, so it usually reaches 200M documents before 50GB
 | DIF-008 | Disk growth rate and the expected date of reaching the high watermark (linear extrapolation, frozen excluded) |
 | DIF-009 to DIF-011 | Throughput and its distribution in the interval, index growth, index creation and deletion |
 | DIF-012 | Change in findings (new / worse / resolved) |
+| DIF-013 | Warns when the two bundles come from different clusters (cluster_uuid differs, for example). Treat the comparison findings as reference only |
 
 ---
 
@@ -371,7 +373,7 @@ Limits: values shorter than 6 characters can overlap ordinary words, so they are
 
 | Document | Contents |
 | --- | --- |
-| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 119 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
+| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 124 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
 | [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) | Which official doc items are covered, and why some items cannot be judged |
 | [CHANGELOG.md](CHANGELOG.md) ([한국어](CHANGELOG.ko.md)) | Change history: previous behavior → current behavior, and the reason |
 
@@ -392,7 +394,7 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 106 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 120 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
@@ -435,13 +437,14 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 842 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 863 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 51 scenarios and checks the severity too | 51 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
 | `tools/gen_rules_doc.py --check` | Consistency of thresholds and docstrings | 0 problems |
 | `tests/test_local_mode.py` | Local and remote mode handling (false positives from logs/, gz, double counting, syscalls/ branches, collection failure messages) on synthetic data. No external bundle needed | 0 failures |
 | `tests/test_logsdb.py` | Every branch of the document limit, logsdb and force merge findings (SHD-008, 013, 014, 015, IDX-013, ILM-007, 008, 009) on synthetic data, in both languages. No external bundle needed | 0 failures |
+| `tests/test_write_path.py` | Every branch of the write path and operations findings (PERF-012, OS-007, SHD-016, IDX-014, 015, CLU-017, MAP-004, DIF-013) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |
 
@@ -502,6 +505,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 │   ├── fuzz_rules.py          # input mutation fuzzing
 │   ├── test_handoff.py         # Support summary and masking checks (synthetic data)
 │   ├── test_logsdb.py          # document limit, logsdb and force merge checks (synthetic data)
+│   ├── test_write_path.py      # write path and operations checks (synthetic data)
 │   └── make_broken_bundle.py   # create a bundle with injected failures
 ├── docs/STYLE.md              # style and glossary
 ├── README.md / README.ko.md
@@ -521,7 +525,7 @@ python3 tools/gen_rules_doc.py
 bash tests/run_all.sh <bundle-for-validation.zip>
 # 3) (optional) Build the single-file distribution and attach it to GitHub Releases (do not commit it)
 python3 tools/build_pyz.py        # dist/esdiag.pyz
-git tag v0.12.0
+git tag v0.13.0
 ```
 
 Validation diagnostic bundles and their analysis reports contain customer environment information (cluster names, index names, hosts), so do not commit them to the repository.

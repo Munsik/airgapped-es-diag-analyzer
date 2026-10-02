@@ -8,6 +8,8 @@ from ..model import Finding, Severity, table
 from ..util import dig, fmt_bytes, fmt_ms, fmt_num, parse_bytes, pct, num
 
 CAT = "shard"
+DOC_MERGE = ("Merge settings", "https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge")
+DOC_TRANSLOG = ("Translog settings", "https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog")
 DOC_SIZE = (N_("rules.shards._.01"),
             "https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards")
 DOC_MAPPING = (N_("rules.shards._.02"),
@@ -628,9 +630,121 @@ def r_cache_efficiency(ctx):
         evidence=ev, source="indices_stats.json")]
 
 
+
+def _write_targets_now(ctx):
+    """Indices being written: data stream write indices, alias write targets and indices indexing at collection time."""
+    out = set(i for i in ctx.write_targets() if i)
+    for name, st in ctx.indices_stats.items():
+        if num(st, "total", "indexing", "index_current") > 0:
+            out.add(name)
+    return out
+
+
+def r_write_hotspot(ctx):
+    """Write-target shards per node within a tier (SHD-016).
+
+    Write targets are data stream write indices, alias write indices and indices indexing at collection time; replicas count
+    because they index too. Per tier (frozen skipped, tiers with fewer than 2 nodes skipped):
+    (max - min) / average >= write_shard_skew_warn and max - min >= write_shard_skew_min → Warning. SHD-006 compares all shards;
+    this one compares only shards that take writes, which is where indexing load lands.
+    """
+    writes = _write_targets_now(ctx)
+    if not writes:
+        return []
+    counts = collections.Counter(s.get("node") for s in ctx.shards
+                                 if s.get("node") and s.get("index") in writes
+                                 and (s.get("state") or "STARTED").upper() == "STARTED")
+    rows, flagged = [], []
+    for tier, nodes in ctx.data_tiers().items():
+        if tier == "frozen" or len(nodes) < 2:
+            continue
+        vals = [(n.name, counts.get(n.name, 0)) for n in nodes]
+        nums = [c for _, c in vals]
+        avg = sum(nums) / float(len(nums))
+        spread = max(nums) - min(nums)
+        if not avg or spread < ctx.t["write_shard_skew_min"] or spread / avg < ctx.t["write_shard_skew_warn"]:
+            continue
+        flagged.append(T("rules.shards.r_write_hotspot.01") % (tier, max(nums), min(nums), avg))
+        for name, c in sorted(vals, key=lambda x: -x[1]):
+            rows.append([tier, name, c, "%+.0f%%" % ((c - avg) / avg * 100)])
+    if not flagged:
+        return []
+    return [Finding(
+        "SHD-016", CAT, Severity.WARNING, T("rules.shards.r_write_hotspot.02"),
+        observed=" / ".join(flagged),
+        impact=T("rules.shards.r_write_hotspot.03"),
+        recommend=T("rules.shards.r_write_hotspot.04"),
+        evidence=table(["tier", "node", T("rules.shards.r_write_hotspot.05"), T("rules.shards.r_write_hotspot.06")],
+                       rows[: ctx.t["top_n"] * 2]),
+        source="indices.json / data_stream.json / alias.json / indices_stats.json")]
+
+
+def r_indexing_throttle(ctx):
+    """Indexing throttled because merges fell behind (IDX-014).
+
+    Official: once merging is fully unthrottled and still behind, indexing for the shard is throttled until merges catch up.
+    indices_stats indexing.is_throttled = true at collection time → Warning. Only cumulative indexing.throttle_time > 0 → Info.
+    """
+    now, past = [], []
+    for name, st in ctx.indices_stats.items():
+        thr = dig(st, "total", "indexing", "is_throttled")
+        ms = num(st, "total", "indexing", "throttle_time_in_millis")
+        if str(thr).lower() == "true":
+            now.append([name, "true", fmt_ms(ms) if ms else "-",
+                        fmt_ms(num(st, "total", "merges", "total_throttled_time_in_millis"))])
+        elif ms:
+            past.append([name, "false", fmt_ms(ms),
+                         fmt_ms(num(st, "total", "merges", "total_throttled_time_in_millis")), ms])
+    if not (now or past):
+        return []
+    past.sort(key=lambda r: -r[4])
+    rows = now + [r[:4] for r in past]
+    return [Finding(
+        "IDX-014", CAT, Severity.WARNING if now else Severity.INFO, T("rules.shards.r_indexing_throttle.01"),
+        observed=T("rules.shards.r_indexing_throttle.02") % (len(now), len(past)),
+        impact=T("rules.shards.r_indexing_throttle.03"),
+        recommend=T("rules.shards.r_indexing_throttle.04"),
+        evidence=table(["index", "is_throttled", T("rules.shards.r_indexing_throttle.05"),
+                        T("rules.shards.r_indexing_throttle.06")], rows[: ctx.t["top_n"]]),
+        refs=[DOC_MERGE], source="indices_stats.json")]
+
+
+def r_translog_uncommitted(ctx):
+    """Uncommitted translog per shard copy against index.translog.flush_threshold_size (IDX-015).
+
+    Official: a flush runs once the uncommitted translog reaches flush_threshold_size (default 10GB), and uncommitted
+    operations are replayed on recovery (the default was 512MB before 8.8). Average uncommitted size per shard copy (index total / copies) at or above the
+    effective threshold → Warning: flushes are not keeping up, and recovery of those shards will replay that much.
+    """
+    default = parse_bytes(ctx.t["translog_flush_threshold_default"] if ctx.version_tuple >= (8, 8, 0)
+                          else ctx.t["translog_flush_threshold_legacy"]) or 10 * 1024 ** 3
+    rows = []
+    for name, st in ctx.indices_stats.items():
+        unc = num(st, "total", "translog", "uncommitted_size_in_bytes")
+        copies = ctx.shard_count(name) or 1
+        if not unc:
+            continue
+        limit = parse_bytes(ctx.index_setting(name, "index.translog.flush_threshold_size")) or default
+        per = unc / float(copies)
+        if per >= limit:
+            rows.append([name, fmt_bytes(unc), copies, fmt_bytes(per), fmt_bytes(limit), per])
+    if not rows:
+        return []
+    rows.sort(key=lambda r: -r[5])
+    return [Finding(
+        "IDX-015", CAT, Severity.WARNING, T("rules.shards.r_translog_uncommitted.01"),
+        observed=T("rules.shards.r_translog_uncommitted.02") % len(rows),
+        impact=T("rules.shards.r_translog_uncommitted.03"),
+        recommend=T("rules.shards.r_translog_uncommitted.04"),
+        evidence=table(["index", T("rules.shards.r_translog_uncommitted.05"), T("rules.shards.r_translog_uncommitted.06"),
+                        T("rules.shards.r_translog_uncommitted.07"), "flush_threshold_size"],
+                       [r[:5] for r in rows[: ctx.t["top_n"]]]),
+        refs=[DOC_TRANSLOG], source="indices_stats.json / settings.json")]
+
 RULES = [
     r_shard_density, r_shard_balance, r_data_stream_health, r_cache_efficiency, r_shard_size, r_small_shards, r_replica_zero,
     r_replica_unassignable, r_deleted_docs, r_segments, r_merge_throttle,
     r_search_latency, r_index_failures, r_mapping_limits, r_refresh_interval,
     r_read_only_blocks, r_tier_preference, r_index_count,
+    r_write_hotspot, r_indexing_throttle, r_translog_uncommitted,
 ]

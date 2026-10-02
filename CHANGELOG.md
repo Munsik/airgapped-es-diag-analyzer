@@ -5,6 +5,34 @@ English · [한국어](CHANGELOG.ko.md)
 This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Each entry is written as "previous behavior → current behavior (reason)". Use it to trace why a result differs from an earlier report.
 
+## [0.13.0] - 2026-10-02
+
+Write path and operations checks that were missing, found by comparing with the decision logic of another diagnostics tool. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.
+
+### Added
+
+- PERF-012 (tool threshold): average flush, refresh and merge time per node. flush 800ms / 1200ms, refresh 40ms / 70ms, merge 20s / 40s → Info / Warning. Frozen-only nodes and metrics with few operations are skipped
+- SHD-016 (Warning, tool threshold): write-target shards (write indices, alias write indices, indices indexing at collection time) concentrated on some nodes of a tier. (max - min) / average >= 0.5 and a difference of 3 or more. SHD-006 compares all shards
+- IDX-014 (reported fact): indexing throttled because merges fell behind. `is_throttled=true` at collection time → Warning, cumulative throttle time only → Info
+- IDX-015 (Warning, official): uncommitted translog per shard copy at or above `index.translog.flush_threshold_size` (10GB on 8.8+, 512MB before). A fixed 1GB threshold is not used because it is a false positive when the default is 10GB
+- OS-007 (Warning, tool threshold): half or more of the nodes restarted within 6 hours. Flags that findings based on cumulative counters cover only a short window
+- DIF-013 (Warning): in comparison mode, the two bundles look like different clusters (cluster_uuid differs, or without a uuid the names differ and fewer than half of the nodes overlap)
+- `tests/test_write_path.py`: every branch of the new findings on synthetic data, in both languages (no external bundle needed)
+- 14 thresholds
+
+### Changed
+
+- CLU-017: every task over 5 minutes was a Warning → grouped by action with the task count and the longest run. 1 hour or more → Warning, 5 minutes or more → Info. Monitoring and internal tasks (`cluster:monitor/*`, `indices:monitor/*`, `internal:*`) are reported only past 24 hours. Write-path actions (bulk, reindex, update/delete by query, forcemerge, shrink/split/clone) are marked. Also fixes sorting by running time, which sorted as text
+- MAP-004: indices without ignore_dynamic_beyond_limit, which can fail indexing, are listed first (at equal usage, integration indices used to fill the 15 rows and hide them), and a column shows who manages the data stream template (`fleet:<package>` / `elastic`)
+- 114 single-bundle rules and 10 bundle-comparison rules (176 finding IDs plus comparison DIF-001~013)
+
+### Reviewed but not added
+
+- Disk read/write latency (ms/op): `fs.io_stats` in nodes stats has operation counts and `io_time_in_millis` only, with no read or write time fields (checked in the Elasticsearch `FsInfo` source)
+- OS memory use of 95% or more: Elasticsearch nodes normally use almost all memory for the filesystem cache, so it would always fire
+- Any old GC, heap over 32GB as an estimate, load1m: already rated more precisely with the hourly ratio (JVM-005), the actual compressed oops flag (JVM-002 to 004) and load15 (OS-001)
+- Enterprise ERU usage: to be decided after checking the formula against the official docs
+
 ## [0.12.0] - 2026-10-02
 
 ### Added

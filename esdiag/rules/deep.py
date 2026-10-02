@@ -39,10 +39,33 @@ def _mappings(ctx):
         yield name, summ
 
 
+def _template_owner(ctx, index):
+    """Who manages the index template of a data stream backing index: "fleet:<package>", "elastic", or "-"."""
+    ds = ctx.data_stream_of(index)
+    tname = (ds or {}).get("template") if ds else None
+    if not tname:
+        return "-"
+    if getattr(ctx, "_tpl_meta", None) is None:
+        ctx._tpl_meta = {}
+        for t in dicts((ctx.index_templates or {}).get("index_templates")):
+            ctx._tpl_meta[t.get("name")] = dig(t, "index_template", "_meta") or {}
+    meta = ctx._tpl_meta.get(tname) or {}
+    if not isinstance(meta, dict):
+        return "-"
+    pkg = dig(meta, "package", "name")
+    if pkg:
+        return "fleet:%s" % pkg
+    if str(meta.get("managed")).lower() == "true" or meta.get("managed_by"):
+        return "elastic"
+    return "-"
+
+
 def r_mapping_limits_actual(ctx):
     """Counts fields per index from the actual mappings in mapping.json, using the official counting method (each field, object, multi-field and runtime field counts as 1).
 
     Field count >= total_fields.limit × mapping_fields_near_limit_pct → Warning (MAP-004; Info only if every listed index has ignore_dynamic_beyond_limit=true).
+    Indices without ignore_dynamic_beyond_limit are listed first because they are the ones that can fail indexing; the table also shows
+    who manages the data stream template (Fleet package or Elastic), since integration templates usually set the ignore option.
     text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × 80% → Warning (MAP-006).
     """
     near, fd_rows, nest_rows = [], [], []
@@ -56,7 +79,8 @@ def r_mapping_limits_actual(ctx):
         if limit > 0 and total >= limit * ctx.t["mapping_fields_near_limit_pct"] / 100.0:
             ign = str(ctx.index_setting(name, "index.mapping.total_fields.ignore_dynamic_beyond_limit")).lower() == "true"
             ignored += 1 if ign else 0
-            near.append([name, fmt_num(total), fmt_num(limit), "%.0f%%" % (total * 100.0 / limit), "true" if ign else "false"])
+            near.append([name, fmt_num(total), fmt_num(limit), "%.0f%%" % (total * 100.0 / limit), "true" if ign else "false",
+                         _template_owner(ctx, name)])
         for f in fielddata:
             fd_rows.append([name, f])
         try:
@@ -67,7 +91,7 @@ def r_mapping_limits_actual(ctx):
             nest_rows.append([name, nested, nlimit])
     out = []
     if near:
-        near.sort(key=lambda r: -float(r[3].rstrip("%")))
+        near.sort(key=lambda r: (r[4] == "true", -float(r[3].rstrip("%"))))
         out.append(Finding(
             "MAP-004", MAPC, Severity.INFO if ignored == len(near) else Severity.WARNING,
             T("rules.deep.r_mapping_limits_actual.01"),
@@ -75,7 +99,7 @@ def r_mapping_limits_actual(ctx):
                      % (ctx.t["mapping_fields_near_limit_pct"], len(near), ignored),
             impact=T("rules.deep.r_mapping_limits_actual.03"),
             recommend=T("rules.deep.r_mapping_limits_actual.04"),
-            evidence=table(["index", T("rules.deep.r_mapping_limits_actual.05"), T("rules.deep.r_mapping_limits_actual.06"), T("rules.deep.r_mapping_limits_actual.07"), "ignore_dynamic_beyond_limit"], near[: ctx.t["top_n"]]),
+            evidence=table(["index", T("rules.deep.r_mapping_limits_actual.05"), T("rules.deep.r_mapping_limits_actual.06"), T("rules.deep.r_mapping_limits_actual.07"), "ignore_dynamic_beyond_limit", "template _meta"], near[: ctx.t["top_n"]]),
             refs=[D_MAP], source="mapping.json / settings.json"))
     if fd_rows:
         out.append(Finding(

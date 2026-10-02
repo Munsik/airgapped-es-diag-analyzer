@@ -144,7 +144,7 @@ def r_gc(ctx):
 
 
 def r_os(ctx):
-    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006)."""
+    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window."""
     out = []
     rows, load_warn, load_crit, swap_on, throttle = [], [], [], [], []
     swap_used = []
@@ -246,7 +246,60 @@ def r_os(ctx):
             impact=T("rules.nodes.r_os.31"),
             recommend=T("rules.nodes.r_os.32"),
             source="nodes_stats.json"))
+    timed = [n for n in ctx.nodes if n.uptime_ms]
+    if len(timed) >= 2 and len(short) >= len(timed) * ctx.t["restart_share_warn"]:
+        out.append(Finding(
+            "OS-007", CAT, Severity.WARNING, T("rules.nodes.r_os.33"),
+            observed=T("rules.nodes.r_os.34") % (len(short), len(timed), ctx.t["uptime_short_hours"]),
+            impact=T("rules.nodes.r_os.35"),
+            recommend=T("rules.nodes.r_os.36"),
+            affected=[n for n, _ in short], source="nodes_stats.json"))
     return out
+
+
+def r_write_latency(ctx):
+    """Average flush, refresh and merge time per node (nodes_stats indices.flush/refresh/merges total_time / total).
+
+    Frozen-only nodes are skipped, and so is any metric with fewer than write_latency_min_ops operations.
+    Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
+    and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;
+    read them with IDX-005 (merge throttling) and IDX-014 (indexing throttled).
+    """
+    specs = (("flush", "flush", ctx.t["flush_avg_ms_info"], ctx.t["flush_avg_ms_warn"]),
+             ("refresh", "refresh", ctx.t["refresh_avg_ms_info"], ctx.t["refresh_avg_ms_warn"]),
+             ("merge", "merges", ctx.t["merge_avg_ms_info"], ctx.t["merge_avg_ms_warn"]))
+    rows, warn, info = [], [], []
+    for n in ctx.data_nodes:
+        if ctx.is_frozen_only(n):
+            continue
+        cells, hit = [], None
+        for key, sect, lim_info, lim_warn in specs:
+            tot = num(n.stats, "indices", sect, "total")
+            ms = num(n.stats, "indices", sect, "total_time_in_millis")
+            if tot < ctx.t["write_latency_min_ops"] or not ms:
+                cells.append("-")
+                continue
+            avg = ms / float(tot)
+            cells.append(fmt_ms(avg))
+            if avg >= lim_warn:
+                hit = "warn"
+                warn.append("%s %s %s" % (n.name, key, fmt_ms(avg)))
+            elif avg >= lim_info:
+                hit = hit or "info"
+                info.append("%s %s %s" % (n.name, key, fmt_ms(avg)))
+        if hit:
+            rows.append([n.name, ctx.tier_of(n) or "-"] + cells)
+    if not rows:
+        return []
+    return [Finding(
+        "PERF-012", "perf", Severity.WARNING if warn else Severity.INFO, T("rules.nodes.r_write_latency.01"),
+        observed=T("rules.nodes.r_write_latency.02") % ", ".join((warn + info)[:12]),
+        impact=T("rules.nodes.r_write_latency.03"),
+        recommend=T("rules.nodes.r_write_latency.04")
+                  % (ctx.t["flush_avg_ms_info"], ctx.t["refresh_avg_ms_info"], ctx.t["merge_avg_ms_info"] // 1000),
+        evidence=table(["node", "tier", T("rules.nodes.r_write_latency.05"), T("rules.nodes.r_write_latency.06"),
+                        T("rules.nodes.r_write_latency.07")], rows),
+        affected=[r[0] for r in rows], source="nodes_stats.json (indices.flush / refresh / merges)")]
 
 
 def r_disk(ctx):
@@ -555,5 +608,5 @@ def r_node_heterogeneity(ctx):
 RULES = [
     r_heap_usage, r_heap_sizing, r_gc, r_os, r_disk, r_thread_pools,
     r_breakers, r_indexing_pressure, r_fielddata, r_ingest_failures,
-    r_node_heterogeneity,
+    r_node_heterogeneity, r_write_latency,
 ]

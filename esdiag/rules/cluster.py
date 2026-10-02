@@ -367,31 +367,60 @@ def _is_persistent_task(action, desc):
     return any(h in blob for h in PERSISTENT_TASK_HINTS)
 
 
+WRITE_TASK_PREFIXES = ("indices:data/write/bulk", "indices:data/write/reindex", "indices:data/write/update/byquery",
+                       "indices:data/write/delete/byquery", "indices:admin/forcemerge", "indices:admin/resize")
+MONITOR_TASK_PREFIXES = ("cluster:monitor/", "indices:monitor/", "internal:")
+
+
 def r_long_tasks(ctx):
-    """Tasks with running_time >= long_running_task_ms_warn (always-running persistent tasks are excluded) → Warning."""
-    rows = []
-    limit = ctx.t["long_running_task_ms_warn"]
+    """Long-running tasks grouped by action (CLU-017). Always-running persistent tasks are excluded.
+
+    Monitoring and internal tasks (cluster:monitor/*, indices:monitor/*, internal:*) are reported only past
+    monitoring_task_ms_info. Other tasks: longest run >= long_running_task_ms_high → Warning, >= long_running_task_ms_warn → Info.
+    Write-path actions (bulk, reindex, update/delete by query, forcemerge, shrink/split/clone) are marked, because a stuck
+    write task holds resources and blocks follow-up work. One row per action with the task count and the longest run.
+    """
+    groups = {}
     for _nid, node in items(ctx.tasks.get("nodes")):
         if not isinstance(node, dict):
             continue
-        for tid, t in items(node.get("tasks")):
+        for _tid, t in items(node.get("tasks")):
             if not isinstance(t, dict):
                 continue
             run = num(t, "running_time_in_nanos")
             ms = (run / 1e6) if run else 0
-            action = t.get("action") or ""
-            desc = t.get("description") or ""
-            if ms >= limit and action and not _is_persistent_task(action, desc):
-                rows.append([node.get("name"), action, fmt_ms(ms), desc[:120]])
-    if not rows:
+            action = str(t.get("action") or "")
+            desc = str(t.get("description") or "")
+            if not action or _is_persistent_task(action, desc):
+                continue
+            monitor = action.startswith(MONITOR_TASK_PREFIXES)
+            limit = ctx.t["monitoring_task_ms_info"] if monitor else ctx.t["long_running_task_ms_warn"]
+            if ms < limit:
+                continue
+            g = groups.setdefault(action, {"count": 0, "max": 0, "nodes": set(), "desc": "", "monitor": monitor})
+            g["count"] += 1
+            g["nodes"].add(str(node.get("name") or _nid))
+            if ms > g["max"]:
+                g["max"], g["desc"] = ms, desc
+    if not groups:
         return []
-    rows.sort(key=lambda r: r[2])
+    high = ctx.t["long_running_task_ms_high"]
+    rows, warn = [], 0
+    for action, g in sorted(groups.items(), key=lambda kv: -kv[1]["max"]):
+        kind = T("rules.cluster.r_long_tasks.05") if action.startswith(WRITE_TASK_PREFIXES) else \
+            (T("rules.cluster.r_long_tasks.06") if g["monitor"] else T("rules.cluster.r_long_tasks.07"))
+        if not g["monitor"] and g["max"] >= high:
+            warn += 1
+        nodes = sorted(g["nodes"])
+        rows.append([action, kind, g["count"], fmt_ms(g["max"]),
+                     ", ".join(nodes[:3]) + (" +%d" % (len(nodes) - 3) if len(nodes) > 3 else ""), g["desc"][:100]])
     return [Finding(
-        "CLU-017", CAT, Severity.WARNING, T("rules.cluster.r_long_tasks.01"),
-        observed=T("rules.cluster.r_long_tasks.02") % (fmt_ms(limit), len(rows)),
+        "CLU-017", CAT, Severity.WARNING if warn else Severity.INFO, T("rules.cluster.r_long_tasks.01"),
+        observed=T("rules.cluster.r_long_tasks.02") % (len(groups), sum(g["count"] for g in groups.values()), warn, fmt_ms(high)),
         impact=T("rules.cluster.r_long_tasks.03"),
         recommend=T("rules.cluster.r_long_tasks.04"),
-        evidence=table(["node", "action", "running", "description"], rows[: ctx.t["top_n"]]),
+        evidence=table(["action", T("rules.cluster.r_long_tasks.08"), T("rules.cluster.r_long_tasks.09"),
+                        T("rules.cluster.r_long_tasks.10"), "node", "description"], rows[: ctx.t["top_n"]]),
         source="tasks.json")]
 
 

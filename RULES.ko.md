@@ -8,7 +8,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdiag 0.12.0 |
+| 도구 버전 | esdiag 0.13.0 |
 | 판정 기준 Elasticsearch 버전 | 9.4 |
 | 공식 문서 대조 시점 | 2026-09 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -23,6 +23,7 @@
 | 8.0 | SET-* | action.destructive_requires_name 기본값 true |
 | 8.3 | SHD-001 | heap 1GB당 샤드 20개 기준은 8.3 미만에만 적용 |
 | 8.5 | DISK-* | 디스크 워터마크 max_headroom(200/150/100GB) 적용 |
+| 8.8 | IDX-015 | index.translog.flush_threshold_size 기본값 10GB(이전 512MB) |
 | 8.14 | VEC-002 | dense_vector index_options 미지정 시 int8_hnsw 기본(양자화) |
 | 9.0 | IDX-013 | logs-*-* data stream 에 logsdb 자동 적용(새 data stream 만) |
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq_hnsw 가 기본 |
@@ -47,8 +48,8 @@
 
 - [클러스터](#클러스터) — 12개 룰
 - [설정 변경 (기본값 대비)](#설정-변경-기본값-대비) — 5개 룰
-- [노드 (JVM · OS · 디스크 · 스레드풀)](#노드-jvm-os-디스크-스레드풀) — 11개 룰
-- [샤드 · 인덱스](#샤드-인덱스) — 18개 룰
+- [노드 (JVM · OS · 디스크 · 스레드풀)](#노드-jvm-os-디스크-스레드풀) — 12개 룰
+- [샤드 · 인덱스](#샤드-인덱스) — 21개 룰
 - [과다 샤딩 · 소형 샤드](#과다-샤딩-소형-샤드) — 3개 룰
 - [공식 가이드 기준 (설정 · 샤드 · 성능 · 디스크 · 벡터)](#공식-가이드-기준-설정-샤드-성능-디스크-벡터) — 25개 룰
 - [핫스팟 · 밸런싱](#핫스팟-밸런싱) — 7개 룰
@@ -56,7 +57,7 @@
 - [매핑 · ILM 정책 · 클러스터 조정 · 세부 통계](#매핑-ilm-정책-클러스터-조정-세부-통계) — 17개 룰
 - [런타임 (hot threads · 로그)](#런타임-hot-threads-로그) — 2개 룰
 - [OS 설정 (local/remote 모드 syscalls/)](#os-설정-localremote-모드-syscalls) — 1개 룰
-- [변화 추세 (--baseline 비교 모드)](#변화-추세---baseline-비교-모드) — 9개 룰
+- [변화 추세 (--baseline 비교 모드)](#변화-추세---baseline-비교-모드) — 10개 룰
 - [설정 지식 베이스](#설정-지식-베이스)
 - [임계값 전체 목록](#임계값-전체-목록)
 
@@ -207,14 +208,19 @@ dangling 인덱스가 1개 이상이면 주의.
 | --- | --- |
 | 함수 | `cluster.r_long_tasks` |
 | 근거 구분 | 도구 판단 |
-| 가능 심각도 | 주의 |
-| 임계값 | `long_running_task_ms_warn` = 300,000 — [도구] 5분<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `long_running_task_ms_high` = 3,600,000 — [도구] 1시간: 장시간 task 를 주의로 올리는 기준<br>`long_running_task_ms_warn` = 300,000 — [도구] 5분<br>`monitoring_task_ms_info` = 86,400,000 — [도구] 24시간: 모니터링·내부 task 는 이 시간을 넘을 때만 보고<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (tasks.json) |
 | 근거 파일 | tasks.json |
 
 **판정 로직**
 
-running_time >= long_running_task_ms_warn 인 태스크(상시 동작하는 persistent task 는 제외) → 주의.
+장시간 실행 중인 task 를 action 별로 묶는다(CLU-017). 계속 실행되는 persistent task 는 제외한다.
+
+모니터링·내부 task(cluster:monitor/*, indices:monitor/*, internal:*)는 monitoring_task_ms_info 를 넘을 때만 보고한다.
+그 밖의 task: 가장 긴 실행 시간 >= long_running_task_ms_high → 주의, >= long_running_task_ms_warn → 참고.
+쓰기 경로 action(bulk, reindex, update/delete by query, forcemerge, shrink/split/clone)은 따로 표시한다. 멈춘 쓰기 task 는
+자원을 잡고 후속 작업을 막기 때문이다. action 마다 한 행에 task 수와 가장 긴 실행 시간을 보여 준다.
 
 ### CLU-018, CLU-019 — 가용영역 간 데이터 노드 불균형
 
@@ -391,21 +397,21 @@ heap_max >= heap_max_bytes_crit(32GiB) 또는 using_compressed_ordinary_object_p
 
 old 비중 = old collection_time / uptime, 시간당 old GC = old count / uptime(h), young 비중 = young time / uptime. old 비중 >= old_gc_time_ratio_crit 또는 시간당 >= old_gc_per_hour_crit → 치명. old 비중 >= warn, 시간당 >= warn, young 비중 >= young_gc_time_ratio_warn 중 하나 → 주의. 그 외 정상. 누적값이므로 비교 모드(DIF-006)가 더 정확하다.
 
-### OS-001, OS-002, OS-003, OS-004, OS-005, OS-006 — CPU load 높음
+### OS-001, OS-002, OS-003, OS-004, OS-005, OS-006, OS-007 — CPU load 높음
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `nodes.r_os` |
-| 판정 항목 | OS-001 CPU load 높음 / OS-002 Swap 활성화 / OS-003 컨테이너 CPU throttling 발생 / OS-004 파일 디스크립터 사용률 높음 / OS-005 bootstrap.memory_lock 미적용 / OS-006 최근 재기동된 노드 존재 |
+| 판정 항목 | OS-001 CPU load 높음 / OS-002 Swap 활성화 / OS-003 컨테이너 CPU throttling 발생 / OS-004 파일 디스크립터 사용률 높음 / OS-005 bootstrap.memory_lock 미적용 / OS-006 최근 재기동된 노드 존재 / OS-007 대부분의 노드가 최근 재시작함 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
 | 가능 심각도 | 치명, 주의, 참고 |
-| 임계값 | `cgroup_throttle_ratio_crit` = 0.05 — [도구] throttled / elapsed periods<br>`cgroup_throttle_ratio_warn` = 0.01 — [도구] throttled / elapsed periods<br>`fd_used_pct_warn` = 70 — [도구] 열린 파일 / 최대(공식 최소 한도는 65,535)<br>`load_per_cpu_crit` = 1.5 — [도구] load15 / CPU 코어<br>`load_per_cpu_warn` = 1.0 — [도구] load15 / CPU 코어<br>`uptime_short_hours` = 6 — [도구] 최근 재기동 판단 |
+| 임계값 | `cgroup_throttle_ratio_crit` = 0.05 — [도구] throttled / elapsed periods<br>`cgroup_throttle_ratio_warn` = 0.01 — [도구] throttled / elapsed periods<br>`fd_used_pct_warn` = 70 — [도구] 열린 파일 / 최대(공식 최소 한도는 65,535)<br>`load_per_cpu_crit` = 1.5 — [도구] load15 / CPU 코어<br>`load_per_cpu_warn` = 1.0 — [도구] load15 / CPU 코어<br>`restart_share_warn` = 0.5 — [도구] uptime_short_hours 안에 재시작한 노드 비율<br>`uptime_short_hours` = 6 — [도구] 최근 재기동 판단 |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes.json / nodes_stats.json |
 
 **판정 로직**
 
-load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주의(OS-001, 두 구간의 노드를 모두 표시). swap_total > 0 이고 mlockall 이 true 가 아님 → 주의(OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → 치명, >= warn → 주의(OS-003). open_fd / max_fd >= fd_used_pct_warn → 주의(OS-004). mlockall=false 이고 swap 없음 → 참고(OS-005). uptime < uptime_short_hours → 주의(OS-006).
+load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주의(OS-001, 두 구간의 노드를 모두 표시). swap_total > 0 이고 mlockall 이 true 가 아님 → 주의(OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → 치명, >= warn → 주의(OS-003). open_fd / max_fd >= fd_used_pct_warn → 주의(OS-004). mlockall=false 이고 swap 없음 → 참고(OS-005). uptime < uptime_short_hours → 주의(OS-006). uptime_short_hours 안에 재시작한 노드가 restart_share_warn 이상 → 주의(OS-007): 누적 카운터(GC, rejection, 캐시, 지연 평균)가 짧은 기간만 반영한다.
 
 ### DISK-001, DISK-002, DISK-003, DISK-004, DISK-005 — 디스크 flood stage 초과
 
@@ -519,6 +525,25 @@ ingest.total.failed >= ingest_failed_warn 인 노드가 있으면 주의. 실패
 
 tier 가 다르면 스펙이 다른 것이 정상 설계이므로 tier 간 차이는 판정하지 않고, tier 별 스펙 표만 참고로 보고한다
 (NODE-003). 같은 tier 에서는 샤드가 균등 분배되므로 작은 노드가 먼저 포화되어 그 tier 의 처리 한계가 된다.
+
+### PERF-012 — flush·refresh·merge 평균 시간이 김
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `nodes.r_write_latency` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `flush_avg_ms_info` = 800 — [도구] 현장 기준: flush 1회 평균 시간<br>`flush_avg_ms_warn` = 1,200 — [도구] 현장 기준<br>`merge_avg_ms_info` = 20,000 — [도구] 현장 기준: merge 1회 평균 시간<br>`merge_avg_ms_warn` = 40,000 — [도구] 현장 기준<br>`refresh_avg_ms_info` = 40 — [도구] 현장 기준: refresh 1회 평균 시간<br>`refresh_avg_ms_warn` = 70 — [도구] 현장 기준<br>`write_latency_min_ops` = 100 — [도구] 노드 평균을 판정하기 위한 최소 flush/refresh/merge 횟수 |
+| 근거 파일 | nodes_stats.json (indices.flush / refresh / merges) |
+
+**판정 로직**
+
+노드별 flush, refresh, merge 평균 시간(nodes_stats indices.flush/refresh/merges 의 total_time / total).
+
+frozen 전용 노드와 작업 수가 write_latency_min_ops 미만인 항목은 제외한다.
+평균 >= *_avg_ms_warn → 주의, >= *_avg_ms_info → 참고(PERF-012). 공식 수치가 아닌 현장 기준값이며,
+노드 시작 이후 누적 평균이다. flush·merge 가 느리면 대개 스토리지가 따라가지 못하는 것이므로
+IDX-005(merge throttling), IDX-014(indexing throttle)와 함께 본다.
 
 ## 샤드 · 인덱스
 
@@ -814,6 +839,62 @@ ILM 의 readonly·shrink·forcemerge·searchable_snapshot 단계는 롤오버 �
 **판정 로직**
 
 샤드당 평균 크기(store / shards) < 200MB 이고 샤드 >= 300 이며 전체 store > 50GB → 주의. 그 외에는 규모 요약만 참고로 표기.
+
+### SHD-016 — 쓰기 대상 shard 가 일부 노드에 몰림
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `shards.r_write_hotspot` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 주의 |
+| 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수<br>`write_shard_skew_min` = 3 — [도구] 보고할 최소 쓰기 대상 shard 차이<br>`write_shard_skew_warn` = 0.5 — [도구] tier 안 노드별 쓰기 대상 shard 의 (최대 - 최소) / 평균 |
+| 근거 파일 | indices.json / data_stream.json / alias.json / indices_stats.json |
+
+**판정 로직**
+
+tier 안 노드별 쓰기 대상 shard 수(SHD-016).
+
+쓰기 대상은 data stream write index, alias write index, 수집 시점에 색인 중인 index 다. replica 도 색인하므로 포함한다.
+tier 별로(frozen 과 노드 2대 미만 tier 제외) (최대 - 최소) / 평균 >= write_shard_skew_warn 이고
+최대 - 최소 >= write_shard_skew_min → 주의. SHD-006 은 전체 shard 를 비교하고,
+이 판정은 색인 부하가 실제로 걸리는 쓰기 대상 shard 만 비교한다.
+
+### IDX-014 — merge 지연으로 색인이 throttle 됨
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `shards.r_indexing_throttle` |
+| 근거 구분 | 사실 보고 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 근거 파일 | indices_stats.json |
+| 참고 문서 | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+
+**판정 로직**
+
+merge 가 밀려 색인이 throttle 된 상태(IDX-014).
+
+공식: merge 의 I/O throttle 을 모두 풀어도 밀리면, merge 가 따라잡을 때까지 그 shard 의 색인을 throttle 한다.
+indices_stats indexing.is_throttled = true(수집 시점) → 주의. 누적 indexing.throttle_time > 0 만 있으면 → 참고.
+
+### IDX-015 — 미커밋 translog 가 flush 기준을 넘음
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `shards.r_translog_uncommitted` |
+| 근거 구분 | 공식 기준 |
+| 가능 심각도 | 주의 |
+| 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수<br>`translog_flush_threshold_default` = 10gb — [공식] index.translog.flush_threshold_size 기본값(8.8+)<br>`translog_flush_threshold_legacy` = 512mb — [공식] 8.8 이전 기본값 |
+| 근거 파일 | indices_stats.json / settings.json |
+| 참고 문서 | [Translog settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/translog) |
+
+**판정 로직**
+
+shard 복제본당 미커밋 translog 를 index.translog.flush_threshold_size 와 비교한다(IDX-015).
+
+공식: 미커밋 translog 가 flush_threshold_size(기본 10GB)에 닿으면 flush 가 실행되고, 미커밋 작업은 복구 때 다시 적용된다
+(8.8 이전 기본값은 512MB). 복제본당 평균 미커밋 크기(index 합계 / 복제본 수)가
+실효 기준 이상 → 주의: flush 가 따라가지 못하고, 그 shard 를 복구하면 그만큼 다시 적용해야 한다.
 
 ## 과다 샤딩 · 소형 샤드
 
@@ -1651,6 +1732,8 @@ io_time 은 ES 기동 이후 장치가 I/O 를 처리한 누적 시간이다. >=
 mapping.json 의 실제 매핑으로 인덱스별 필드 수를 공식 산정 방식(필드·object·multi-field·runtime 각 1개)으로 센다.
 
 필드 수 >= total_fields.limit × mapping_fields_near_limit_pct → 주의(MAP-004, ignore_dynamic_beyond_limit=true 면 참고).
+ignore_dynamic_beyond_limit 가 없는 인덱스는 색인이 실패할 수 있으므로 표의 앞에 둔다. data stream template 을 누가 관리하는지
+(Fleet package 또는 Elastic)도 함께 보여 준다. integration template 은 대개 ignore 옵션을 켜 두기 때문이다.
 text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_fields.limit × 80% → 주의(MAP-006).
 
 ### VEC-005 — 실제 인덱스의 고차원 float 벡터가 비양자화
@@ -1947,6 +2030,20 @@ syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) �
 
 ## 변화 추세 (--baseline 비교 모드)
 
+### DIF-013 — 서로 다른 클러스터의 번들을 비교함
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `diff.r_cluster_identity` |
+| 근거 구분 | 비교 계산 |
+| 가능 심각도 | 주의 |
+| 근거 파일 | version.json / nodes.json |
+
+**판정 로직**
+
+두 번들이 서로 다른 클러스터에서 수집됨(DIF-013, 주의): cluster_uuid 가 다르거나, uuid 가 없을 때는
+클러스터 이름이 다르고 노드 이름이 절반 미만으로 겹침. 이때 증감은 한 클러스터의 추세가 아니다.
+
 ### DIF-001 — 클러스터 상태 %s
 
 | 항목 | 내용 |
@@ -2242,6 +2339,20 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `hot_thread_pct_warn` | 50 | [도구] 단일 스레드 CPU% |
 | `log_scan_bytes` | 8MiB | [도구] 로그 파일당 스캔 크기(끝부분) |
 | `docs_per_shard_warn` | 200,000,000 | [공식] 샤드당 2억건 미만 권장 |
+| `flush_avg_ms_info` | 800 | [도구] 현장 기준: flush 1회 평균 시간 |
+| `flush_avg_ms_warn` | 1,200 | [도구] 현장 기준 |
+| `refresh_avg_ms_info` | 40 | [도구] 현장 기준: refresh 1회 평균 시간 |
+| `refresh_avg_ms_warn` | 70 | [도구] 현장 기준 |
+| `merge_avg_ms_info` | 20,000 | [도구] 현장 기준: merge 1회 평균 시간 |
+| `merge_avg_ms_warn` | 40,000 | [도구] 현장 기준 |
+| `write_latency_min_ops` | 100 | [도구] 노드 평균을 판정하기 위한 최소 flush/refresh/merge 횟수 |
+| `write_shard_skew_warn` | 0.5 | [도구] tier 안 노드별 쓰기 대상 shard 의 (최대 - 최소) / 평균 |
+| `write_shard_skew_min` | 3 | [도구] 보고할 최소 쓰기 대상 shard 차이 |
+| `restart_share_warn` | 0.5 | [도구] uptime_short_hours 안에 재시작한 노드 비율 |
+| `long_running_task_ms_high` | 3,600,000 | [도구] 1시간: 장시간 task 를 주의로 올리는 기준 |
+| `monitoring_task_ms_info` | 86,400,000 | [도구] 24시간: 모니터링·내부 task 는 이 시간을 넘을 때만 보고 |
+| `translog_flush_threshold_default` | 10gb | [공식] index.translog.flush_threshold_size 기본값(8.8+) |
+| `translog_flush_threshold_legacy` | 512mb | [공식] 8.8 이전 기본값 |
 | `docs_rollover_overshoot_pct` | 5 | [도구] 롤오버된 샤드가 2억건을 넘어도 되는 허용치(ILM 은 poll_interval 마다 확인) |
 | `docs_per_shard_crit` | 1,500,000,000 | [도구] Lucene 한계(2,147,483,519) 접근 경보 |
 | `indices_per_gb_master_heap` | 3,000 | [공식] 마스터 heap 1GB당 인덱스 3000개 |

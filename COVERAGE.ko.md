@@ -210,6 +210,19 @@ ECH/ECE/ECK 배포로 감지되면 위 CFG 항목은 오케스트레이터 관�
 | 암묵 2억건 조건과 `min_*` 조건의 우선순위 | 미반영 | 공식 문서에 관계가 적혀 있지 않음 |
 | `logsdb_columnar` 모드 | 미반영 | GA 여부 미확인 |
 
+
+### 10-2. 쓰기 경로·운영
+
+| 항목 | 상태 | 룰 |
+| --- | --- | --- |
+| merge 가 밀리면 색인 throttle (Merge settings) | 구현 | IDX-014 |
+| `index.translog.flush_threshold_size` 기본 10GB(8.8+), 미커밋 작업은 복구 때 재적용 (Translog settings) | 구현 | IDX-015 |
+| flush·refresh·merge 평균 시간 | 도구 판단 | PERF-012(현장 기준값, 공식 수치 아님) |
+| 쓰기 대상 shard 의 노드 편중 | 도구 판단 | SHD-016 |
+| 대량 재시작 시 누적 카운터 신뢰도 | 도구 판단 | OS-007 |
+| 비교 대상이 같은 클러스터인지 | 구현 | DIF-013 |
+| 디스크 read/write 지연(ms/op) | 판정 불가 | nodes stats `fs.io_stats` 에 read/write 시간 필드가 없음 |
+
 ---
 
 ## 11. Troubleshooting 문서 (운영 판단 기준)
