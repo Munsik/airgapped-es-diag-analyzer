@@ -128,17 +128,46 @@ class B(object):
         self.put("indices.json", sh)
 
 
+def _drop_watermark_settings(c):
+    """Remove custom disk watermark settings (flat or nested) so the defaults apply."""
+    for scope in ("persistent", "transient"):
+        d = c.get(scope)
+        if not isinstance(d, dict):
+            continue
+        for k in [k for k in d if "disk.watermark" in k]:
+            d.pop(k)
+        disk = d.get("cluster", {}).get("routing", {}).get("allocation", {}).get("disk") \
+            if isinstance(d.get("cluster"), dict) else None
+        if isinstance(disk, dict):
+            disk.pop("watermark", None)
+
+
 def _set_disk(b, used):
-    """Disk usage of the first nodes. Disks are set to 100GB so that max_headroom (200GB/150GB/100GB on 8.5+)
-    does not hide the percentage watermarks on bundles with large disks."""
+    """Disk usage of the first non-frozen data nodes, in the same tier as far as the bundle allows.
+
+    Disks are set to 100GB so that max_headroom (200GB/150GB/100GB on 8.5+) does not hide the percentage
+    watermarks on bundles with large disks, and custom watermark settings are removed so the defaults apply.
+    Frozen-only nodes use the frozen flood stage only, so they are skipped.
+    """
     b.clone_nodes(len(used))
+    b.edit("cluster_settings.json", _drop_watermark_settings, default={"persistent": {}, "transient": {}})
+    ni = b.get("nodes.json")["nodes"]
+
+    def is_target(n):
+        roles = n.get("roles") or []
+        return any(r.startswith("data") for r in roles) and roles != ["data_frozen"]
+    order = [i for i, nid in enumerate(ni) if is_target(ni[nid])]
+    if len(order) < len(used):
+        order += [i for i in range(len(ni)) if i not in order]
+    slot = dict((idx, k) for k, idx in enumerate(order[: len(used)]))
 
     def f(i, s):
-        if i < len(used):
+        if i in slot:
             t = 100 * GB
+            u = used[slot[i]]
             s["fs"]["total"]["total_in_bytes"] = t
-            s["fs"]["total"]["available_in_bytes"] = int(t * (1 - used[i]))
-            s["fs"]["total"]["free_in_bytes"] = int(t * (1 - used[i]))
+            s["fs"]["total"]["available_in_bytes"] = int(t * (1 - u))
+            s["fs"]["total"]["free_in_bytes"] = int(t * (1 - u))
     b.each_node(fn_stats=f)
 
 
@@ -189,7 +218,8 @@ SCENARIOS = [
      ["SHD-001!OK"]),
     ("mixed JVM versions", lambda b: b.each_node(fn_info=lambda i, n: n["jvm"].update(version="21.0.%d" % i)), ["CLU-010"]),
     ("shard limit, dangling, long task, recovery", lambda b: (
-        b.edit("cluster_settings.json", lambda c: c["persistent"].update({"cluster.max_shards_per_node": "20"})),
+        b.edit("cluster_settings.json", lambda c: c.setdefault("persistent", {}).update({"cluster.max_shards_per_node": "1"}),
+               default={"persistent": {}, "transient": {}}),
         b.put("dangling_indices.json", {"dangling_indices": [{"index_name": "old", "index_uuid": "u",
                                                               "creation_date_millis": 1}]}),
         b.edit("tasks.json", lambda t: next(iter(t["nodes"].values()))["tasks"].update(
@@ -253,13 +283,14 @@ SCENARIOS = [
      ["SNP-003!CRITICAL", "SNP-002", "SNP-004"]),
     ("snapshots: no success, SLM failing", lambda b: (
         b.put("snapshot.json", {"snapshots": [{"snapshot": "f1", "state": "FAILED", "end_time_in_millis": 1786680000000}]}),
-        b.edit("slm_policies.json", lambda p: [v.update(last_success=None,
-                                                        last_failure={"time": 1786681900000, "time_string": "t",
-                                                                      "details": "repository missing"})
-                                               for v in p.values()] and p)),
+        b.put("slm_policies.json", {"daily": {"policy": {"repository": "r"}, "last_success": None,
+                                              "last_failure": {"time": 1786681900000, "time_string": "t",
+                                                               "details": "repository missing"}}})),
      ["SNP-003!CRITICAL", "SNP-007!CRITICAL"]),
-    ("snapshots: list without timestamps, RPO OK from the last SLM success", lambda b: b.put("snapshot.json", {"snapshots": [
-        {"snapshot": "s1", "state": "SUCCESS"}]}),
+    ("snapshots: list without timestamps, RPO OK from the last SLM success", lambda b: (
+        b.put("snapshot.json", {"snapshots": [{"snapshot": "s1", "state": "SUCCESS"}]}),
+        b.put("slm_policies.json", {"daily": {"policy": {"repository": "r"},
+                                              "last_success": {"time": 1786680000000, "snapshot_name": "s1"}}})),
      ["SNP-003!OK"]),
     ("ILM: rollover step failure is critical", lambda b: b.edit("ilm_explain.json", lambda d: next(iter(d["indices"].values())).update(
         managed=True, policy="p", phase="hot", step="ERROR", failed_step="check-rollover-ready",

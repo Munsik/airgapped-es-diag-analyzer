@@ -30,7 +30,7 @@ Each entry is written as "previous behavior → current behavior (reason)". Use 
 
 ### Fixed
 
-- `tests/drive_branches.py`: the scenarios assumed the bundle they were built on (3-node ECH, collected 2026-08-14) and 10 to 16 failed on other bundles → the collection date is pinned to 2026-08-14 (the reference for certificate, license and snapshot dates), single-node bundles are cloned to 3 nodes, role scenarios remove the master role from the other nodes, disk scenarios use 100GB disks (so max_headroom does not interfere), added indices go to the first data node, and the shard skew and excess replica scenarios scale to the bundle size
+- `tests/drive_branches.py`: the scenarios assumed the bundle they were built on (3-node ECH, collected 2026-08-14) and 10 to 16 failed on other bundles → the collection date is pinned to 2026-08-14 (the reference for certificate, license and snapshot dates), single-node bundles are cloned to 3 nodes, role scenarios remove the master role from the other nodes, disk scenarios use 100GB disks (so max_headroom does not interfere), added indices go to the first data node, and the shard skew and excess replica scenarios scale to the bundle size. Disk scenarios use non-frozen data nodes and remove custom watermark settings, the shard limit scenario uses 1 shard per node, and SLM scenarios bring their own policy
 - DISK-008: when the device counter did not line up with the JVM uptime, average utilization came out negative or above 100% (-131% and -198% on ECH hot and frozen nodes in a real bundle) → shown as "cannot be determined" and not rated
 
 ## [0.11.0] - 2026-10-01
