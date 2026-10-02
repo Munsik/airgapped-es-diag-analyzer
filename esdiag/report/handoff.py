@@ -140,6 +140,15 @@ def render(result, masker, level, tool_version):
         for r in ds["rows"][:MAX_EVIDENCE_ROWS + 5]:
             md.append("| " + " | ".join(_cell(masker, x) for x in r) + " |")
         md.append("")
+        nd = ds.get("nodes")
+        if nd and nd.get("rows"):
+            md.append("### " + T("diff.node.title"))
+            md.append("")
+            md.append("| " + " | ".join(_cell(masker, x) for x in nd["columns"]) + " |")
+            md.append("| " + " | ".join("---" for _ in nd["columns"]) + " |")
+            for r in nd["rows"][:40]:
+                md.append("| " + " | ".join(_cell(masker, x) for x in r) + " |")
+            md.append("")
 
     info = [fd for fd in result.by_severity() if fd.severity == Severity.INFO]
     if info:

@@ -164,11 +164,16 @@ DEFAULTS = {
     "tier_hot_used_pct": 70,                        # [Tool] Hot tier disk usage at which colder tiers are compared
     "tier_gap_pct": 30,                             # [Tool] Disk usage gap (percentage points) between hot and a colder tier
     "tier_idle_used_pct": 20,                       # [Tool] Colder tier disk usage below this is reported as mostly empty
+    "size_idle_cpu_pct": 20,                        # [Tool] Tier counts as having large headroom when every node is below this CPU%
+    "size_idle_load_per_cpu": 0.3,                  # [Tool] ... and below this load15 per CPU
+    "size_idle_heap_pct": 50,                       # [Tool] ... and below this heap%
+    "size_idle_disk_pct": 30,                       # [Tool] ... and below this disk% (not used for frozen)
     "ingest_window_days": 7,                        # [Tool] Days of recent indices used to estimate daily ingest volume
 
     # --- Bundle comparison (diff) ---
     "diff_min_hours_for_projection": 1.0,            # [Tool] No extrapolation for intervals shorter than this
     "disk_projection_days_warn": 30,                 # [Tool]
+    "node_change_noise_pct": 5,                      # [Tool] Changes smaller than this percent are shown as unchanged in the per node comparison
     "index_growth_min_bytes": 1024 ** 3,             # [Tool]
 
     # --- Report ---

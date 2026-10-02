@@ -104,7 +104,8 @@ footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);
 
 JS = """
 (function(){
-  var level='all', cat='all';
+  var level='all', cat='all', q='';
+  var qi=document.getElementById('fq');
   var lb=document.querySelectorAll('.nav button[data-level]');
   var cb=document.querySelectorAll('.nav button[data-cat]');
   function apply(){
@@ -113,7 +114,18 @@ JS = """
       var s=el.getAttribute('data-sev'), c=el.getAttribute('data-cat');
       var okL = level==='all' || s===level || (level==='act' && (s==='CRITICAL'||s==='WARNING'));
       var okC = cat==='all' || c===cat;
-      var show = okL && okC;
+      var okQ = true;
+      var trs = el.querySelectorAll('tbody tr');
+      if(q){
+        var head = (el.querySelector('h3')||el).textContent + ' ' + ((el.querySelector('dl')||{}).textContent||'');
+        var hit = 0;
+        trs.forEach(function(tr){ var m = tr.textContent.toLowerCase().indexOf(q) >= 0; tr.style.display = m ? '' : 'none'; if(m){hit++;} });
+        if(!hit){ trs.forEach(function(tr){tr.style.display='';}); }
+        okQ = hit > 0 || head.toLowerCase().indexOf(q) >= 0;
+      } else {
+        trs.forEach(function(tr){tr.style.display='';});
+      }
+      var show = okL && okC && okQ;
       el.style.display = show ? '' : 'none';
       if(show){shown++;}
     });
@@ -126,13 +138,14 @@ JS = """
     cb.forEach(function(b){b.setAttribute('aria-pressed', b.dataset.cat===cat);});
     var fc=document.getElementById('fcount'); if(fc){fc.textContent=_T.shown.replace('%d',shown);}
   }
+  if(qi){qi.addEventListener('input',function(){q=qi.value.trim().toLowerCase();apply();});}
   lb.forEach(function(b){b.addEventListener('click',function(){level=b.dataset.level;apply();});});
   cb.forEach(function(b){b.addEventListener('click',function(){cat=b.dataset.cat;apply();
     var first=document.querySelector('h2[data-cat]:not([style*="none"])');
     if(first){first.scrollIntoView({behavior:'smooth',block:'start'});}});});
   document.querySelectorAll('a[data-jump]').forEach(function(a){
     a.addEventListener('click',function(ev){
-      ev.preventDefault(); level='all'; cat='all'; apply();
+      ev.preventDefault(); level='all'; cat='all'; q=''; if(qi){qi.value='';} apply();
       var t=document.getElementById(a.getAttribute('data-jump'));
       if(t){t.scrollIntoView({behavior:'smooth',block:'center'}); t.style.outline='2px solid #15181b';
         setTimeout(function(){t.style.outline='';},1500);}
@@ -262,6 +275,12 @@ def render(result):
         o.append("<div class='scroll'>")
         o.append(_table({"columns": ds["columns"], "rows": ds["rows"]}))
         o.append("</div>")
+        nd = ds.get("nodes")
+        if nd and nd.get("rows"):
+            o.append("<h3>%s<small> %s</small></h3><div class='scroll'>"
+                     % (e(T("diff.node.title")), e(T("diff.node.note") % result.ctx.t["node_change_noise_pct"])))
+            o.append(_table(nd))
+            o.append("</div>")
         o.append(T("report.html.render.30"))
 
     # ---------- Node status matrix ----------
@@ -317,6 +336,8 @@ def render(result):
     o.append(T("report.html.render.36"))
     for cat in cats:
         o.append("<button data-cat='%s'>%s</button>" % (e(category_label(cat)), e(category_label(cat))))
+    o.append("<input id='fq' type='search' placeholder='%s' aria-label='%s' style='margin-left:8px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px;min-width:200px;background:var(--surface);color:inherit'>"
+             % (e(T("html.filter.placeholder")), e(T("html.filter.placeholder"))))
     o.append("<span id='fcount' style='color:var(--muted);font-size:12px;margin-left:auto'></span></div>")
 
     # ---------- Findings ----------

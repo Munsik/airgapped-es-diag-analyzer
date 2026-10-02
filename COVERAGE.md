@@ -236,6 +236,10 @@ Limits of the diagnostics bundle: `cluster_settings_defaults` does not hold pure
 | Search threads busy while CPU is low | Tool threshold | PERF-013 (point in time) |
 | Ingest pipeline failure ratio | Tool threshold | ING-001 |
 | Rolled-over data on hot, idle extra replicas, tier disk use, ingest headroom | Tool threshold | COST-001 to COST-004 (Info, COST-004 can be Warning) |
+| Storage by data type (data stream naming scheme `<type>-<dataset>-<namespace>`) | Implemented | COST-005 |
+| Sizing signals per tier (pressure or large headroom) | Tool threshold | COST-006 |
+| Throughput per interval across three or more bundles (peak and off-peak) | Computed | DIF-014 |
+| Node groups within a tier by attribute or storage type | Not implemented | Rarely more than one group per tier in practice; planned later |
 | Search thread wait time in hot threads ("other") as an I/O signal | Not used | It also counts time waiting on locks, so it does not identify storage waits |
 | Load average above the core count as I/O wait | Not used | Inside a container the load can be the host's (OS-001) |
 

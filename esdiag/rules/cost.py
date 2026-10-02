@@ -10,7 +10,7 @@ import collections
 
 from ..i18n import T, N_
 from ..model import Finding, Severity, table
-from ..util import dig, fmt_bytes, items, num
+from ..util import dig, fmt_bytes, fmt_num, items, num
 
 CAT = "cost"
 DAY_MS = 86400000.0
@@ -20,6 +20,8 @@ D_TIERS = (N_("rules.cost._.01"),
            "https://www.elastic.co/docs/manage-data/lifecycle/data-tiers")
 D_ILM_PHASES = (N_("rules.cost._.02"),
                 "https://www.elastic.co/docs/manage-data/lifecycle/index-lifecycle-management/index-lifecycle")
+D_DS_NAMING = (N_("rules.cost._.04"),
+               "https://www.elastic.co/docs/reference/fleet/data-streams")
 D_REPLICA = (N_("rules.cost._.03"),
              "https://www.elastic.co/docs/deploy-manage/distributed-architecture/clusters-nodes-shards")
 
@@ -318,4 +320,144 @@ def r_ingest_headroom(ctx):
         refs=[D_TIERS], source="settings.json / indices_stats.json / nodes_stats.json")]
 
 
-RULES = [r_hot_rolled_over, r_idle_replicas, r_tier_usage, r_ingest_headroom]
+DS_TYPES = ("logs", "metrics", "traces", "synthetics")
+SEC_ALERTS = (".internal.alerts-security", ".alerts-security", ".siem-signals")
+
+
+def _data_type(ctx, name):
+    """Data type key of an index: a data stream type from the official naming scheme <type>-<dataset>-<namespace>,
+    security alerts, partial mount, system, other data stream, or other index."""
+    if ctx.is_partial_mount(name):
+        return "partial"
+    plain = name
+    for prefix in ("restored-", "partial-"):
+        if plain.startswith(prefix):
+            plain = plain[len(prefix):]
+    if any(plain.startswith(p) or plain.startswith(".ds-" + p) for p in SEC_ALERTS):
+        return "alerts"
+    ds = ctx.data_stream_of(name)
+    ds_name = str(ds.get("name") or "") if isinstance(ds, dict) else ""
+    if not ds_name and plain.startswith(".ds-"):
+        ds_name = plain[4:].rsplit("-", 2)[0]
+    if ctx.is_system_index(name):
+        return "system"
+    if ds_name:
+        t = ds_name.split("-", 1)[0]
+        return t if t in DS_TYPES and ds_name.count("-") >= 2 else "other_ds"
+    return "other"
+
+
+def r_storage_by_type(ctx):
+    """Storage by data type and tier (COST-005), as reported.
+
+    Each index is classified by the official data stream naming scheme (<type>-<dataset>-<namespace>: logs, metrics, traces,
+    synthetics), as security alerts, as system, as another data stream or as another index. Partially mounted
+    (frozen) indices are a separate row because their store size is only the local cache. The tier is where the primary shards
+    sit. Rows show index count, documents, primary and total store, and the share of the total store. Info only.
+    """
+    tiers = _node_tiers(ctx)
+    prim_tier = {}
+    for sh in ctx.shards:
+        if (sh.get("prirep") or "").lower() == "p" and sh.get("node"):
+            prim_tier.setdefault(sh["index"], tiers.get(sh["node"]) or "-")
+    agg = collections.OrderedDict()
+    total = 0
+    for name, st in items(ctx.indices_stats):
+        if not isinstance(st, dict):
+            continue
+        key = (_data_type(ctx, name), prim_tier.get(name, "-"))
+        a = agg.setdefault(key, [0, 0, 0, 0])
+        a[0] += 1
+        a[1] += num(st, "primaries", "docs", "count")
+        a[2] += num(st, "primaries", "store", "size_in_bytes")
+        a[3] += num(st, "total", "store", "size_in_bytes")
+        total += num(st, "total", "store", "size_in_bytes")
+    if not agg or not total:
+        return []
+    rows = sorted(agg.items(), key=lambda kv: -kv[1][3])
+    by_type = collections.Counter()
+    for (typ, _t), a in rows:
+        by_type[typ] += a[3]
+    top = ", ".join("%s %.0f%%" % (T("rules.cost.type." + k), v * 100.0 / total) for k, v in by_type.most_common(4))
+    return [Finding(
+        "COST-005", CAT, Severity.INFO, T("rules.cost.r_storage_by_type.01"),
+        observed=T("rules.cost.r_storage_by_type.02") % (fmt_bytes(total), top),
+        impact=T("rules.cost.r_storage_by_type.03"),
+        recommend=T("rules.cost.r_storage_by_type.04"),
+        evidence=table([T("rules.cost.r_storage_by_type.05"), "tier", T("rules.cost.r_storage_by_type.06"), "docs",
+                        T("rules.cost.r_storage_by_type.07"), T("rules.cost.r_storage_by_type.08"),
+                        T("rules.cost.r_storage_by_type.09")],
+                       [[T("rules.cost.type." + typ), tier, a[0], fmt_num(a[1]), fmt_bytes(a[2]), fmt_bytes(a[3]),
+                         "%.1f%%" % (a[3] * 100.0 / total)] for (typ, tier), a in rows]),
+        refs=[D_DS_NAMING, D_TIERS], source="indices_stats.json / data_stream.json / indices.json")]
+
+
+def r_tier_sizing(ctx):
+    """Sizing signals per data tier from one bundle (COST-006).
+
+    Pressure: any of every node busy (load15 per CPU >= load_per_cpu_warn or CPU >= tier_cpu_pct_warn, the HOT-005 test), write or
+    search rejections on the tier's nodes, indexing pressure rejections, or a node at or above the high watermark (frozen excluded). Large headroom: every node of the tier has been up for at least
+    node_compare_min_uptime_hours and has CPU below size_idle_cpu_pct, load15 per CPU below size_idle_load_per_cpu, heap below
+    size_idle_heap_pct and disk below size_idle_disk_pct (disk not used for frozen), with no rejections. Anything else is
+    "no clear signal". A bundle is one moment, so large headroom means "worth a look with monitoring", not "shrink now". Info only.
+    """
+    rows, flags = [], []
+    for tier, nodes in ctx.data_tiers().items():
+        rej = ipr = 0
+        hot_disk = []
+        for n in nodes:
+            for pool in ("write", "write_coordination", "search"):
+                rej += num(n.stats, "thread_pool", pool, "rejected")
+            ipr += sum(num(v) for k, v in items(dig(n.stats, "indexing_pressure", "memory", "total")) if k.endswith("rejections"))
+            if tier != "frozen" and n.fs_total and n.disk_used_pct is not None:
+                high = ctx.watermark_used_pct("high", n.fs_total) or 90.0
+                if n.disk_used_pct >= high:
+                    hot_disk.append(n.name)
+        cpu = [n.cpu_pct for n in nodes if n.cpu_pct is not None]
+        load = [n.load15 / n.processors for n in nodes if n.load15 is not None and n.processors]
+        heap = [n.heap_used_pct for n in nodes if n.heap_used_pct is not None]
+        disk = [n.disk_used_pct for n in nodes if n.disk_used_pct is not None] if tier != "frozen" else []
+        busy = [((n.load15 / n.processors) >= ctx.t["load_per_cpu_warn"] if (n.load15 and n.processors) else False)
+                or (n.cpu_pct is not None and n.cpu_pct >= ctx.t["tier_cpu_pct_warn"]) for n in nodes]
+        reasons = []
+        if nodes and all(busy):
+            reasons.append(T("rules.cost.r_tier_sizing.10"))
+        if rej:
+            reasons.append(T("rules.cost.r_tier_sizing.11") % fmt_num(rej))
+        if ipr:
+            reasons.append(T("rules.cost.r_tier_sizing.12") % fmt_num(ipr))
+        if hot_disk:
+            reasons.append(T("rules.cost.r_tier_sizing.13") % len(hot_disk))
+        settled = all(not ctx.recently_restarted(n) for n in nodes)
+        idle = (settled and not reasons and cpu and load and heap
+                and max(cpu) < ctx.t["size_idle_cpu_pct"] and max(load) < ctx.t["size_idle_load_per_cpu"]
+                and max(heap) < ctx.t["size_idle_heap_pct"]
+                and (tier == "frozen" or (disk and max(disk) < ctx.t["size_idle_disk_pct"])))
+        if reasons:
+            verdict = T("rules.cost.r_tier_sizing.14")
+            flags.append("%s: %s" % (tier, ", ".join(reasons)))
+        elif idle:
+            verdict = T("rules.cost.r_tier_sizing.15")
+            flags.append("%s: %s" % (tier, verdict))
+        else:
+            verdict = T("rules.cost.r_tier_sizing.16")
+        rows.append([tier, len(nodes),
+                     ("%.0f%% / %.0f%%" % (max(cpu), sum(cpu) / len(cpu))) if cpu else "-",
+                     ("%.2f" % max(load)) if load else "-",
+                     ("%.0f%%" % max(heap)) if heap else "-",
+                     ("%.0f%%" % max(disk)) if disk else "-",
+                     fmt_num(rej), verdict, "; ".join(reasons) or "-"])
+    if not rows:
+        return []
+    return [Finding(
+        "COST-006", CAT, Severity.INFO, T("rules.cost.r_tier_sizing.01"),
+        observed=" / ".join(flags) if flags else T("rules.cost.r_tier_sizing.02"),
+        impact=T("rules.cost.r_tier_sizing.03"),
+        recommend=T("rules.cost.r_tier_sizing.04"),
+        evidence=table(["tier", T("rules.cost.r_tier_sizing.05"), T("rules.cost.r_tier_sizing.06"), "load15/cpu max",
+                        "heap% max", "disk% max", T("rules.cost.r_tier_sizing.07"), T("rules.cost.r_tier_sizing.08"),
+                        T("rules.cost.r_tier_sizing.09")], rows),
+        refs=[D_TIERS], source="nodes_stats.json")]
+
+
+RULES = [r_hot_rolled_over, r_idle_replicas, r_tier_usage, r_ingest_headroom, r_storage_by_type, r_tier_sizing]

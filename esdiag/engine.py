@@ -302,7 +302,8 @@ def _open_bundle(path, bundles):
 def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None, bundles=None):
     """Run every rule against a bundle.
 
-    With baseline, the two bundles are compared and trend findings are added.
+    With baseline (one path or a list), the analyzed bundle is compared with the latest earlier one and trend findings are added.
+    With two or more baselines, throughput per interval (peak and off-peak) is added as well.
     bundles is an optional dict that caches opened Bundle objects by path, so a second pass in
     another language does not parse the same files again.
     """
@@ -316,11 +317,18 @@ def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None, bund
     findings, errors = _run_rules(ctx, only, False)
 
     diff_summary = None
-    if baseline:
-        bb = _open_bundle(baseline, bundles)
-        if not any(bb.exists(f) for f in CORE_FILES):
-            raise ValueError(T("engine.analyze.02") % baseline)
-        base_ctx = Context(bb, t)
+    baselines = [baseline] if isinstance(baseline, str) else [b for b in (baseline or []) if b]
+    if baselines:
+        ctxs = []
+        for path_b in baselines:
+            bb = _open_bundle(path_b, bundles)
+            if not any(bb.exists(f) for f in CORE_FILES):
+                raise ValueError(T("engine.analyze.02") % path_b)
+            ctxs.append(Context(bb, t))
+        # Oldest first. The bundle right before the analyzed one is the comparison base; with two or more baselines
+        # every interval also feeds the peak/off-peak throughput (DIF-014).
+        ctxs.sort(key=lambda c: c.collection_time.timestamp() if c.collection_time else 0)
+        base_ctx = ctxs[-1]
         base_findings, _ = _run_rules(base_ctx, only, True)
         try:
             diff_summary, diff_findings = diff_mod.compare(
@@ -329,6 +337,12 @@ def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None, bund
             errors.append({"rule": "diff.compare",
                            "error": traceback.format_exc(limit=3)})
             diff_findings = []
+        if len(ctxs) >= 2:
+            try:
+                diff_findings.extend(diff_mod.r_interval_rates(ctxs + [ctx], t))
+            except Exception:
+                errors.append({"rule": "diff.r_interval_rates",
+                               "error": traceback.format_exc(limit=3)})
         findings.extend(diff_findings)
     hidden = []
     if skip_ok:

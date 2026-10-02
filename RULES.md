@@ -53,12 +53,12 @@ Each rule declares the input files it needs (`REQUIRES` in `esdiag/rules/__init_
 - [Oversharding and small shards](#oversharding-and-small-shards): 3 rules
 - [Official guidance baselines (settings, shards, performance, disk, vectors)](#official-guidance-baselines-settings-shards-performance-disk-vectors): 25 rules
 - [Hot spots and balancing](#hot-spots-and-balancing): 7 rules
-- [Storage cost](#storage-cost): 4 rules
+- [Storage cost](#storage-cost): 6 rules
 - [Operations and security](#operations-and-security): 9 rules
 - [Mappings, ILM policies, cluster coordination, detailed stats](#mappings-ilm-policies-cluster-coordination-detailed-stats): 18 rules
 - [Runtime (hot threads, logs)](#runtime-hot-threads-logs): 2 rules
 - [OS settings (syscalls/ in local and remote mode)](#os-settings-syscalls-in-local-and-remote-mode): 1 rule
-- [Trend (--baseline comparison mode)](#trend---baseline-comparison-mode): 10 rules
+- [Trend (--baseline comparison mode)](#trend---baseline-comparison-mode): 11 rules
 - [Settings knowledge base](#settings-knowledge-base)
 - [All thresholds](#all-thresholds)
 
@@ -1685,6 +1685,48 @@ Headroom = sum over those nodes of (bytes allowed at the high watermark - bytes 
 This assumes nothing is moved or deleted. Days <= disk_projection_days_warn while more than half of the window's data has no ILM
 phase after hot (no move, no delete) → Warning; otherwise Info. Comparison mode (DIF-008) measures real growth instead.
 
+### COST-005: Storage by data type
+
+| Item | Details |
+| --- | --- |
+| Function | `cost.r_storage_by_type` |
+| Evidence basis | Reported fact |
+| Possible severities | Info |
+| Required input | (indices_stats.json) |
+| Source files | indices_stats.json / data_stream.json / indices.json |
+| References | [Data stream naming scheme](https://www.elastic.co/docs/reference/fleet/data-streams)<br>[Data tiers](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
+
+**Decision logic**
+
+Storage by data type and tier (COST-005), as reported.
+
+Each index is classified by the official data stream naming scheme (<type>-<dataset>-<namespace>: logs, metrics, traces,
+synthetics), as security alerts, as system, as another data stream or as another index. Partially mounted
+(frozen) indices are a separate row because their store size is only the local cache. The tier is where the primary shards
+sit. Rows show index count, documents, primary and total store, and the share of the total store. Info only.
+
+### COST-006: Sizing signals per tier
+
+| Item | Details |
+| --- | --- |
+| Function | `cost.r_tier_sizing` |
+| Evidence basis | Tool threshold |
+| Possible severities | Info |
+| Thresholds | `load_per_cpu_warn` = 1.0 ([Tool] load15 / CPU cores)<br>`size_idle_cpu_pct` = 20 ([Tool] Tier counts as having large headroom when every node is below this CPU%)<br>`size_idle_disk_pct` = 30 ([Tool] ... and below this disk% (not used for frozen))<br>`size_idle_heap_pct` = 50 ([Tool] ... and below this heap%)<br>`size_idle_load_per_cpu` = 0.3 ([Tool] ... and below this load15 per CPU)<br>`tier_cpu_pct_warn` = 75 ([Tool] CPU% at which a whole tier counts as saturated) |
+| Required input | (nodes_stats.json) |
+| Source files | nodes_stats.json |
+| References | [Data tiers](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
+
+**Decision logic**
+
+Sizing signals per data tier from one bundle (COST-006).
+
+Pressure: any of every node busy (load15 per CPU >= load_per_cpu_warn or CPU >= tier_cpu_pct_warn, the HOT-005 test), write or
+search rejections on the tier's nodes, indexing pressure rejections, or a node at or above the high watermark (frozen excluded). Large headroom: every node of the tier has been up for at least
+node_compare_min_uptime_hours and has CPU below size_idle_cpu_pct, load15 per CPU below size_idle_load_per_cpu, heap below
+size_idle_heap_pct and disk below size_idle_disk_pct (disk not used for frozen), with no rejections. Anything else is
+"no clear signal". A bundle is one moment, so large headroom means "worth a look with monitoring", not "shrink now". Info only.
+
 ## Operations and security
 
 ### OPS-007: Monitoring setup needs checking
@@ -2340,6 +2382,25 @@ the totals and the skew.
 
 Increase in index primary store > index_growth_min_bytes -> info (DIF-010). User indices added or deleted -> info (DIF-011).
 
+### DIF-014: Throughput by interval (peak and off-peak)
+
+| Item | Details |
+| --- | --- |
+| Function | `diff.r_interval_rates` |
+| Evidence basis | Computed |
+| Possible severities | Info |
+| Source files | nodes_stats.json (consecutive bundles) |
+
+**Decision logic**
+
+Throughput per interval when three or more bundles are given (DIF-014): peak and off-peak.
+
+The bundles are sorted by collection time and every consecutive pair is one interval. For each interval the increase in
+index_total and query_total of the data nodes is turned into operations per second (replica work included). A node whose uptime
+went down in the interval restarted, so it is left out of that interval. The busiest interval by indexing rate is the peak,
+the quietest the off-peak, and their ratio is shown. The per data node rate at the peak is what sizing needs.
+Info only.
+
 ### DIF-012: Change in findings
 
 | Item | Details |
@@ -2596,9 +2657,14 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `tier_hot_used_pct` | 70 | [Tool] Hot tier disk usage at which colder tiers are compared |
 | `tier_gap_pct` | 30 | [Tool] Disk usage gap (percentage points) between hot and a colder tier |
 | `tier_idle_used_pct` | 20 | [Tool] Colder tier disk usage below this is reported as mostly empty |
+| `size_idle_cpu_pct` | 20 | [Tool] Tier counts as having large headroom when every node is below this CPU% |
+| `size_idle_load_per_cpu` | 0.3 | [Tool] ... and below this load15 per CPU |
+| `size_idle_heap_pct` | 50 | [Tool] ... and below this heap% |
+| `size_idle_disk_pct` | 30 | [Tool] ... and below this disk% (not used for frozen) |
 | `ingest_window_days` | 7 | [Tool] Days of recent indices used to estimate daily ingest volume |
 | `diff_min_hours_for_projection` | 1.0 | [Tool] No extrapolation for intervals shorter than this |
 | `disk_projection_days_warn` | 30 | [Tool] |
+| `node_change_noise_pct` | 5 | [Tool] Changes smaller than this percent are shown as unchanged in the per node comparison |
 | `index_growth_min_bytes` | 1GiB | [Tool] |
 | `top_n` | 15 | [Tool] Maximum rows in an evidence table |
 | `eol_major_below` | 8 | [Tool] Majors below this trigger an old-version warning |

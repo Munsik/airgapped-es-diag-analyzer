@@ -53,12 +53,12 @@
 - [과다 샤딩 · 소형 샤드](#과다-샤딩-소형-샤드) — 3개 룰
 - [공식 가이드 기준 (설정 · 샤드 · 성능 · 디스크 · 벡터)](#공식-가이드-기준-설정-샤드-성능-디스크-벡터) — 25개 룰
 - [핫스팟 · 밸런싱](#핫스팟-밸런싱) — 7개 룰
-- [스토리지 비용](#스토리지-비용) — 4개 룰
+- [스토리지 비용](#스토리지-비용) — 6개 룰
 - [운영 · 보안](#운영-보안) — 9개 룰
 - [매핑 · ILM 정책 · 클러스터 조정 · 세부 통계](#매핑-ilm-정책-클러스터-조정-세부-통계) — 18개 룰
 - [런타임 (hot threads · 로그)](#런타임-hot-threads-로그) — 2개 룰
 - [OS 설정 (local/remote 모드 syscalls/)](#os-설정-localremote-모드-syscalls) — 1개 룰
-- [변화 추세 (--baseline 비교 모드)](#변화-추세---baseline-비교-모드) — 10개 룰
+- [변화 추세 (--baseline 비교 모드)](#변화-추세---baseline-비교-모드) — 11개 룰
 - [설정 지식 베이스](#설정-지식-베이스)
 - [임계값 전체 목록](#임계값-전체-목록)
 
@@ -1685,6 +1685,48 @@ snapshot 마운트와 system 인덱스는 뺀다. 수집 대상 tier = write 대
 아무것도 옮기거나 지우지 않는다고 가정한다. 일수 <= disk_projection_days_warn 이면서 구간 데이터의 절반 넘게 hot 다음 ILM
 phase 가 없으면(이동도 삭제도 없음) → 주의, 아니면 참고. 비교 모드(DIF-008)는 실제 증가량을 잰다.
 
+### COST-005 — 데이터 종류별 저장량
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `cost.r_storage_by_type` |
+| 근거 구분 | 사실 보고 |
+| 가능 심각도 | 참고 |
+| 필요 입력 | (indices_stats.json) |
+| 근거 파일 | indices_stats.json / data_stream.json / indices.json |
+| 참고 문서 | [데이터 스트림 이름 규칙](https://www.elastic.co/docs/reference/fleet/data-streams)<br>[데이터 tier](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
+
+**판정 로직**
+
+데이터 종류와 tier 별 저장량(COST-005), 보고된 값 그대로.
+
+인덱스마다 공식 데이터 스트림 이름 규칙(<type>-<dataset>-<namespace>: logs, metrics, traces,
+synthetics), 보안 알림, system, 기타 데이터 스트림, 기타 인덱스 중 하나로 나눈다. partial 마운트
+(frozen) 인덱스는 store 크기가 로컬 캐시 크기일 뿐이라 따로 보여 준다. tier 는 primary 샤드가 있는 곳이다.
+행마다 인덱스 수, 문서 수, primary 와 전체 store, 전체 store 대비 비중을 보여 준다. 참고로만 보고한다.
+
+### COST-006 — tier 별 사이징 신호
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `cost.r_tier_sizing` |
+| 근거 구분 | 도구 판단 |
+| 가능 심각도 | 참고 |
+| 임계값 | `load_per_cpu_warn` = 1.0 — [도구] load15 / CPU 코어<br>`size_idle_cpu_pct` = 20 — [도구] tier 의 모든 노드 CPU 가 이보다 낮으면 여유 큼 후보<br>`size_idle_disk_pct` = 30 — [도구] ... 그리고 디스크 사용률이 이보다 낮음(frozen 제외)<br>`size_idle_heap_pct` = 50 — [도구] ... 그리고 heap 사용률이 이보다 낮음<br>`size_idle_load_per_cpu` = 0.3 — [도구] ... 그리고 load15/CPU 가 이보다 낮음<br>`tier_cpu_pct_warn` = 75 — [도구] tier 전체 포화 판정 CPU% |
+| 필요 입력 | (nodes_stats.json) |
+| 근거 파일 | nodes_stats.json |
+| 참고 문서 | [데이터 tier](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
+
+**판정 로직**
+
+번들 하나로 본 data tier 별 사이징 신호(COST-006).
+
+부족 신호: 모든 노드가 바쁨(load15/CPU >= load_per_cpu_warn 또는 CPU >= tier_cpu_pct_warn, HOT-005 와 같은 기준), tier 노드의 write·
+search 거부, indexing pressure 거부, high watermark 이상인 노드(frozen 제외) 중 하나라도 있음. 여유 큼: tier 의 모든 노드가
+node_compare_min_uptime_hours 이상 떠 있었고 CPU < size_idle_cpu_pct, load15/CPU < size_idle_load_per_cpu, heap <
+size_idle_heap_pct, 디스크 < size_idle_disk_pct(frozen 은 디스크 제외)이며 거부가 없음. 나머지는
+"뚜렷한 신호 없음". 번들은 한 순간이므로 여유 큼은 "지금 줄여라" 가 아니라 "모니터링으로 확인해 볼 만함" 이다. 참고로만 보고한다.
+
 ## 운영 · 보안
 
 ### OPS-007 — 모니터링 구성 확인 필요
@@ -2340,6 +2382,25 @@ data 노드만 센다. 편중은 tier 안에서 비교한다: 가장 바쁜 노�
 
 인덱스 primary store 증가분 > index_growth_min_bytes → 참고(DIF-010). 사용자 인덱스 신규·삭제 → 참고(DIF-011).
 
+### DIF-014 — 구간별 처리량(peak/off-peak)
+
+| 항목 | 내용 |
+| --- | --- |
+| 함수 | `diff.r_interval_rates` |
+| 근거 구분 | 비교 계산 |
+| 가능 심각도 | 참고 |
+| 근거 파일 | nodes_stats.json(연속된 번들) |
+
+**판정 로직**
+
+번들이 3개 이상일 때 구간별 처리량(DIF-014): peak 와 off-peak.
+
+번들을 수집 시각 순으로 정렬하고 이어진 두 번들을 한 구간으로 본다. 구간마다 data 노드의 index_total 과
+query_total 증가량을 초당 작업 수로 바꾼다(replica 작업 포함). 구간 중 uptime 이 줄어든 노드는
+재시작했으므로 그 구간에서 뺀다. 색인 속도가 가장 높은 구간이 peak,
+가장 낮은 구간이 off-peak 이며 둘의 비율을 보여 준다. 사이징에 필요한 것은 peak 때의 data 노드당 속도다.
+참고로만 보고한다.
+
 ### DIF-012 — 판정 결과 변화
 
 | 항목 | 내용 |
@@ -2596,9 +2657,14 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `tier_hot_used_pct` | 70 | [도구] 차가운 tier 와 비교를 시작하는 hot tier 디스크 사용률 |
 | `tier_gap_pct` | 30 | [도구] hot 과 차가운 tier 의 디스크 사용률 차이(포인트) |
 | `tier_idle_used_pct` | 20 | [도구] 차가운 tier 사용률이 이보다 낮으면 대부분 비어 있는 것으로 봄 |
+| `size_idle_cpu_pct` | 20 | [도구] tier 의 모든 노드 CPU 가 이보다 낮으면 여유 큼 후보 |
+| `size_idle_load_per_cpu` | 0.3 | [도구] ... 그리고 load15/CPU 가 이보다 낮음 |
+| `size_idle_heap_pct` | 50 | [도구] ... 그리고 heap 사용률이 이보다 낮음 |
+| `size_idle_disk_pct` | 30 | [도구] ... 그리고 디스크 사용률이 이보다 낮음(frozen 제외) |
 | `ingest_window_days` | 7 | [도구] 하루 수집량 추정에 쓰는 최근 인덱스 기간(일) |
 | `diff_min_hours_for_projection` | 1.0 | [도구] 이보다 짧은 간격은 외삽 안 함 |
 | `disk_projection_days_warn` | 30 | [도구] |
+| `node_change_noise_pct` | 5 | [도구] 노드별 비교에서 이 퍼센트 미만의 변화는 '변화 없음' 으로 표시 |
 | `index_growth_min_bytes` | 1GiB | [도구] |
 | `top_n` | 15 | [도구] 근거 표 최대 행 수 |
 | `eol_major_below` | 8 | [도구] 이 메이저 미만은 구버전 경고 |

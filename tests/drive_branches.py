@@ -515,6 +515,9 @@ SCENARIOS = [
         fn_info=lambda i, n: n.setdefault("jvm", {}).pop("using_compressed_ordinary_object_pointers", None),
         fn_stats=lambda i, s: s["jvm"]["mem"].update(heap_max_in_bytes=28 * GB)),
      ["JVM-002!INFO"]),
+    ("tier under pressure", lambda b: b.each_node(
+        fn_stats=lambda i, s: s.setdefault("thread_pool", {}).setdefault("write", {}).update(rejected=10)),
+     ["COST-006!INFO", "COST-005!INFO"]),
     ("_source disabled in the mapping", lambda b: (
         b.add_index("no-source"),
         b.put("mapping.json", {"no-source": {"mappings": {"_source": {"enabled": False}, "properties": {}}}})),
@@ -579,10 +582,29 @@ def main():
         fails.append("compare mode: rule errors %s / not detected %s" % ([e["rule"] for e in r.errors] or "-", miss or "-"))
     else:
         passed += 1
+    # Three bundles: throughput per interval (DIF-014) and the per node change table
+    d0, d3 = os.path.join(work, "s0"), os.path.join(work, "s3")
+    for dd, day, up, add in ((d0, "13", 10 ** 9, 0), (d1, "14", 10 ** 9 + 86400000, 10 ** 6), (d3, "15", 10 ** 9 + 2 * 86400000, 3 * 10 ** 6)):
+        if os.path.exists(dd):
+            shutil.rmtree(dd)
+        shutil.copytree(os.path.join(base, root_name), dd)
+        B(dd).edit("manifest.json", lambda m, day=day: m.update(collectionDate="2026-08-%sT04:51:34.007Z" % day))
+        B(dd).each_node(fn_stats=lambda i, s, up=up, add=add: (
+            s["jvm"].update(uptime_in_millis=up),
+            s.setdefault("indices", {}).setdefault("indexing", {}).update(index_total=10 ** 7 + add),
+            s["indices"].setdefault("search", {}).update(query_total=10 ** 6 + add)))
+    r = analyze(d3, baseline=[d1, d0])
+    ids = set(f.id for f in r.findings)
+    nodes_tbl = (r.diff_summary or {}).get("nodes") or {}
+    if r.errors or "DIF-014" not in ids or not nodes_tbl.get("rows"):
+        fails.append("series mode: rule errors %s / DIF-014 %s / node table %s" % (
+            [e["rule"] for e in r.errors] or "-", "DIF-014" in ids, bool(nodes_tbl.get("rows"))))
+    else:
+        passed += 1
     shutil.rmtree(work, ignore_errors=True)
     for f in fails:
         print("FAIL " + f)
-    print("%d scenarios: %d passed, %d failed" % (len(SCENARIOS) + 1, passed, len(fails)))
+    print("%d scenarios: %d passed, %d failed" % (len(SCENARIOS) + 2, passed, len(fails)))
     return 1 if fails else 0
 
 

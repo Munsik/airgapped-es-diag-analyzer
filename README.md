@@ -39,7 +39,7 @@ It makes no network calls and uses only the Python standard library.
 
 - **Built for air-gapped networks**: no external communication, CDN, fonts or package installs. Copy the repository in and run it
 - **No dependencies**: Python 3.8 or later, standard library only
-- **130 rules**: 120 for a single bundle and 10 for comparing two bundles
+- **133 rules**: 122 for a single bundle and 11 for comparing two bundles
 - **Bottleneck summary**: five questions at the top of the report (is ingest keeping up, is search slow, is storage the limit, do restarts skew the numbers, capacity or concentration), each answered from symptoms first and then from the findings that explain them
 - **Storage cost**: rolled-over data kept on hot, replicas nobody searches, uneven disk use across tiers, and how many days of ingest the landing tier can still hold
 - **Action priority by root cause**: findings that come from the same cause (for example yellow status, unassigned shards, allocation explain and replicas above the node count) are grouped under one representative finding, and the rest are shown as related findings
@@ -47,7 +47,7 @@ It makes no network calls and uses only the Python standard library.
 - **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 94 settings)
 - **Oversharding analysis**: shards that can be removed per index, excess data stream rollovers, and shard size distribution
 - **Tier awareness**: hot/warm/cold/frozen are separated, and only nodes with the same role are compared
-- **Comparison mode**: compares against an earlier bundle to decide whether a cumulative counter is still increasing
+- **Comparison mode**: compares against an earlier bundle to decide whether a cumulative counter is still increasing, with a before/now table per node. With three or more bundles it also reports throughput per interval (peak and off-peak) for sizing
 - **Large bundle handling**: files of several hundred MB (cluster_state, mapping) are parsed only where needed or summarized per index, which keeps memory bounded
 - **Stated bundle coverage**: 62 of the 104 files in a diagnostic bundle are used for findings. For the other 42, [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) gives the reason: duplicate, empty when the feature is unused, or not a basis for findings
 - **Not collected vs tool error**: a finding is skipped when its input file is missing, and the report is still generated when a single rule fails
@@ -74,6 +74,9 @@ python3 analyze.py diagnostic-20260814.zip --out-dir ./report
 
 # Compare with an earlier bundle
 python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
+
+# Three or more bundles: throughput per interval (peak and off-peak)
+python3 analyze.py diag-0814-1800.zip --baseline diag-0814-0900.zip --baseline diag-0814-0300.zip
 ```
 
 On an air-gapped network, download the repository as a zip, carry it in, unzip it and run it the same way.
@@ -84,7 +87,7 @@ On an air-gapped network, download the repository as a zip, carry it in, unzip i
 | --- | --- |
 | `--html FILE` / `--md FILE` / `--json FILE` | Output path for each format |
 | `--out-dir DIR` | Write `es-diag-report.{html,md,json}` together |
-| `--baseline FILE` | Compare with an earlier bundle and report increases and growth rates |
+| `--baseline FILE` | Compare with an earlier bundle and report increases and growth rates. Can be repeated: the bundles are ordered by collection time, the latest one is the comparison base, and three or more bundles in total add throughput per interval (DIF-014) |
 | `--support-summary FILE` | Also write a summary (Markdown) for a case with Elastic Support. Written only when specified |
 | `--mask none\|basic\|strict` | Masking level for the summary (default `basic`). Use with `--support-summary` |
 | `--mask-map FILE` | Path of the alias-to-original-name mapping JSON (default: summary file name + `.mask-map.json`). Use with `--support-summary` |
@@ -215,8 +218,8 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 | Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
 | Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 68 |
-| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 56 |
-| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 58 |
+| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 57 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 59 |
 | Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-013 |
 
 When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
@@ -325,10 +328,10 @@ The HTML report (single file) has this order. Markdown and console output contai
 2. **Bottleneck summary**: five questions with a verdict, the symptoms and findings it rests on, and where to look next (see below)
 3. Action priority: list of Critical and Warning findings, each linking to its finding
 4. **Results by area**: status and counts for Availability / Capacity / Data structure / Performance / Data protection and operations / Security / Configuration
-5. Changes since the earlier bundle (when `--baseline` is given)
+5. Changes since the earlier bundle (when `--baseline` is given), with a before/now table per node
 6. Node status at a glance: bars for heap, CPU, load, disk and shard count
 7. Top indices by storage
-8. Filter: severity × category
+8. Filter: severity × category, and a text box that narrows findings and their evidence rows to an index, node or tier name
 9. Findings, in health check area order: Observed / Impact / Recommendation / Evidence table / Source file / Reference docs, with the evidence basis
 10. Explanation of evidence basis, and items that could not be checked (input not collected, tool error)
 
@@ -349,7 +352,7 @@ A cause counts when its finding is Critical or Warning (PERF-013 also at Info). 
 | Area | Categories | Representative findings |
 | --- | --- | --- |
 | Availability | Cluster | Status, unassigned shards, master quorum, shard limit, node shutdown, voting exclusion |
-| Capacity | Node, Hot spots and balancing, Storage cost | heap, GC, CPU, disk, watermarks, thread pools, circuit breakers, tier saturation, skew, data kept on hot, idle replicas, ingest headroom |
+| Capacity | Node, Hot spots and balancing, Storage cost | heap, GC, CPU, disk, watermarks, thread pools, circuit breakers, tier saturation, skew, data kept on hot, idle replicas, ingest headroom, storage by data type, sizing signals per tier |
 | Data structure | Shards and indices, Vector search | Shard size, oversharding, mapping limits, write blocks, vector memory |
 | Performance | Performance baselines, Runtime | Expensive search patterns, caches, ingest, hot threads, logs |
 | Data protection and operations | Operations | Snapshot RPO, SLM, ILM, license, monitoring, ML |
@@ -388,7 +391,7 @@ Limits: values shorter than 6 characters can overlap ordinary words, so they are
 
 | Document | Contents |
 | --- | --- |
-| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 130 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
+| [RULES.md](RULES.md) ([한국어](RULES.ko.md)) | Full specification of all 133 rules: conditions, thresholds (current value and source), required input, reference docs, settings knowledge base. **Generated from the code** |
 | [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) | Which official doc items are covered, and why some items cannot be judged |
 | [CHANGELOG.md](CHANGELOG.md) ([한국어](CHANGELOG.ko.md)) | Change history: previous behavior → current behavior, and the reason |
 
@@ -409,7 +412,7 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 136 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 141 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdiag/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
@@ -452,9 +455,9 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 938 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 979 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
-| `tests/drive_branches.py` | Forces every finding branch to run with 61 scenarios and checks the severity too | 61 passed, 0 finding branches not run |
+| `tests/drive_branches.py` | Forces every finding branch to run with 63 scenarios and checks the severity too | 63 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
 | `tools/gen_rules_doc.py --check` | Consistency of thresholds and docstrings | 0 problems |
 | `tests/test_local_mode.py` | Local and remote mode handling (false positives from logs/, gz, double counting, syscalls/ branches, collection failure messages) on synthetic data. No external bundle needed | 0 failures |

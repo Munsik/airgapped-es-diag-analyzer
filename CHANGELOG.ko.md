@@ -5,7 +5,7 @@
 
 ## [0.14.0] - 2026-10-02
 
-모든 리포트 맨 위에 병목 요약을 넣고, 최근 재시작한 노드를 노드 간 비교에서 빼고, 네트워크 스토리지 위의 frozen shared cache 와 스토리지 비용 판정을 추가했습니다. 공식 문서와 전체를 다시 대조해 고친 내용도 담았습니다. 공식 수치가 없는 임계값은 모두 `[도구]` 로 표기하고 `--thresholds` 로 바꿀 수 있습니다.
+모든 리포트 맨 위에 병목 요약을 넣고, 최근 재시작한 노드를 노드 간 비교에서 빼고, 네트워크 스토리지 위의 frozen shared cache, 스토리지 비용과 사이징 판정, 여러 번들의 구간별 처리량, 노드별 비교 표, HTML 리포트 검색창을 추가했습니다. 공식 문서와 전체를 다시 대조해 고친 내용도 담았습니다. 공식 수치가 없는 임계값은 모두 `[도구]` 로 표기하고 `--thresholds` 로 바꿀 수 있습니다.
 
 ### 추가
 
@@ -16,6 +16,13 @@
 - COST-002(참고): replica 가 2개 이상인데 샤드 시작 이후 검색이 없는 인덱스와 replica 1개로 줄일 때 확보되는 공간. data 노드가 replica + 1 개 이상 가용 영역에 걸쳐 있으면 제외
 - COST-003(참고): tier 간 디스크 사용. hot 이 70% 이상인데 warm·cold tier 가 30 포인트 이상 비어 있거나, warm·cold tier 가 20% 미만. frozen 은 보여 주기만 하고 비교하지 않음
 - COST-004(참고, 주의): 번들 하나로 계산한, 수집 대상 tier 가 high watermark 까지 더 받을 수 있는 수집 일수. 하루 수집량은 최근 7일 안에 만들어진 인덱스로 추정. 30일 이하이면서 그 데이터의 절반 넘게 hot 다음 ILM phase 가 없으면 주의
+- COST-005(참고, 사실 보고): 데이터 종류와 tier 별 저장량. 종류는 공식 데이터 스트림 이름 규칙(logs, metrics, traces, synthetics)에 보안 알림, system, 기타 데이터 스트림, 기타 인덱스를 더함. partial 마운트는 store 크기가 캐시 크기라 따로 표시
+- COST-006(참고): 번들 하나로 본 tier 별 사이징 신호. 모든 노드가 바쁘거나, 거부가 있거나, indexing pressure 가 거부했거나, high watermark 에 닿은 노드가 있으면 "부족 신호". 모든 노드가 24시간 이상 떠 있었고 CPU, load, heap, 디스크가 모두 낮으며 거부가 없을 때만 "여유 큼". 번들은 한 순간이라 여유 큼은 "지금 줄여라" 가 아니라 "모니터링으로 확인해 볼 만함"
+- DIF-014(참고): 번들이 3개 이상(`--baseline` 반복 지정)이면 구간별 처리량. 초당 색인·검색, data 노드당 값, peak 와 최저 구간, 둘의 비율. 구간 중 재시작한 노드는 그 구간에서 뺌
+- 비교 모드: 노드별 이전/지금 표(uptime, heap, CPU, load15, 디스크, 샤드, 색인·검색 속도, 거부, old GC). 5% 미만 변화는 "=" 로 표시
+- `--baseline` 반복 지정 가능. 번들을 수집 시각 순으로 정렬해 가장 최근 번들을 비교 기준으로 씀
+- HTML 리포트: 필터 옆 검색창으로 판정과 근거 표의 행을 인덱스·노드·tier 이름으로 거름
+- 임계값 5개: `node_change_noise_pct`, `size_idle_cpu_pct`, `size_idle_load_per_cpu`, `size_idle_heap_pct`, `size_idle_disk_pct`
 - 자원·용량 영역에 "스토리지 비용" 분류, `--only` 용 `cost` 모듈
 - `tests/test_bottleneck_cost.py`, `tests/drive_branches.py` 시나리오 7개
 - 임계값 10개: `node_compare_min_uptime_hours`, `search_pool_busy_share`, `search_io_cpu_pct_max`, `ingest_fail_ratio_warn`, `hot_rolled_days_info`, `cost_replicas_min`, `tier_hot_used_pct`, `tier_gap_pct`, `tier_idle_used_pct`, `ingest_window_days`
@@ -28,7 +35,7 @@
 - DIF-009: 모든 노드를 한 평균에 넣어 전용 master 노드가 평균을 끌어내렸음 → data 노드만, tier 별로 편중을 보고, 두 번들 사이에 재시작한 노드는 표에만 두고 합계에서 뺌
 - ING-001: 실패가 하나라도 있으면 주의 → 파이프라인별로 노드 전체 실패를 합해 실패율을 계산. 1% 이상이면 주의, 아니면 참고. 근거 구분은 도구 판단으로 바뀜
 - 콘솔: 한글을 두 칸으로 계산해 열을 맞춤
-- 단일 번들 판정 룰 120개, 두 번들 비교 룰 10개(판정 ID 182개 + 비교 DIF-001~013)
+- 단일 번들 판정 룰 122개, 두 번들 비교 룰 11개(판정 ID 184개 + 비교 DIF-001~014)
 
 ### 공식 문서 재대조
 

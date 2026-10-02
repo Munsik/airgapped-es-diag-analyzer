@@ -29,7 +29,8 @@ from test_logsdb import Bundle, COLLECTED_MS, GB, M, w  # noqa: E402
 
 HANGUL = re.compile(u"[가-힣]")
 FAILS, N = [], [0]
-NEW_IDS = ("FRZ-002", "PERF-013", "ING-001", "COST-001", "COST-002", "COST-003", "COST-004", "HOT-001", "HOT-002", "DIF-009")
+NEW_IDS = ("FRZ-002", "PERF-013", "ING-001", "COST-001", "COST-002", "COST-003", "COST-004", "COST-005", "COST-006",
+           "HOT-001", "HOT-002", "DIF-009", "DIF-014")
 DAY = 86400000
 HOUR = 3600000
 
@@ -306,6 +307,75 @@ def run_variants(tmp):
     check("diff: only data nodes in DIF-009", d9 is not None and len(rows_of(d9)) == 4, rows_of(d9))
     rows = dict((r["id"], r) for r in res.bottleneck())
     check("diff: restart row picks the interval restart", rows["restart"]["verdict_id"] in ("interval", "recent"), rows["restart"])
+
+    # per node change table in comparison mode
+    nd = (res.diff_summary or {}).get("nodes") or {}
+    nrows = dict((r[0], r) for r in nd.get("rows", []))
+    check("diff: node table lists every node", set(nrows) >= {"hot-1", "hot-2", "warm-1", "frozen-1"}, list(nrows))
+    check("diff: node table marks the restarted node", "hot-2" in nrows and "restarted" in nrows["hot-2"][2], nrows.get("hot-2"))
+    check("diff: node table shows an indexing rate for a settled node", "hot-1" in nrows and nrows["hot-1"][8].endswith("/s"),
+          nrows.get("hot-1"))
+    for render in (text_report.console, text_report.markdown, html_report.render):
+        out = render(res)
+        check("diff: node table rendered by %s" % render.__name__, "Change per node" in out)
+
+    # three bundles: throughput per interval (DIF-014)
+    b1 = os.path.join(tmp, "s1")
+    build(b1, restart_hot2=False, symptoms=False)
+    w(b1, "manifest.json", dict(load(b1, "manifest.json"), collectionDate="2026-09-30T00:00:00Z"))
+    ns = load(b1, "nodes_stats.json")
+    for st in ns["nodes"].values():
+        st["jvm"]["uptime_in_millis"] = 99 * DAY
+        st["indices"]["indexing"]["index_total"] = max(0, st["indices"]["indexing"]["index_total"] - 9 * 10 ** 6)
+    w(b1, "nodes_stats.json", ns)
+    b2 = os.path.join(tmp, "s2")
+    build(b2, restart_hot2=False, symptoms=False)
+    w(b2, "manifest.json", dict(load(b2, "manifest.json"), collectionDate="2026-09-30T12:00:00Z"))
+    ns = load(b2, "nodes_stats.json")
+    for st in ns["nodes"].values():
+        st["jvm"]["uptime_in_millis"] = 99 * DAY + 12 * HOUR
+        st["indices"]["indexing"]["index_total"] = max(0, st["indices"]["indexing"]["index_total"] - 10 ** 6)
+    w(b2, "nodes_stats.json", ns)
+    cur3 = os.path.join(tmp, "s3")
+    build(cur3, restart_hot2=False, symptoms=False)
+    res3 = analyze(cur3, baseline=[b2, b1])
+    f3 = findings(res3)
+    d14 = f3.get("DIF-014")
+    check("series: no rule errors", not res3.errors, res3.errors[:1])
+    check("series: DIF-014 with two intervals", d14 is not None and len(rows_of(d14)) == 2, d14 and rows_of(d14))
+    check("series: peak is the first interval (8M ops in 12h)", d14 is not None and "09-30 00:00" in d14.observed.split("Search")[0],
+          d14 and d14.observed)
+    check("series: comparison base is the latest baseline", res3.diff_summary and res3.diff_summary.get("hours")
+          and abs(res3.diff_summary["hours"] - 12.0) < 0.01, res3.diff_summary and res3.diff_summary.get("hours"))
+    check("series: one baseline gives no DIF-014", "DIF-014" not in findings(analyze(cur3, baseline=b2)))
+
+    # storage by type and tier sizing
+    root = os.path.join(tmp, "types")
+    build(root, symptoms=True)
+    f = findings(analyze(root))
+    c5 = f.get("COST-005")
+    types = set(r[0] for r in rows_of(c5))
+    check("COST-005 classifies logs data streams and other indices", c5 is not None and "logs" in types and "other indices" in types,
+          types)
+    c6 = f.get("COST-006")
+    sig = dict((r[0], r[7]) for r in rows_of(c6))
+    check("COST-006 frozen tier under pressure (search rejections)", sig.get("frozen") == "pressure", sig)
+    check("COST-006 hot tier under pressure (write rejections)", sig.get("hot") == "pressure", sig)
+    root = os.path.join(tmp, "idle")
+    build(root, symptoms=False, restart_hot2=False, hot2_index_total=10 ** 8)
+    ns = load(root, "nodes_stats.json")
+    for st in ns["nodes"].values():
+        if st["name"] == "warm-1":
+            st["os"]["cpu"]["percent"] = 3
+            st["os"]["cpu"]["load_average"] = {"1m": 0.1, "5m": 0.1, "15m": 0.1}
+            st["jvm"]["mem"]["heap_used_percent"] = 20
+    w(root, "nodes_stats.json", ns)
+    sig = dict((r[0], r[7]) for r in rows_of(findings(analyze(root)).get("COST-006")))
+    check("COST-006 idle warm tier has large headroom", sig.get("warm") == "large headroom", sig)
+
+    # HTML text filter is present
+    out = html_report.render(analyze(root))
+    check("HTML has the text filter", "id='fq'" in out and "qi.addEventListener" in out)
 
 
 def main():

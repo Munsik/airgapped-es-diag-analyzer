@@ -90,6 +90,85 @@ def summary(base, cur, hours):
             "hours": hours}
 
 
+def summary_with_nodes(base, cur, hours, t):
+    out = summary(base, cur, hours)
+    try:
+        out["nodes"] = node_changes(base, cur, hours, t)
+    except Exception:
+        out["nodes"] = None
+    return out
+
+
+def _shard_counts(ctx):
+    out = collections.Counter()
+    for sh in ctx.shards:
+        if sh.get("node"):
+            out[sh["node"]] += 1
+    return out
+
+
+def _cell(b, c, fmt, noise):
+    """'before → now ▲' or 'now =' when the change is within noise percent. None on either side shows '-'."""
+    if c is None:
+        return "-"
+    if b is None:
+        return fmt(c)
+    base = abs(b) if b else 0.0
+    if (b == c) or (base and abs(c - b) / base * 100.0 < noise) or (not base and not c):
+        return "%s =" % fmt(c)
+    return "%s → %s %s" % (fmt(b), fmt(c), "▲" if c > b else "▼")
+
+
+def node_changes(base, cur, hours, t):
+    """Per node, before and now for the main metrics (uptime, heap, CPU, load15, disk, shards, indexing and search rate,
+    rejections, old GC). A change smaller than node_change_noise_pct percent is shown as '='. Indexing and search rates are
+    the increase over the interval per second; a node that restarted in the interval (uptime went down) shows 'restarted'."""
+    noise = t["node_change_noise_pct"]
+    bm = _node_map(base)
+    bs, cs = _shard_counts(base), _shard_counts(cur)
+    pct = lambda v: "%.0f%%" % v
+    plain = lambda v: "%.2f" % v if isinstance(v, float) and v < 10 else fmt_num(int(round(v)))
+    rows = []
+    for n in cur.nodes:
+        b = bm.get(n.name)
+        tier = cur.tier_of(n) or ("master" if n.is_master_eligible else "-")
+        if b is None:
+            rows.append([n.name, tier, T("diff.node.new")] + ["-"] * 9)
+            continue
+        reset = bool(b.uptime_ms and n.uptime_ms and n.uptime_ms < b.uptime_ms)
+        sec = hours * 3600.0 if hours else None
+
+        def rate(path):
+            if reset:
+                return T("diff.node.restarted")
+            if not sec:
+                return "-"
+            d = num(n.stats, *path) - num(b.stats, *path)
+            return "%.0f/s" % (max(0, d) / sec)
+        rej_b, rej_c = sum(_tp_rejected(b).values()), sum(_tp_rejected(n).values())
+        gc_b, gc_c = b.gc("old")[0], n.gc("old")[0]
+        rows.append([
+            n.name, tier,
+            (fmt_ms(n.uptime_ms) + (" (%s)" % T("diff.node.restarted") if reset else "")) if n.uptime_ms else "-",
+            _cell(b.heap_used_pct, n.heap_used_pct, pct, noise),
+            _cell(b.cpu_pct, n.cpu_pct, pct, noise),
+            _cell(b.load15, n.load15, plain, noise),
+            _cell(b.disk_used_pct, n.disk_used_pct, pct, noise),
+            _cell(float(bs.get(n.name, 0)), float(cs.get(n.name, 0)), plain, noise),
+            rate(("indices", "indexing", "index_total")),
+            rate(("indices", "search", "query_total")),
+            T("diff.node.restarted") if reset else ("+%s" % fmt_num(max(0, rej_c - rej_b))),
+            T("diff.node.restarted") if reset else ("+%s" % fmt_num(max(0, gc_c - gc_b))),
+        ])
+    cm = _node_map(cur)
+    for name in bm:
+        if name not in cm:
+            rows.append([name, cur.tier_of(bm[name]) or "-", T("diff.node.left")] + ["-"] * 9)
+    cols = ["node", "tier", "uptime", "heap%", "cpu%", "load15", "disk%", T("diff.node.shards"),
+            T("diff.node.index_rate"), T("diff.node.search_rate"), T("diff.node.rejected"), "old GC"]
+    return {"columns": cols, "rows": rows}
+
+
 def _sign(v):
     if not v:
         return T("diff._sign.01")
@@ -411,8 +490,64 @@ def r_index_growth(base, cur, hours, t):
     return out
 
 
+def r_interval_rates(series, t):
+    """Throughput per interval when three or more bundles are given (DIF-014): peak and off-peak.
+
+    The bundles are sorted by collection time and every consecutive pair is one interval. For each interval the increase in
+    index_total and query_total of the data nodes is turned into operations per second (replica work included). A node whose uptime
+    went down in the interval restarted, so it is left out of that interval. The busiest interval by indexing rate is the peak,
+    the quietest the off-peak, and their ratio is shown. The per data node rate at the peak is what sizing needs.
+    Info only.
+    """
+    rows, rates = [], []
+    for a, b in zip(series, series[1:]):
+        hours = _elapsed_hours(a, b)
+        if not hours:
+            continue
+        am = _node_map(a)
+        di = dq = 0
+        nodes, skipped = 0, 0
+        for n in b.data_nodes:
+            p = am.get(n.name)
+            if p is None:
+                continue
+            if p.uptime_ms and n.uptime_ms and n.uptime_ms < p.uptime_ms:
+                skipped += 1
+                continue
+            di += max(0, num(n.stats, "indices", "indexing", "index_total") - num(p.stats, "indices", "indexing", "index_total"))
+            dq += max(0, num(n.stats, "indices", "search", "query_total") - num(p.stats, "indices", "search", "query_total"))
+            nodes += 1
+        if not nodes:
+            continue
+        sec = hours * 3600.0
+        ir, qr = di / sec, dq / sec
+        label = "%s → %s" % (a.collection_time.strftime("%m-%d %H:%M"), b.collection_time.strftime("%m-%d %H:%M"))
+        rates.append((ir, qr, label, nodes))
+        rows.append([label, "%.1f" % hours, "%.0f" % ir, "%.0f" % (ir / nodes), "%.0f" % qr, "%.0f" % (qr / nodes),
+                     nodes, skipped])
+    if len(rates) < 2:
+        return []
+    peak = max(rates, key=lambda r: r[0])
+    low = min(rates, key=lambda r: r[0])
+    ratio = (peak[0] / low[0]) if low[0] else None
+    qpeak = max(rates, key=lambda r: r[1])
+    return [Finding(
+        "DIF-014", CAT, Severity.INFO, T("diff.r_interval_rates.01"),
+        observed=T("diff.r_interval_rates.02") % (
+            len(rates), peak[2], peak[0], peak[0] / peak[3], low[2], low[0],
+            ("%.1f" % ratio) if ratio else "-", qpeak[2], qpeak[1], qpeak[1] / qpeak[3]),
+        impact=T("diff.r_interval_rates.03"),
+        recommend=T("diff.r_interval_rates.04"),
+        evidence=table([T("diff.r_interval_rates.05"), T("diff.r_interval_rates.06"), T("diff.r_interval_rates.07"),
+                        T("diff.r_interval_rates.08"), T("diff.r_interval_rates.09"), T("diff.r_interval_rates.10"),
+                        T("diff.r_interval_rates.11"), T("diff.r_interval_rates.12")], rows),
+        source=T("diff.r_interval_rates.13"))]
+
+
+r_interval_rates.series = True       # takes the whole series of bundles, run by the engine, not by compare()
+
 DIFF_RULES = [r_cluster_identity, r_status_change, r_node_restart, r_rejections_delta, r_gc_delta,
-              r_breaker_delta, r_disk_projection, r_throughput, r_index_growth]
+              r_breaker_delta, r_disk_projection, r_throughput, r_index_growth, r_interval_rates]
 
 
 def compare(base, cur, thresholds, base_findings=None, cur_findings=None):
@@ -420,13 +555,15 @@ def compare(base, cur, thresholds, base_findings=None, cur_findings=None):
     hours = _elapsed_hours(base, cur)
     findings = []
     for fn in DIFF_RULES:
+        if getattr(fn, "series", False):
+            continue
         try:
             findings.extend(fn(base, cur, hours, thresholds) or [])
         except Exception:
             continue
     if base_findings is not None and cur_findings is not None:
         findings.extend(_finding_delta(base_findings, cur_findings))
-    return summary(base, cur, hours), findings
+    return summary_with_nodes(base, cur, hours, thresholds), findings
 
 
 def _finding_delta(base_findings, cur_findings):

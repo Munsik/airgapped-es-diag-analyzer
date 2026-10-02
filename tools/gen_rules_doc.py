@@ -141,7 +141,7 @@ def check(data):
     # keys used by engine, reports and context
     for extra in ("top_n", "disk_watermark_low_default", "disk_watermark_high_default",
                   "disk_watermark_flood_default", "disk_watermark_flood_frozen_default",
-                  "disk_watermark_flood_frozen_headroom_default"):
+                  "disk_watermark_flood_frozen_headroom_default", "node_change_noise_pct"):
         used.add(extra)
     unused = sorted(k for k in DEFAULTS if k not in used)
     return problems, unused

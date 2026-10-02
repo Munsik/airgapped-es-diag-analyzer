@@ -65,6 +65,7 @@ REQUIRES = {
     # cost
     "r_hot_rolled_over": [["ilm_explain.json"], _IDX, _SH], "r_idle_replicas": [_SET, _IDX],
     "r_tier_usage": [_STATS], "r_ingest_headroom": [_SET, _IDX, _STATS],
+    "r_storage_by_type": [_IDX], "r_tier_sizing": [_STATS],
     # ops
     "r_monitoring": [_IDX], "r_license": [["licenses.json"]], "r_snapshots": [["repositories.json", "snapshot.json"]],
     "r_ilm": [["ilm_explain.json", "ilm_status.json"]],

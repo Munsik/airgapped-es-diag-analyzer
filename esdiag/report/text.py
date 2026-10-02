@@ -51,6 +51,12 @@ def console(result, show_ok=True, width=100):
         lines.extend("  " + ln for ln in _ascii_table(
             {"columns": ds["columns"], "rows": ds["rows"]}, max_rows=20))
         lines.append("")
+        nd = ds.get("nodes")
+        if nd and nd.get("rows"):
+            lines.append("■ " + T("diff.node.title"))
+            lines.append("  " + T("diff.node.note") % result.ctx.t["node_change_noise_pct"])
+            lines.extend("  " + ln for ln in _ascii_table(nd, max_rows=40))
+            lines.append("")
 
     rows = result.bottleneck()
     if rows:
@@ -161,6 +167,17 @@ def markdown(result, show_ok=True):
         for r in ds["rows"]:
             md.append("| " + " | ".join(str(x) for x in r) + " |")
         md.append("")
+        nd = ds.get("nodes")
+        if nd and nd.get("rows"):
+            md.append("### " + T("diff.node.title"))
+            md.append("")
+            md.append(T("diff.node.note") % result.ctx.t["node_change_noise_pct"])
+            md.append("")
+            md.append("| " + " | ".join(nd["columns"]) + " |")
+            md.append("| " + " | ".join("---" for _ in nd["columns"]) + " |")
+            for r in nd["rows"]:
+                md.append("| " + " | ".join(str(x).replace("|", "/") for x in r) + " |")
+            md.append("")
     rows = result.bottleneck()
     if rows:
         md.append("## " + T("btl.title"))

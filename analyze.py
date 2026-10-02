@@ -71,7 +71,7 @@ def main(argv=None):
         description=T("analyze.main.01") % __version__,
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     p.add_argument("bundle", nargs="?", help=T("analyze.main.02"))
-    p.add_argument("--baseline", metavar="FILE",
+    p.add_argument("--baseline", metavar="FILE", action="append",
                    help=T("analyze.main.03"))
     p.add_argument("--html", metavar="FILE", help=T("analyze.main.04"))
     p.add_argument("--md", metavar="FILE", help=T("analyze.main.05"))
@@ -121,9 +121,10 @@ def main(argv=None):
     if (args.mask or args.mask_map) and not args.support_summary:
         p.error(T("analyze.main.21"))
 
-    if args.baseline and not os.path.exists(args.baseline):
-        print(T("analyze.main.22") % args.baseline, file=sys.stderr)
-        return 2
+    for b in args.baseline or []:
+        if not os.path.exists(b):
+            print(T("analyze.main.22") % b, file=sys.stderr)
+            return 2
 
     # Screen language: --lang ko|en as given, otherwise the locale. The console language always runs first
     # so that errors appear in it.

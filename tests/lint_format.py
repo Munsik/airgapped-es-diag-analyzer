@@ -28,7 +28,7 @@ SPEC = re.compile(r"%(\([^)]*\))?[#0\- +]*(\*|\d+)?(\.(\*|\d+))?[diouxXeEfFgGcrs
 MARKER = re.compile(r"\[[^\[\]|%]*\|[^\[\]|%]*\]")
 # Keys built at run time ("sev." + id, "cat." + id ...) and keys read by tools/gen_rules_doc.py.
 DYNAMIC_PREFIXES = ("sev.", "cat.", "grade.", "area.", "status.", "basis.", "doc.", "th.", "gen.", "kb.",
-                    "btl.q.", "btl.g.", "btl.c.", "btl.v.", "btl.n.")
+                    "btl.q.", "btl.g.", "btl.c.", "btl.v.", "btl.n.", "rules.cost.type.")
 
 
 def bad_percents(fmt):

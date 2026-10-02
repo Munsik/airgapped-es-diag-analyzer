@@ -39,7 +39,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 
 - **폐쇄망 전제** — 외부 통신·CDN·폰트·패키지 설치 없음. 저장소를 그대로 반입해 실행
 - **의존성 없음** — Python 3.8 이상 표준 라이브러리만 사용
-- **130개 판정 룰** — 단일 번들 120개 + 두 번들 비교 10개
+- **133개 판정 룰** — 단일 번들 122개 + 두 번들 비교 11개
 - **병목 요약** — 리포트 맨 위에서 다섯 가지 질문(색인이 따라가는가, 검색이 느린가, 스토리지가 한계인가, 재시작이 수치를 왜곡하는가, 용량 부족인가 편중인가)에 답합니다. 증상을 먼저 보고, 그 증상을 설명하는 판정을 이어서 짚습니다
 - **스토리지 비용** — 롤오버 후에도 hot 에 남은 데이터, 검색되지 않는 replica, tier 간 디스크 사용 차이, 수집 대상 tier 가 며칠치 수집량을 더 받을 수 있는지
 - **원인 단위 조치 우선순위** — 같은 원인에서 나온 판정(예: yellow·미할당 샤드·allocation explain·replica 초과)은 대표 1건으로 묶고 나머지는 관련 판정으로 표시
@@ -47,7 +47,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 - **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 94종 지식 베이스)
 - **과다 샤딩 분석** — 인덱스별로 줄일 수 있는 샤드 수, 데이터 스트림 롤오버 과다, 샤드 크기 분포
 - **tier 인식** — hot/warm/cold/frozen 을 구분해 같은 역할끼리만 비교
-- **비교 모드** — 이전 번들과 비교해 누적 카운터를 "지금도 증가 중인가" 로 판정
+- **비교 모드** — 이전 번들과 비교해 누적 카운터를 "지금도 증가 중인가" 로 판정하고, 노드별 이전/지금 표를 보여 줌. 번들이 3개 이상이면 사이징용 구간별 처리량(peak/off-peak)도 계산
 - **대형 번들 대응** — 수백 MB 파일(cluster_state, mapping)은 필요한 조각만 파싱하거나 인덱스 단위로 요약하며 읽어 메모리를 제한
 - **번들 활용 범위 명시** — 진단 번들 104개 파일 중 62개를 판정에 사용, 나머지 42개는 중복·기능 미사용 시 비어 있음·판정 대상 아님으로 사유를 [COVERAGE.md](COVERAGE.md) 에 기록
 - **미수집·도구 오류 구분** — 파일이 없으면 판정하지 않고, 룰 하나가 실패해도 리포트는 끝까지 생성
@@ -74,6 +74,9 @@ python3 analyze.py diagnostic-20260814.zip --out-dir ./report
 
 # 이전 번들과 비교
 python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
+
+# 번들 3개 이상: 구간별 처리량(peak/off-peak)
+python3 analyze.py diag-0814-1800.zip --baseline diag-0814-0900.zip --baseline diag-0814-0300.zip
 ```
 
 인터넷이 없는 폐쇄망에서는 저장소를 zip 으로 내려받아 반입한 뒤 압축을 풀고 같은 방식으로 실행합니다.
@@ -84,7 +87,7 @@ python3 analyze.py diag-0814.zip --baseline diag-0807.zip --html report.html
 | --- | --- |
 | `--html FILE` / `--md FILE` / `--json FILE` | 형식별 출력 경로 |
 | `--out-dir DIR` | `es-diag-report.{html,md,json}` 일괄 생성 |
-| `--baseline FILE` | 이전 시점 번들과 비교해 증가분·증가율 판정 |
+| `--baseline FILE` | 이전 시점 번들과 비교해 증가분·증가율 판정. 여러 번 지정할 수 있으며, 번들을 수집 시각 순으로 정렬해 가장 최근 번들을 비교 기준으로 쓰고, 전체 번들이 3개 이상이면 구간별 처리량(DIF-014)도 계산 |
 | `--support-summary FILE` | Elastic 공식 Support 팀 문의용 요약(Markdown)을 함께 만듭니다. 지정한 때만 생성 |
 | `--mask none\|basic\|strict` | 요약의 마스킹 단계(기본 `basic`). `--support-summary` 와 함께 사용 |
 | `--mask-map FILE` | 별칭 ↔ 원래 이름 매핑 JSON 경로(기본: 요약 파일명 + `.mask-map.json`). `--support-summary` 와 함께 사용 |
@@ -215,8 +218,8 @@ bash tools/build_binary.sh     # dist/esdiag (PyInstaller, 빌드 전용 가상�
 | 구분 | 의미 | 판정 ID 수 |
 | --- | --- | --- |
 | 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 68 |
-| 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 56 |
-| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 58 |
+| 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 57 |
+| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 59 |
 | 비교 계산 | 두 번들 간 증가분·증가율·선형 외삽 | DIF-001~013 |
 
 고객에게 전달할 때 "공식 기준·사실 보고" 는 근거로, "도구 판단" 은 권고로 제시하십시오.
@@ -325,10 +328,10 @@ HTML 리포트(단일 파일)의 순서입니다. Markdown·콘솔도 같은 내
 2. **병목 요약** — 다섯 가지 질문별 판단, 그 판단의 근거가 된 증상과 판정, 다음에 볼 곳(아래 참고)
 3. 조치 우선순위 — 치명·주의 목록, 클릭하면 해당 판정으로 이동
 4. **영역별 점검 결과** — 가용성 / 자원·용량 / 데이터 구조 / 성능 / 데이터 보호·운영 / 보안 / 구성의 상태와 건수
-5. 이전 번들 대비 변화(`--baseline` 지정 시)
+5. 이전 번들 대비 변화(`--baseline` 지정 시), 노드별 이전/지금 표 포함
 6. 노드 상태 한눈에 보기 — heap·CPU·load·디스크·샤드 수 막대
 7. 저장 용량 상위 인덱스
-8. 필터 — 심각도 × 분류 조합
+8. 필터 — 심각도 × 분류 조합, 그리고 인덱스·노드·tier 이름으로 판정과 근거 표의 행을 거르는 검색창
 9. 판정 결과 — 헬스 체크 영역 순서로, 관측 / 영향 / 권고 / 근거 표 / 출처 파일 / 참고 문서, 근거 구분 표기
 10. 판정 근거 구분 설명, 확인하지 못한 항목(입력 미수집·도구 오류)
 
@@ -349,7 +352,7 @@ HTML 리포트(단일 파일)의 순서입니다. Markdown·콘솔도 같은 내
 | 영역 | 포함 분류 | 대표 판정 |
 | --- | --- | --- |
 | 가용성 | 클러스터 | 상태·미할당 샤드·마스터 정족수·샤드 한도·노드 종료·voting exclusion |
-| 자원·용량 | 노드, 핫스팟·밸런싱, 스토리지 비용 | heap·GC·CPU·디스크·워터마크·스레드풀·circuit breaker·tier 포화·편중·hot 잔류 데이터·검색 없는 replica·수집 여유 |
+| 자원·용량 | 노드, 핫스팟·밸런싱, 스토리지 비용 | heap·GC·CPU·디스크·워터마크·스레드풀·circuit breaker·tier 포화·편중·hot 잔류 데이터·검색 없는 replica·수집 여유·데이터 종류별 저장량·tier 별 사이징 신호 |
 | 데이터 구조 | 샤드·인덱스, 벡터 검색 | 샤드 크기·과다 샤딩·매핑 한도·쓰기 차단·벡터 메모리 |
 | 성능 | 성능 기준, 런타임 | 비용이 큰 검색 패턴·캐시·ingest·hot threads·로그 |
 | 데이터 보호·운영 | 운영 | 스냅샷 RPO·SLM·ILM·라이선스·모니터링·ML |
@@ -388,7 +391,7 @@ python3 analyze.py diagnostic.zip --support-summary support-summary.md --mask st
 
 | 문서 | 내용 |
 | --- | --- |
-| [RULES.ko.md](RULES.ko.md) ([English](RULES.md)) | 130개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
+| [RULES.ko.md](RULES.ko.md) ([English](RULES.md)) | 133개 룰 전체 명세 — 판정 조건, 임계값(현재 값·출처), 필요 입력, 참고 문서, 설정 지식 베이스. **코드에서 자동 생성** |
 | [COVERAGE.ko.md](COVERAGE.ko.md) ([English](COVERAGE.md)) | Elastic 공식 문서 항목별 반영 여부와 판정할 수 없는 항목의 이유 |
 | [CHANGELOG.ko.md](CHANGELOG.ko.md) ([English](CHANGELOG.md)) | 변경 이력 — 이전 동작 → 현재 동작과 근거 |
 
@@ -409,7 +412,7 @@ python3 analyze.py --print-thresholds > my.json   # 기본값 추출
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 136개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
+임계값 141개의 출처(`[공식]` / `[도구]`)는 `esdiag/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
 
 ---
 
@@ -451,9 +454,9 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 938개, 문제 0 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 979개, 문제 0 |
 | `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현. 한국어·영어 두 언어로 실행 | 110개 통과 |
-| `tests/drive_branches.py` | 시나리오 61개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 61개 통과, 미실행 판정 분기 0 |
+| `tests/drive_branches.py` | 시나리오 63개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 63개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
 | `tools/gen_rules_doc.py --check` | 임계값·docstring 정합성 | 문제 0 |
 | `tests/test_local_mode.py` | local/remote 모드 전용 처리(logs/ 오탐·gz·이중 집계, syscalls/ 분기, 수집 실패 안내)를 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |

@@ -7,7 +7,7 @@ Each entry is written as "previous behavior → current behavior (reason)". Use 
 
 ## [0.14.0] - 2026-10-02
 
-A bottleneck summary at the top of every report, recently restarted nodes left out of node comparisons, frozen shared cache on network storage, storage cost findings, and fixes from a full check against the official docs. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.
+A bottleneck summary at the top of every report, recently restarted nodes left out of node comparisons, frozen shared cache on network storage, storage cost and sizing findings, throughput per interval across several bundles, a per node comparison table, a text filter in the HTML report, and fixes from a full check against the official docs. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.
 
 ### Added
 
@@ -18,6 +18,13 @@ A bottleneck summary at the top of every report, recently restarted nodes left o
 - COST-002 (Info): indices with 2 or more replicas and no searches since the shards started, with the space freed at 1 replica. Not listed when the data nodes span replicas + 1 availability zones
 - COST-003 (Info): disk use between tiers. Hot at 70% or more with a warm or cold tier 30 points emptier, or a warm or cold tier under 20%. Frozen is shown but not compared
 - COST-004 (Info, Warning): days of ingest the landing tier can take before the high watermark, from one bundle. Daily ingest comes from indices created in the last 7 days. Warning at 30 days or less when more than half of that data has no ILM phase after hot
+- COST-005 (Info, reported fact): storage by data type and tier. Types follow the official data stream naming scheme (logs, metrics, traces, synthetics), plus security alerts, system, other data streams and other indices. Partial mounts are a separate row because their store size is only the cache
+- COST-006 (Info): sizing signals per tier from one bundle. "Pressure" when every node is busy, rejections occur, indexing pressure rejects or a node reaches the high watermark. "Large headroom" only when every node has been up for 24 hours and CPU, load, heap and disk are all low with no rejections. One bundle is one moment, so large headroom means "check with monitoring", not "shrink now"
+- DIF-014 (Info): with three or more bundles (`--baseline` repeated), throughput per interval: indexing and search per second, per data node, the peak and lowest interval and their ratio. Nodes restarted in an interval are left out of it
+- Comparison mode: a before/now table per node (uptime, heap, CPU, load15, disk, shards, indexing and search rate, rejections, old GC). Changes under 5% show as "="
+- `--baseline` can be repeated. Bundles are ordered by collection time; the latest one is the comparison base
+- HTML report: a text box next to the filters narrows findings, and the rows of their evidence tables, to an index, node or tier name
+- 5 thresholds: `node_change_noise_pct`, `size_idle_cpu_pct`, `size_idle_load_per_cpu`, `size_idle_heap_pct`, `size_idle_disk_pct`
 - New category "Storage cost" in the Capacity area, and module `cost` for `--only`
 - `tests/test_bottleneck_cost.py`, and 7 scenarios in `tests/drive_branches.py`
 - 10 thresholds: `node_compare_min_uptime_hours`, `search_pool_busy_share`, `search_io_cpu_pct_max`, `ingest_fail_ratio_warn`, `hot_rolled_days_info`, `cost_replicas_min`, `tier_hot_used_pct`, `tier_gap_pct`, `tier_idle_used_pct`, `ingest_window_days`
@@ -30,7 +37,7 @@ A bottleneck summary at the top of every report, recently restarted nodes left o
 - DIF-009: every node was in one average (dedicated masters pulled it down) → data nodes only, skew per tier, and nodes that restarted between the bundles are shown but left out of the totals
 - ING-001: any failure was a Warning → failures are summed per pipeline across nodes with a failure ratio. 1% or more → Warning, otherwise Info. The basis is now a tool threshold
 - Console: column alignment counts Hangul as two columns
-- 120 single-bundle rules and 10 bundle-comparison rules (182 finding IDs plus comparison DIF-001~013)
+- 122 single-bundle rules and 11 bundle-comparison rules (184 finding IDs plus comparison DIF-001~014)
 
 ### Official documentation audit
 
