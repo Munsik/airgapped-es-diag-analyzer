@@ -3,6 +3,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.14.2] - 2026-10-03
+
+설정 지식 베이스 92종(기본값이 하나로 정해지지 않는 prefix 규칙 4개 제외)의 기본값을 Elasticsearch 8.0, 8.19, 9.0, 9.5 소스에서 모두 비교해, 설정 판정이 클러스터 자신의 버전 기본값을 쓰도록 했습니다. 버전이나 index mode 에 따라 달라지는 기본값이 2개 더 있었고, 나머지는 8.0 부터 9.5 까지 같거나 이미 버전별로 계산하고 있었습니다.
+
+### 변경
+
+- `cluster.routing.allocation.allow_rebalance`: 항상 "always" 로 봤음 → 8.16 부터 desired_balance allocator 에서 "always", 8.16 이전이거나 노드가 `cluster.routing.allocation.type: balanced` 면 "indices_all_active". SET-001 이 맞는 기본값과 비교
+- `index.queries.cache.enabled`: 항상 "true" 로 봤음 → columnar·logsdb_columnar 모드(9.5)는 "false", 그 외 "true"
+
+### 확인했지만 바꿀 것 없음
+
+- 이미 버전별로 계산: merge policy(9.5), `index.mapping.nested_fields.limit`(9.3), `thread_pool.write.queue_size`(9.2), `index.codec`(index mode), `indices.breaker.total.limit`, `indices.recovery.max_bytes_per_sec`
+- serverless(stateless) 노드에서만 다름, 이 도구가 읽는 클러스터와 무관: `index.refresh_interval`, `index.unassigned.node_left.delayed_timeout`
+- 네 버전 모두 기본값 같음: 나머지 설정(디스크 워터마크, 샤드 한도, balance 계수, thread pool 크기, 검색·HTTP 한도, translog, ILM·SLM 등)
+
 ## [0.14.1] - 2026-10-03
 
 판정 기준을 Elasticsearch 9.5 로 올렸습니다. 9.5 릴리스 노트, breaking changes, deprecations 를 모든 판정과 대조했고, 문서에 값이 없는 부분은 Elasticsearch 9.5 소스로 확인했습니다. 설정 지식 베이스 96종.

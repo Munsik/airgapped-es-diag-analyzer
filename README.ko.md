@@ -2,7 +2,7 @@
 
 [English](README.md) · 한국어
 
-**버전 0.14.1** · 판정 기준 Elasticsearch 9.5 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.14.2** · 판정 기준 Elasticsearch 9.5 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -196,6 +196,7 @@ bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, 빌드 전용 가�
 | 8.5 | DISK-\* | 디스크 워터마크에 max\_headroom(low 200GB / high 150GB / flood 100GB) 반영 |
 | 8.8 | IDX-015 | `index.translog.flush_threshold_size` 기본값 10GB(이전 512MB) |
 | 8.14 | VEC-002 | dense\_vector index\_options 미지정 시 int8\_hnsw 기본 |
+| 8.16 | SET-001 | `cluster.routing.allocation.allow_rebalance` 기본값이 always(이전 또는 balanced allocator 는 indices_all_active) |
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq\_hnsw 기본 |
 | 9.0 | IDX-013 | 새 `logs-*-*` data stream 에 logsdb 자동 적용. 8.x 에서 업그레이드하기 전부터 있던 data stream 은 그대로 |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` 기본 적용 |
@@ -464,7 +465,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_logsdb.py` | 문서 수 한도·logsdb·force merge 판정(SHD-008·013·014·015, IDX-013, ILM-007·008·009)의 모든 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_write_path.py` | 쓰기 경로·운영 판정(PERF-012, OS-007, SHD-016, IDX-014·015, CLU-017, MAP-004, DIF-013)의 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_doc_audit.py` | 공식 문서 재대조로 고친 부분(JVM-002 oops 플래그, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom 조건, 개발 모드, 상황에 따라 달라지는 설정 기본값)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
-| `tests/test_es95.py` | Elasticsearch 9.5 기준: 버전별 merge policy 기본값, columnar·logsdb_columnar·vectordb_document index mode(DISK-006, DISK-007, IDX-013, PERF-008, SET-006), 모니터링 플러그인 deprecation(OPS-007)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
+| `tests/test_es95.py` | 버전별 기본값: merge policy 기본값, 8.16 부터의 allow_rebalance, columnar·logsdb_columnar·vectordb_document index mode(DISK-006, DISK-007, IDX-013, PERF-008, SET-006), 모니터링 플러그인 deprecation(OPS-007)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_bottleneck_cost.py` | 병목 요약, 최근 재시작 노드의 비교 제외(HOT-001·002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001~006, 증상 tier 로 좁힌 병목 원인, tier 단위 DIF-008, DIF-014 구간 검사, tier 단위 SET-005 를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
 | `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |

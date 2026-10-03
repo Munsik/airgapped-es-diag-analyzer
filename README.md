@@ -2,7 +2,7 @@
 
 English · [한국어](README.ko.md)
 
-**Version 0.14.1** · Findings based on the Elasticsearch 9.5 official docs · Python 3.8+ · No external dependencies
+**Version 0.14.2** · Findings based on the Elasticsearch 9.5 official docs · Python 3.8+ · No external dependencies
 
 esdoctor analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
 
@@ -196,6 +196,7 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 | 8.5 | DISK-\* | Disk watermarks use max\_headroom (low 200GB / high 150GB / flood 100GB) |
 | 8.8 | IDX-015 | `index.translog.flush_threshold_size` defaults to 10GB (512MB before) |
 | 8.14 | VEC-002 | dense\_vector defaults to int8\_hnsw when index\_options is not set |
+| 8.16 | SET-001 | `cluster.routing.allocation.allow_rebalance` defaults to always (indices_all_active before, or with the balanced allocator) |
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq\_hnsw |
 | 9.0 | IDX-013 | logsdb applies automatically to new `logs-*-*` data streams. Data streams that existed before an upgrade from 8.x stay as they are |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` applies by default |
@@ -465,7 +466,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_logsdb.py` | Every branch of the document limit, logsdb and force merge findings (SHD-008, 013, 014, 015, IDX-013, ILM-007, 008, 009) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_write_path.py` | Every branch of the write path and operations findings (PERF-012, OS-007, SHD-016, IDX-014, 015, CLU-017, MAP-004, DIF-013) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_doc_audit.py` | Fixes from the official documentation audit: JVM-002 oops flag, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom conditions, development mode, and context-dependent settings defaults, on synthetic data, in both languages. No external bundle needed | 0 failures |
-| `tests/test_es95.py` | Elasticsearch 9.5 baseline: merge policy defaults by version, the columnar, logsdb_columnar and vectordb_document index modes (DISK-006, DISK-007, IDX-013, PERF-008, SET-006), and the monitoring plugin deprecation (OPS-007), on synthetic data, in both languages. No external bundle needed | 0 failures |
+| `tests/test_es95.py` | Version-dependent defaults: merge policy defaults by version, allow_rebalance from 8.16, the columnar, logsdb_columnar and vectordb_document index modes (DISK-006, DISK-007, IDX-013, PERF-008, SET-006), and the monitoring plugin deprecation (OPS-007), on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_bottleneck_cost.py` | Bottleneck summary, recently restarted nodes left out of comparisons (HOT-001, 002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001 to 006, bottleneck causes scoped to the symptom tiers, DIF-008 per tier, DIF-014 interval checks and SET-005 per tier on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |

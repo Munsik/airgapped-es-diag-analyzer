@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Checks for the Elasticsearch 9.5 baseline (0.14.1): merge policy defaults by version, the columnar, logsdb_columnar and
-vectordb_document index modes, and the monitoring plugin deprecation. No external bundle needed (synthetic data).
+"""Checks for version-dependent defaults: the Elasticsearch 9.5 baseline (0.14.1) with merge policy defaults by version, the columnar,
+logsdb_columnar and vectordb_document index modes and the monitoring plugin deprecation, and the 0.14.2 source comparison
+(allow_rebalance from 8.16, query cache on columnar modes). No external bundle needed (synthetic data).
 Every case runs in both languages.
 
     python3 tests/test_es95.py
@@ -38,11 +39,20 @@ def rows_of(f):
     return (f.evidence or {}).get("rows", []) if f else []
 
 
+class _Node(object):
+    def __init__(self, settings=None):
+        self._s = settings or {}
+
+    def setting(self, key, default=None):
+        return self._s.get(key, default)
+
+
 class _Ctx(object):
-    def __init__(self, version, ds=None, modes=None):
+    def __init__(self, version, ds=None, modes=None, nodes=None):
         self.version_tuple = version
         self._ds = ds or {}
         self._modes = modes or {}
+        self.nodes = nodes or [_Node()]
 
     def data_stream_of(self, name):
         return self._ds.get(name)
@@ -64,6 +74,14 @@ def unit():
           default_for("index.merge.policy.max_merged_segment", new, index="plain") == "5gb")
     check("max_merged_segment 5gb before 8.11",
           default_for("index.merge.policy.max_merged_segment", _Ctx((8, 10, 0), ds={"x": {}}), index="x") == "5gb")
+    ar = "cluster.routing.allocation.allow_rebalance"
+    check("allow_rebalance indices_all_active before 8.16", default_for(ar, _Ctx((8, 15, 0))) == "indices_all_active")
+    check("allow_rebalance always from 8.16", default_for(ar, _Ctx((8, 16, 0))) == "always")
+    check("allow_rebalance indices_all_active with the balanced allocator",
+          default_for(ar, _Ctx((9, 5, 3), nodes=[_Node({"cluster.routing.allocation.type": "balanced"})])) == "indices_all_active")
+    qc = _Ctx((9, 5, 3), modes={"c": "columnar", "s": "standard"})
+    check("queries cache off by default on columnar", default_for("index.queries.cache.enabled", qc, index="c") == "false")
+    check("queries cache on by default on standard", default_for("index.queries.cache.enabled", qc, index="s") == "true")
     modes = _Ctx((9, 5, 3), modes={"c": "columnar", "lc": "logsdb_columnar", "l": "logsdb", "s": "standard", "v": "vectordb_document"})
     for idx, want in (("c", "best_compression"), ("lc", "best_compression"), ("l", "best_compression"), ("s", None), ("v", None)):
         check("codec default for mode %s" % idx, default_for("index.codec", modes, index=idx) == want,

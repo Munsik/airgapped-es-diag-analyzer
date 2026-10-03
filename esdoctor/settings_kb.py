@@ -114,7 +114,7 @@ KB = {
         change=N_("settings_kb._.05"),
         risk="WARNING", doc="alloc"),
     "cluster.routing.allocation.allow_rebalance": S(
-        "always", "dynamic", "cluster",
+        N_("settings_kb.allow_rebalance_default"), "dynamic", "cluster",
         N_("settings_kb._.06"),
         change=N_("settings_kb._.07"), risk="INFO", doc="alloc"),
     "cluster.routing.allocation.cluster_concurrent_rebalance": S(
@@ -558,6 +558,9 @@ def default_for(key, ctx=None, node=None, index=None):
     index.codec: best_compression for index modes that default to it (BEST_COMPRESSION_MODES), default otherwise.
     index.merge.policy.*: 9.5 changed segments_per_tier 10 → 8, floor_segment 2mb → 16mb and max_merge_at_once 10 → 16.
     max_merged_segment is 100gb for time-based indices (with a data stream timestamp field, from 8.11) and 5gb otherwise.
+    cluster.routing.allocation.allow_rebalance: always from 8.16 with the desired_balance allocator, indices_all_active before
+    8.16 or when a node sets cluster.routing.allocation.type: balanced.
+    index.queries.cache.enabled: false for the columnar and logsdb_columnar modes (9.5), true otherwise.
     All taken from the Elasticsearch source of the matching versions.
     """
     try:
@@ -578,6 +581,12 @@ def default_for(key, ctx=None, node=None, index=None):
             return "95%"
         if key == "indices.recovery.max_bytes_per_sec" and node is not None:
             return _recovery_default(node)
+        if key == "cluster.routing.allocation.allow_rebalance" and ctx is not None:
+            balanced = any(str(n.setting("cluster.routing.allocation.type", "")).lower() == "balanced" for n in ctx.nodes)
+            return "indices_all_active" if (ctx.version_tuple < (8, 16, 0) or balanced) else "always"
+        if key == "index.queries.cache.enabled" and ctx is not None and index is not None:
+            mode = str(ctx.index_mode(index) or "standard").lower()
+            return "false" if mode in ("columnar", "logsdb_columnar") else "true"
         if key == "index.codec" and ctx is not None and index is not None:
             mode = str(ctx.index_mode(index) or "standard").lower()
             return "best_compression" if mode in BEST_COMPRESSION_MODES else None

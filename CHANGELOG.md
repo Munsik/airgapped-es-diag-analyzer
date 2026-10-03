@@ -5,6 +5,21 @@ English · [한국어](CHANGELOG.ko.md)
 This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Each entry is written as "previous behavior → current behavior (reason)". Use it to trace why a result differs from an earlier report.
 
+## [0.14.2] - 2026-10-03
+
+The defaults of all 92 settings in the knowledge base (the 4 prefix rules have no single default) were compared in the Elasticsearch source of 8.0, 8.19, 9.0 and 9.5, so that settings findings use the default of the cluster's own version. Two more defaults depend on the version or the index mode; the rest are the same from 8.0 to 9.5, or were already computed per version.
+
+### Changed
+
+- `cluster.routing.allocation.allow_rebalance`: always "always" → "always" from 8.16 with the desired_balance allocator, "indices_all_active" before 8.16 or when a node sets `cluster.routing.allocation.type: balanced`. SET-001 compares against the right one
+- `index.queries.cache.enabled`: always "true" → "false" for the columnar and logsdb_columnar modes (9.5), "true" otherwise
+
+### Checked, no change needed
+
+- Already computed per version: merge policy (9.5), `index.mapping.nested_fields.limit` (9.3), `thread_pool.write.queue_size` (9.2), `index.codec` (index mode), `indices.breaker.total.limit`, `indices.recovery.max_bytes_per_sec`
+- Only differs on serverless (stateless) nodes, not on the clusters this tool reads: `index.refresh_interval`, `index.unassigned.node_left.delayed_timeout`
+- Same default in all four versions: the other settings, including disk watermarks, shard limits, balance factors, thread pool sizes, search and HTTP limits, translog, ILM and SLM
+
 ## [0.14.1] - 2026-10-03
 
 The baseline moves to Elasticsearch 9.5. The 9.5 release notes, breaking changes and deprecations were checked against every finding, and the Elasticsearch 9.5 source where the docs give no value. 96 settings in the knowledge base.

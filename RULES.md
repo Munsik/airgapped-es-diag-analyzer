@@ -8,7 +8,7 @@
 
 | Item | Value |
 | --- | --- |
-| Tool version | esdoctor 0.14.1 |
+| Tool version | esdoctor 0.14.2 |
 | Elasticsearch baseline version | 9.5 |
 | Official docs checked | 2026-10 |
 | Validated on real bundles | 9.4.4 (ECH, 3 nodes, single tier) / 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), api mode |
@@ -25,6 +25,7 @@
 | 8.5 | DISK-* | Disk watermark max_headroom (200/150/100 GB) applies |
 | 8.8 | IDX-015 | index.translog.flush_threshold_size defaults to 10GB (512MB before) |
 | 8.14 | VEC-002 | dense_vector defaults to int8_hnsw (quantized) when index_options is not set |
+| 8.16 | SET-001 | cluster.routing.allocation.allow_rebalance defaults to always (indices_all_active before, or with the balanced allocator) |
 | 9.0 | IDX-013 | logsdb applies automatically to new logs-*-* data streams only |
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq_hnsw |
 | 9.2 | VEC-003 | index.mapping.exclude_source_vectors is enabled by default |
@@ -2454,7 +2455,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `cluster.max_shards_per_node.frozen` | 3000 | dynamic | cluster | Shard limit per frozen-only node. | ↑ Metadata load on frozen nodes increases.<br>↓ Fewer indices can be mounted. | INFO / INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.metadata.display_name` | (none) | dynamic | cluster | User-defined cluster metadata (ECH stores the deployment name here). Not an Elasticsearch setting, so it has no default. | No effect on behavior. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.persistent_tasks.allocation.enable` | all | dynamic | cluster | Allows persistent task allocation (ML jobs, transforms, and so on). | With none, new persistent tasks are not allocated. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `cluster.routing.allocation.allow_rebalance` | always | dynamic | cluster | When rebalancing may start (default always for the desired balance allocator, indices_all_active for the legacy allocator). | A stricter condition (indices_primaries_active / indices_all_active) postpones rebalancing until recovery finishes, so the uneven distribution is resolved later. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
+| `cluster.routing.allocation.allow_rebalance` | always (indices_all_active before 8.16 or with the balanced allocator) | dynamic | cluster | When rebalancing may start (default always for the desired balance allocator, indices_all_active for the legacy allocator). | A stricter condition (indices_primaries_active / indices_all_active) postpones rebalancing until recovery finishes, so the uneven distribution is resolved later. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.awareness.attributes` | (none) | dynamic | cluster | Node attributes used to place primaries and replicas in different zones (zone, rack). | When set, copies of the same shard are placed in different zones. If the zones have different numbers of nodes, some copies can stay unassigned. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.balance.disk_usage` | 2.0E-11 | dynamic | cluster | Balance weight for disk usage per node. | Changes how well disk skew is spread out. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.balance.index` | 0.55 | dynamic | cluster | Weight for spreading the shards of each index. | Changing the weight can trigger large-scale relocation. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |

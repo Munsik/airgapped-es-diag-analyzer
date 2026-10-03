@@ -8,7 +8,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdoctor 0.14.1 |
+| 도구 버전 | esdoctor 0.14.2 |
 | 판정 기준 Elasticsearch 버전 | 9.5 |
 | 공식 문서 대조 시점 | 2026-10 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -25,6 +25,7 @@
 | 8.5 | DISK-* | 디스크 워터마크 max_headroom(200/150/100GB) 적용 |
 | 8.8 | IDX-015 | index.translog.flush_threshold_size 기본값 10GB(이전 512MB) |
 | 8.14 | VEC-002 | dense_vector index_options 미지정 시 int8_hnsw 기본(양자화) |
+| 8.16 | SET-001 | cluster.routing.allocation.allow_rebalance 기본값이 always(이전 또는 balanced allocator 는 indices_all_active) |
 | 9.0 | IDX-013 | logs-*-* data stream 에 logsdb 자동 적용(새 data stream 만) |
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq_hnsw 가 기본 |
 | 9.2 | VEC-003 | index.mapping.exclude_source_vectors 기본 적용 |
@@ -2454,7 +2455,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `cluster.max_shards_per_node.frozen` | 3000 | dynamic | cluster | frozen 전용 노드당 샤드 한도. | ↑ frozen 노드의 메타데이터 부하가 커집니다.<br>↓ 마운트 가능한 인덱스가 줄어듭니다. | INFO / INFO | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.metadata.display_name` | (없음) | dynamic | cluster | 사용자가 정하는 클러스터 메타데이터(ECH 는 배포 이름을 저장). Elasticsearch 설정이 아니므로 기본값이 없습니다. | 동작 영향 없음. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `cluster.persistent_tasks.allocation.enable` | all | dynamic | cluster | persistent task(ML job, transform 등) 할당 허용. | none 이면 새 persistent task 가 할당되지 않습니다. | WARNING | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
-| `cluster.routing.allocation.allow_rebalance` | always | dynamic | cluster | 리밸런싱을 시작하는 조건(desired balance 할당기 기본 always, 이전 할당기는 indices_all_active). | 조건을 엄격히 하면(indices_primaries_active / indices_all_active) 복구가 끝날 때까지 리밸런싱이 미뤄져 편중 해소가 늦어집니다. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
+| `cluster.routing.allocation.allow_rebalance` | always (8.16 이전 또는 balanced allocator 는 indices_all_active) | dynamic | cluster | 리밸런싱을 시작하는 조건(desired balance 할당기 기본 always, 이전 할당기는 indices_all_active). | 조건을 엄격히 하면(indices_primaries_active / indices_all_active) 복구가 끝날 때까지 리밸런싱이 미뤄져 편중 해소가 늦어집니다. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.awareness.attributes` | (없음) | dynamic | cluster | primary/replica 를 서로 다른 영역(zone·rack)에 배치하기 위한 노드 속성. | 설정 시 같은 샤드의 사본이 다른 영역에 배치됩니다. 영역별 노드 수가 다르면 일부 사본이 미할당될 수 있습니다. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.balance.disk_usage` | 2.0E-11 | dynamic | cluster | 노드별 디스크 사용량 균형 가중치. | 디스크 편중 분산 효과가 달라집니다. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.balance.index` | 0.55 | dynamic | cluster | 인덱스별 샤드 분산 가중치. | 가중치 변경은 대량 재배치를 유발할 수 있습니다. | INFO | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
