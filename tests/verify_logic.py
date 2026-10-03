@@ -156,9 +156,12 @@ def test_settings_kb():
 def test_kb_against_bundle(path):
     """Compare KB defaults with the defaults ES reported. Only keys set in yml and auto-computed keys may differ."""
     from esdoctor.loader import Bundle
-    from esdoctor.settings_kb import KB, compare, AUTO_DEFAULT
+    from esdoctor.settings_kb import KB, compare, AUTO_DEFAULT, default_for
     from esdoctor.rules.settings import _flat
+    from esdoctor.context import Context
+    from esdoctor.thresholds import DEFAULTS
     b = Bundle(path)
+    ctx = Context(Bundle(path), dict(DEFAULTS))
     d = _flat((b.json("cluster_settings_defaults.json") or {}).get("defaults") or {})
     yml = set()
     for n in (b.json("nodes.json") or {}).get("nodes", {}).values():
@@ -167,8 +170,10 @@ def test_kb_against_bundle(path):
     for k, spec in KB.items():
         if spec["scope"] == "index" or k not in d or k in yml or k in AUTO_DEFAULT:
             continue
-        if compare(k, d[k])[0]:
-            bad.append("%s: KB=%s ES=%s" % (k, spec["default"], d[k]))
+        # Defaults that depend on the version, the node or the index are compared with the value for this cluster
+        ch, _dir, _spec, used, _src = compare(k, d[k], default=default_for(k, ctx))
+        if ch:
+            bad.append("%s: KB=%s ES=%s" % (k, used, d[k]))
     check("knowledge base defaults = ES reported defaults (yml and auto-computed keys excluded)", not bad, "; ".join(bad))
 
 
