@@ -8,8 +8,8 @@
 
 | Item | Value |
 | --- | --- |
-| Tool version | esdoctor 0.14.0 |
-| Elasticsearch baseline version | 9.4 |
+| Tool version | esdoctor 0.14.1 |
+| Elasticsearch baseline version | 9.5 |
 | Official docs checked | 2026-10 |
 | Validated on real bundles | 9.4.4 (ECH, 3 nodes, single tier) / 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), api mode |
 | Field-tested | Tuned for false positives and false negatives on a 9.5.3 multi-tier bundle. Compared file and field structure. Verified memory use on large bundles (cluster_state 190 MB, mapping 178 MB). |
@@ -28,6 +28,7 @@
 | 9.0 | IDX-013 | logsdb applies automatically to new logs-*-* data streams only |
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq_hnsw |
 | 9.2 | VEC-003 | index.mapping.exclude_source_vectors is enabled by default |
+| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | Merge policy defaults change (segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16). The columnar and logsdb_columnar modes default to best_compression and synthetic _source, vectordb_document sets index.store.preload itself, and monitoring plugin collection is deprecated |
 
 If the analyzed cluster is newer than the baseline version, the report shows `VER-001`.
 
@@ -1182,8 +1183,8 @@ The rollover condition shown is an estimate (the most common one per data stream
 Elasticsearch 9.0+ and logs-*-* data streams whose write index is not in logsdb mode → Info (IDX-013).
 
 Official: from 9.0, logsdb is set automatically on new logs-*-* data streams. Data streams that existed before an
-upgrade from 8.x, including integration and APM streams, are not switched. Data streams set to time_series are skipped,
-and so are bundles without settings.json and data_stream.json index_mode, where the mode cannot be determined.
+upgrade from 8.x, including integration and APM streams, are not switched. Data streams set to time_series, or to the
+columnar or logsdb_columnar modes added in 9.5, are skipped, and so are bundles without settings.json and data_stream.json index_mode, where the mode cannot be determined.
 The switch is cluster.logsdb.enabled: it defaults to false when logs data existed before 9.0 (logsdb.prior_logs_usage),
 and while it is false even new logs-*-* indices stay standard. Its value is shown when the bundle reports it.
 
@@ -1339,6 +1340,8 @@ Formula recommended in the search-speed guide: replicas = max(max_failures, ceil
 
 Info if any index has index.store.preload set; Warning if the count is > preload_index_count_warn.
 
+vectordb_document indices (9.5) get index.store.preload for their vector files automatically, so that exact value is not listed.
+
 ### PERF-009: Data path on a network filesystem
 
 | Item | Details |
@@ -1370,8 +1373,9 @@ Warning if nodes_stats fs.data[].type includes nfs / cifs / smb / fuse / gluster
 
 User indices with primary store >= codec_check_min_bytes and index.codec left at default (not set) → Info.
 
-Only logsdb is excluded: it is the only index mode whose default codec is best_compression (official logsdb docs, and IndexMode in
-the Elasticsearch source). standard and time_series indices default to the LZ4 codec.
+Index modes whose default codec is best_compression are excluded: logsdb, and the columnar and logsdb_columnar modes added in 9.5
+(official logsdb docs, and IndexMode in the Elasticsearch source). standard, time_series and vectordb_document indices default to
+the LZ4 codec.
 
 ### DISK-007: Indices with _source disabled
 
@@ -1390,8 +1394,9 @@ the Elasticsearch source). standard and time_series indices default to the LZ4 c
 _source disabled → Warning; synthetic _source → Info (DISK-007).
 
 Disabled is found two ways: the mapping parameter "_source": {"enabled": false} in mapping.json (the documented way), and
-index.mapping.source.mode=disabled in settings.json. index.mapping.source.mode=synthetic is listed as Info. stored is the
-default and is not listed. System indices are skipped.
+index.mapping.source.mode=disabled in settings.json. index.mapping.source.mode=synthetic, and columnar_stored (9.5 columnar
+modes), are listed as Info: the returned _source is rebuilt, not the original. stored is the default and is not listed.
+System indices are skipped.
 
 ### MAP-003: Index templates without dynamic mapping control
 
@@ -1750,7 +1755,8 @@ Whether cluster monitoring data exists (OPS-007, Info).
 
 If this cluster holds stack monitoring data (.monitoring-* or *stack_monitoring* data streams), it is monitoring itself
 (production should use a separate monitoring cluster). If there is none, the bundle cannot show whether the data goes to another cluster,
-so the report asks you to confirm. Legacy internal collection (xpack.monitoring.collection.enabled=true) is reported as well.
+so the report asks you to confirm. Legacy internal collection (xpack.monitoring.collection.enabled=true) is reported as well;
+from 9.5 the note adds that collecting with the monitoring plugin is deprecated and is removed in 10.0 (official deprecations).
 
 ### LIC-001: License is valid
 
@@ -2432,7 +2438,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 - Precedence (official): transient > persistent > elasticsearch.yml > default
 - A dynamic setting can be changed with `PUT _cluster/settings` (or the index settings API). Setting it to `null` restores the default.
 - A static setting can only be changed in elasticsearch.yml on every target node and needs a restart. Static index settings can only be changed on a closed index.
-- `cluster_settings_defaults` in the bundle already reflects yml values, and keys set through the API do not report a default. So the original default comes from this table (official docs for 9.4).
+- `cluster_settings_defaults` in the bundle already reflects yml values, and keys set through the API do not report a default. So the original default comes from this table (official docs for 9.5).
 - ↑ is the effect of setting a value above the default, ↓ below it. A setting that is not in this table is shown in the report with its value only, marked as not documented.
 
 | Setting | Default | Kind | Scope | Meaning | Effect of change | Risk (up/down) | Docs |
@@ -2474,7 +2480,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `index.blocks.read_only` | false | dynamic | index | Read-only. | With true, writes and metadata changes are rejected. | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
 | `index.blocks.read_only_allow_delete` | false | dynamic | index | Read-only (deletes allowed). Set automatically at flood stage. | With true, indexing is rejected. Clear it after freeing disk space (on 8.x it is cleared automatically once space recovers). | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
 | `index.blocks.write` | false | dynamic | index | Blocks writes. | With true, indexing is rejected. | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
-| `index.codec` | default(LZ4) | static | index | Compression method for stored fields (logsdb and time_series modes default to best_compression). | best_compression saves storage but adds decompression cost when fetching documents. It is a static setting, so it can only be changed on a closed index, and existing segments pick it up after a merge. | INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
+| `index.codec` | default(LZ4) | static | index | Compression method for stored fields (logsdb, and from 9.5 the columnar and logsdb_columnar modes, default to best_compression; standard and time_series use LZ4). | best_compression saves storage but adds decompression cost when fetching documents. It is a static setting, so it can only be changed on a closed index, and existing segments pick it up after a merge. | INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.highlight.max_analyzed_offset` | 1000000 | dynamic | index | Maximum number of characters analyzed for highlighting. | ↑ Highlighting large documents uses a lot of CPU and heap.<br>↓ Highlights of long documents are truncated or fail. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.mapping.depth.limit` | 20 | dynamic | index | Maximum object nesting depth. | ↑ Deeply nested documents are allowed.<br>↓ Indexing may be rejected. | INFO / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
 | `index.mapping.nested_fields.limit` | 100 (50 for indices created before 9.3) | dynamic | index | Limit on the number of nested type fields. | ↑ Nested fields create hidden documents, which are expensive to store and search.<br>↓ Mappings are rejected. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
@@ -2489,8 +2495,10 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `index.max_script_fields` | 32 | dynamic | index | Maximum number of script_fields per request. | ↑ Search CPU usage increases.<br>↓ Those requests are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_shingle_diff` | 3 | dynamic | index | Allowed difference between min and max for the shingle filter. | ↑ The number of tokens grows sharply.<br>↓ Analyzer definitions are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_terms_count` | 65536 | dynamic | index | Maximum number of terms in a terms query. | ↑ Large terms queries use a lot of CPU and heap.<br>↓ Those queries are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.merge.policy.max_merged_segment` | 5gb (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum size of a segment produced by a merge. | ↑ Fewer segments make search faster (kNN in particular), but each merge does more I/O.<br>↓ Segments pile up and search gets slower. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.segments_per_tier` | 10 (from the Elasticsearch source; not in the docs) | dynamic | index | Number of segments allowed per tier. | ↑ Fewer merges, but more segments.<br>↓ Merges run more often and I/O increases. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.floor_segment` | 16mb (2mb before 9.5) (from the Elasticsearch source; not in the docs) | dynamic | index | Segments smaller than this are treated as this size when merges are chosen. | ↑ Small segments are merged sooner; fewer segments but more merge I/O.<br>↓ Small segments pile up and search visits more segments. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merge_at_once` | 16 (10 before 9.5) (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum number of segments merged in one merge (tiered merge policy). | ↑ Larger merges in fewer rounds; each merge does more I/O.<br>↓ More, smaller merges; segment count goes down more slowly. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merged_segment` | 5gb (100gb for data stream indices from 8.11) (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum size of a segment produced by a merge. | ↑ Fewer segments make search faster (kNN in particular), but each merge does more I/O.<br>↓ Segments pile up and search gets slower. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.segments_per_tier` | 8 (10 before 9.5) (from the Elasticsearch source; not in the docs) | dynamic | index | Number of segments allowed per tier. | ↑ Fewer merges, but more segments.<br>↓ Merges run more often and I/O increases. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
 | `index.number_of_replicas` | 1 | dynamic | index | Number of replicas per shard. | ↑ Availability and search throughput increase, but disk and indexing cost grow in proportion to the replica count.<br>↓ With 0, the failure of a single node can lose data. | INFO / WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.queries.cache.enabled` | true | static | index | Use of the node query (filter) cache. | With false, repeated filters are recomputed every time. | INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
 | `index.refresh_interval` | 1s (search idle applies when not set) | dynamic | index | How often new documents become visible to search. | ↑ Indexing throughput increases and merge load decreases, but documents become searchable later. -1 stops refresh.<br>↓ Segments are created more often, which increases CPU and merge load. Setting it explicitly turns off the search idle optimization. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |

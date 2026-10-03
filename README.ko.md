@@ -2,7 +2,7 @@
 
 [English](README.md) · 한국어
 
-**버전 0.14.0** · 판정 기준 Elasticsearch 9.4 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.14.1** · 판정 기준 Elasticsearch 9.5 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -44,7 +44,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 - **스토리지 비용** — 롤오버 후에도 hot 에 남은 데이터, 검색되지 않는 replica, tier 간 디스크 사용 차이, 수집 대상 tier 가 며칠치 수집량을 더 받을 수 있는지
 - **원인 단위 조치 우선순위** — 같은 원인에서 나온 판정(예: yellow·미할당 샤드·allocation explain·replica 초과)은 대표 1건으로 묶고 나머지는 관련 판정으로 표시
 - **판정 근거 구분** — 모든 판정에 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산 표기
-- **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 94종 지식 베이스)
+- **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 96종 지식 베이스)
 - **과다 샤딩 분석** — 인덱스별로 줄일 수 있는 샤드 수, 데이터 스트림 롤오버 과다, 샤드 크기 분포
 - **tier 인식** — hot/warm/cold/frozen 을 구분해 같은 역할끼리만 비교
 - **비교 모드** — 이전 번들과 비교해 누적 카운터를 "지금도 증가 중인가" 로 판정하고, 노드별 이전/지금 표를 보여 줌. 번들이 3개 이상이면 사이징용 구간별 처리량(peak/off-peak)도 계산
@@ -177,7 +177,7 @@ bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, 빌드 전용 가�
 
 | 항목 | 값 |
 | --- | --- |
-| 판정 기준 Elasticsearch 버전 | **9.4** |
+| 판정 기준 Elasticsearch 버전 | **9.5** |
 | 공식 문서 대조 시점 | 2026-10 |
 | 실번들 검증 | 9.4.4(ECH, 3노드 단일 tier) · 9.5.3(ECH, 14노드 hot/warm/cold/frozen) — api 모드 |
 | 검증된 수집 모드 | **api**(위 두 번들) · **local**(diagnostics 9.4.1 로 수집한 self-managed ES 8.19.21 단일 노드, Rocky Linux 9). **remote 와 다중 노드 local 은 미검증** |
@@ -199,6 +199,7 @@ bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, 빌드 전용 가�
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq\_hnsw 기본 |
 | 9.0 | IDX-013 | 새 `logs-*-*` data stream 에 logsdb 자동 적용. 8.x 에서 업그레이드하기 전부터 있던 data stream 은 그대로 |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` 기본 적용 |
+| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | merge policy 기본값 변경(segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16), columnar·logsdb_columnar 는 best_compression·synthetic _source 기본, vectordb_document 는 index.store.preload 자동 설정, 모니터링 플러그인 수집 deprecated |
 
 ---
 
@@ -463,6 +464,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_logsdb.py` | 문서 수 한도·logsdb·force merge 판정(SHD-008·013·014·015, IDX-013, ILM-007·008·009)의 모든 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_write_path.py` | 쓰기 경로·운영 판정(PERF-012, OS-007, SHD-016, IDX-014·015, CLU-017, MAP-004, DIF-013)의 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_doc_audit.py` | 공식 문서 재대조로 고친 부분(JVM-002 oops 플래그, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom 조건, 개발 모드, 상황에 따라 달라지는 설정 기본값)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
+| `tests/test_es95.py` | Elasticsearch 9.5 기준: 버전별 merge policy 기본값, columnar·logsdb_columnar·vectordb_document index mode(DISK-006, DISK-007, IDX-013, PERF-008, SET-006), 모니터링 플러그인 deprecation(OPS-007)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_bottleneck_cost.py` | 병목 요약, 최근 재시작 노드의 비교 제외(HOT-001·002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001~006, 증상 tier 로 좁힌 병목 원인, tier 단위 DIF-008, DIF-014 구간 검사, tier 단위 SET-005 를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
 | `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |
@@ -479,7 +481,7 @@ bash tests/run_all.sh diagnostic.zip
 
 - **쿼리 본문이 없습니다.** 쿼리 유형별 누적 사용 횟수(`cluster_stats.indices.search`)로 비용이 큰 패턴의 비중은 판정하지만(PERF-011), 어떤 인덱스의 어떤 쿼리인지는 slowlog 나 Search Profiler 로 확인해야 합니다.
 - **보안 구성(사용자·역할·권한)은 판정하지 않습니다.** 보안 감사 영역이고 민감 정보라, 보안 기능 활성화와 인증서 만료만 봅니다.
-- **인덱스 설정의 기본값은 번들에 없습니다.** 인덱스 설정 지식 베이스(30종)는 공식 문서 기준이며 번들로 교차 검증되지 않습니다.
+- **인덱스 설정의 기본값은 번들에 없습니다.** 인덱스 설정 지식 베이스(32종)는 공식 문서 기준이며 번들로 교차 검증되지 않습니다.
 - **OS 커널 설정**(readahead, vm.swappiness, vm.max_map_count 원본값)은 api 모드 번들에 없어 판정하지 않습니다. local / remote 모드의 `syscalls/` 중 sysctl(vm.max_map_count, vm.swappiness), proc-limit(nofile, nproc), dmesg(OOM killer)만 읽습니다(SYS-001~004). readahead, THP, iostat, jstack, netstat 등은 아직 읽지 않습니다.
 - **hot threads 는 수집 순간 500ms 스냅샷**입니다. 부하가 없을 때 수집하면 신호가 나오지 않습니다.
 - 디스크 포화 예상(DIF-008)은 두 시점 사이의 선형 외삽입니다.
@@ -528,6 +530,7 @@ bash tests/run_all.sh diagnostic.zip
 │   ├── test_write_path.py      # 쓰기 경로·운영 판정 검증(합성 데이터)
 │   ├── test_bottleneck_cost.py # 병목 요약·스토리지 비용 판정 검증(합성 데이터)
 │   ├── test_doc_audit.py       # 공식 문서 재대조 수정 사항 검증(합성 데이터)
+│   ├── test_es95.py            # Elasticsearch 9.5 기준 검증(합성 데이터)
 │   └── make_broken_bundle.py   # 장애 주입 번들 생성
 ├── docs/STYLE.md              # 문체·용어 규칙
 ├── README.md / README.ko.md

@@ -2,7 +2,7 @@
 
 > Elastic 공식 문서의 항목이 어떤 룰로 반영되었는지(또는 왜 판정할 수 없는지)를 정리한 표입니다.
 > 각 룰의 정확한 판정 조건·임계값은 [RULES.ko.md](RULES.ko.md), 변경 이력은 [CHANGELOG.ko.md](CHANGELOG.ko.md) 를 참조하십시오.
-> 기준 버전: Elasticsearch 9.4 공식 문서(2026-09 대조).
+> 기준 버전: Elasticsearch 9.5 공식 문서(2026-10 대조).
 > 검증 범위: **api 모드**(ECH 9.4.4·9.5.3)와 **local 모드**(self-managed 8.19.21 단일 노드) 실번들로 검증되었습니다. remote 모드와 다중 노드 local 모드는 아직 검증하지 않았습니다.
 
 Elastic 공식 문서의 항목을 하나씩 대조해, 진단 번들로 판정 가능한 것은 룰로 구현하고

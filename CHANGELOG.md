@@ -5,6 +5,27 @@ English · [한국어](CHANGELOG.ko.md)
 This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Each entry is written as "previous behavior → current behavior (reason)". Use it to trace why a result differs from an earlier report.
 
+## [0.14.1] - 2026-10-03
+
+The baseline moves to Elasticsearch 9.5. The 9.5 release notes, breaking changes and deprecations were checked against every finding, and the Elasticsearch 9.5 source where the docs give no value. 96 settings in the knowledge base.
+
+### Changed
+
+- Baseline: Elasticsearch 9.4 → 9.5. A 9.5 cluster no longer raises VER-001
+- Merge policy defaults by version (Elasticsearch source, MergePolicyConfig): `segments_per_tier` 10 → 8, `floor_segment` 2mb → 16mb and `max_merge_at_once` 10 → 16 from 9.5. `max_merged_segment` was always 5gb → 100gb for data stream indices from 8.11 (time-based merge policy), 5gb otherwise. SET-006 compares against the default of the cluster version. `floor_segment` and `max_merge_at_once` were added to the knowledge base
+- DISK-006: only logsdb was skipped → the columnar and logsdb_columnar modes (9.5, tech preview) default to best_compression too and are skipped. SET-006 treats best_compression on these modes as the default
+- DISK-007: `index.mapping.source.mode: columnar_stored` (columnar modes) is listed with synthetic, as the returned _source is rebuilt
+- IDX-013: data streams in columnar or logsdb_columnar mode are not told to move to logsdb
+- PERF-008: the vectordb_document mode (9.5) sets `index.store.preload` for its vector files on its own; that exact value is no longer listed
+- OPS-007: with legacy internal collection on 9.5 or later, the finding adds that collecting with the monitoring plugin is deprecated and is removed in 10.0 (official deprecations)
+- Knowledge base: `index.codec` no longer says time_series defaults to best_compression (only logsdb and the columnar modes do)
+- `tests/test_es95.py`
+
+### Checked, no change needed
+
+- 9.5 breaking changes (CCS exclusion order, ES|QL FUSE, TSDB look-ahead window) and 9.5.1 (ILM allocate removes auto_expand_replicas) do not touch any finding
+- New 9.5 defaults with no finding behind them: batched query phase, ES95 TSDB doc values codec, adaptive replica selection, OTLP logs and traces
+
 ## [0.14.0] - 2026-10-02
 
 A bottleneck summary at the top of every report, recently restarted nodes left out of node comparisons, frozen shared cache on network storage, storage cost and sizing findings, throughput per interval across several bundles, a per node comparison table, a text filter in the HTML report, and fixes from a full check against the official docs. Every threshold without an official number is marked `[Tool]` and can be changed with `--thresholds`.

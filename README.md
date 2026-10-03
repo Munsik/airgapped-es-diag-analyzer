@@ -2,7 +2,7 @@
 
 English · [한국어](README.ko.md)
 
-**Version 0.14.0** · Findings based on the Elasticsearch 9.4 official docs · Python 3.8+ · No external dependencies
+**Version 0.14.1** · Findings based on the Elasticsearch 9.5 official docs · Python 3.8+ · No external dependencies
 
 esdoctor analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
 
@@ -44,7 +44,7 @@ It makes no network calls and uses only the Python standard library.
 - **Storage cost**: rolled-over data kept on hot, replicas nobody searches, uneven disk use across tiers, and how many days of ingest the landing tier can still hold
 - **Action priority by root cause**: findings that come from the same cause (for example yellow status, unassigned shards, allocation explain and replicas above the node count) are grouped under one representative finding, and the rest are shown as related findings
 - **Evidence basis on every finding**: Official / Reported fact / Tool threshold / Computed
-- **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 94 settings)
+- **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 96 settings)
 - **Oversharding analysis**: shards that can be removed per index, excess data stream rollovers, and shard size distribution
 - **Tier awareness**: hot/warm/cold/frozen are separated, and only nodes with the same role are compared
 - **Comparison mode**: compares against an earlier bundle to decide whether a cumulative counter is still increasing, with a before/now table per node. With three or more bundles it also reports throughput per interval (peak and off-peak) for sizing
@@ -177,7 +177,7 @@ Logs show when an event happened, so collect in `local` or `remote` mode when yo
 
 | Item | Value |
 | --- | --- |
-| Elasticsearch version used as the baseline | **9.4** |
+| Elasticsearch version used as the baseline | **9.5** |
 | Date checked against the official docs | 2026-10 |
 | Verified on real bundles | 9.4.4 (ECH, 3 nodes, single tier) and 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), both in api mode |
 | Verified collection modes | **api** (the two bundles above) and **local** (self-managed ES 8.19.21 single node on Rocky Linux 9, collected with diagnostics 9.4.1). **Remote and multi-node local are not verified** |
@@ -199,6 +199,7 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq\_hnsw |
 | 9.0 | IDX-013 | logsdb applies automatically to new `logs-*-*` data streams. Data streams that existed before an upgrade from 8.x stay as they are |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` applies by default |
+| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | Merge policy defaults change (segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16); columnar and logsdb_columnar default to best_compression and synthetic _source; vectordb_document sets index.store.preload itself; monitoring plugin collection deprecated |
 
 ---
 
@@ -464,6 +465,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_logsdb.py` | Every branch of the document limit, logsdb and force merge findings (SHD-008, 013, 014, 015, IDX-013, ILM-007, 008, 009) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_write_path.py` | Every branch of the write path and operations findings (PERF-012, OS-007, SHD-016, IDX-014, 015, CLU-017, MAP-004, DIF-013) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_doc_audit.py` | Fixes from the official documentation audit: JVM-002 oops flag, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom conditions, development mode, and context-dependent settings defaults, on synthetic data, in both languages. No external bundle needed | 0 failures |
+| `tests/test_es95.py` | Elasticsearch 9.5 baseline: merge policy defaults by version, the columnar, logsdb_columnar and vectordb_document index modes (DISK-006, DISK-007, IDX-013, PERF-008, SET-006), and the monitoring plugin deprecation (OPS-007), on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_bottleneck_cost.py` | Bottleneck summary, recently restarted nodes left out of comparisons (HOT-001, 002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001 to 006, bottleneck causes scoped to the symptom tiers, DIF-008 per tier, DIF-014 interval checks and SET-005 per tier on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |
@@ -480,7 +482,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 
 - **Query bodies are not in the bundle.** The share of expensive patterns is judged from the cumulative use count per query type (`cluster_stats.indices.search`, PERF-011). To find which query on which index, use slowlog or the Search Profiler.
 - **Security configuration (users, roles, privileges) is not judged.** It belongs to a security audit and is sensitive data. Only whether security features are enabled and certificate expiry are checked.
-- **Index setting defaults are not in the bundle.** The index settings knowledge base (30 settings) is based on the official docs and is not cross-checked against the bundle.
+- **Index setting defaults are not in the bundle.** The index settings knowledge base (32 settings) is based on the official docs and is not cross-checked against the bundle.
 - **OS kernel settings** (readahead, vm.swappiness, raw vm.max_map_count) are not in api mode bundles, so they are not judged. From `syscalls/` in local and remote mode, only sysctl (vm.max_map_count, vm.swappiness), proc-limit (nofile, nproc) and dmesg (OOM killer) are read (SYS-001 to SYS-004). readahead, THP, iostat, jstack and netstat are not read yet.
 - **Hot threads is a 500ms snapshot** taken at collection time. If you collect when the cluster is idle, it shows no signal.
 - The disk saturation forecast (DIF-008) is a linear extrapolation between two points in time.
@@ -529,6 +531,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 │   ├── test_write_path.py      # write path and operations checks (synthetic data)
 │   ├── test_bottleneck_cost.py # bottleneck summary and storage cost checks (synthetic data)
 │   ├── test_doc_audit.py       # fixes from the official documentation audit (synthetic data)
+│   ├── test_es95.py            # Elasticsearch 9.5 baseline checks (synthetic data)
 │   └── make_broken_bundle.py   # create a bundle with injected failures
 ├── docs/STYLE.md              # style and glossary
 ├── README.md / README.ko.md

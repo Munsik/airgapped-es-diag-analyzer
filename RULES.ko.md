@@ -8,8 +8,8 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdoctor 0.14.0 |
-| 판정 기준 Elasticsearch 버전 | 9.4 |
+| 도구 버전 | esdoctor 0.14.1 |
+| 판정 기준 Elasticsearch 버전 | 9.5 |
 | 공식 문서 대조 시점 | 2026-10 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
 | 현장 실행 확인 | 9.5.3 다중 tier 번들로 오탐·미탐 교정, 파일·필드 구조 대조, 대형 번들(cluster_state 190MB·mapping 178MB) 메모리 검증 |
@@ -28,6 +28,7 @@
 | 9.0 | IDX-013 | logs-*-* data stream 에 logsdb 자동 적용(새 data stream 만) |
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq_hnsw 가 기본 |
 | 9.2 | VEC-003 | index.mapping.exclude_source_vectors 기본 적용 |
+| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | merge policy 기본값 변경(segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16). columnar·logsdb_columnar 모드는 best_compression 과 synthetic _source 가 기본, vectordb_document 는 index.store.preload 를 스스로 설정, 모니터링 플러그인 수집은 deprecated |
 
 분석 대상이 기준 버전보다 새로우면 리포트에 `VER-001` 이 표시됩니다.
 
@@ -1182,8 +1183,8 @@ logsdb_shard_gb_low 미만이고 문서가 1건 이상 2억건 미만인 인덱�
 Elasticsearch 9.0 이상에서 write index 가 logsdb 가 아닌 logs-*-* data stream → 참고(IDX-013).
 
 공식: 9.0 부터 새 logs-*-* data stream 에는 logsdb 가 자동 적용된다. 8.x 에서 업그레이드하기 전부터 있던 data stream
-(integration·APM 포함)은 바뀌지 않는다. time_series 로 설정된 data stream 은 제외하고, settings.json 과
-data_stream.json 의 index_mode 가 모두 없어 mode 를 알 수 없는 번들도 제외한다.
+(integration·APM 포함)은 바뀌지 않는다. time_series, 또는 9.5 에 추가된 columnar·logsdb_columnar 모드로 설정된 data stream 은
+제외하고, settings.json 과 data_stream.json 의 index_mode 가 모두 없어 mode 를 알 수 없는 번들도 제외한다.
 이를 정하는 설정은 cluster.logsdb.enabled 다. 9.0 이전부터 logs 데이터가 있었으면(logsdb.prior_logs_usage) 기본값이 false 이고,
 false 인 동안은 새 logs-*-* 인덱스도 standard 로 만들어진다. 번들에 값이 있으면 함께 보여 준다.
 
@@ -1337,7 +1338,9 @@ search-speed 의 권장식: replicas = max(max_failures, ceil(num_nodes/num_prim
 
 **판정 로직**
 
-index.store.preload 가 설정된 인덱스가 있으면 참고, 그 수 > preload_index_count_warn 이면 주의.
+index.store.preload 가 설정된 인덱스가 있으면 참고, 개수가 preload_index_count_warn 초과면 주의.
+
+vectordb_document 인덱스(9.5)는 벡터 파일용 index.store.preload 가 자동으로 붙으므로 그 값 그대로면 나열하지 않는다.
 
 ### PERF-009 — 네트워크 파일시스템 기반 데이터 경로
 
@@ -1368,10 +1371,11 @@ nodes_stats fs.data[].type 에 nfs / cifs / smb / fuse / glusterfs / ceph 가 �
 
 **판정 로직**
 
-primary 저장량이 codec_check_min_bytes 이상이고 index.codec 을 지정하지 않은(기본값) 사용자 인덱스 → 참고.
+primary store >= codec_check_min_bytes 이고 index.codec 를 기본값(미설정)으로 둔 사용자 인덱스 → 참고.
 
-logsdb 만 뺀다. 기본 codec 이 best_compression 인 index mode 는 logsdb 하나뿐이다(공식 logsdb 문서, Elasticsearch 소스의
-IndexMode). standard 와 time_series 인덱스의 기본 codec 은 LZ4 다.
+기본 codec 이 best_compression 인 index mode 는 뺀다: logsdb, 그리고 9.5 에 추가된 columnar·logsdb_columnar 모드
+(공식 logsdb 문서와 Elasticsearch 소스의 IndexMode). standard, time_series, vectordb_document 인덱스는 기본이
+LZ4 codec 이다.
 
 ### DISK-007 — _source 비활성 인덱스
 
@@ -1389,9 +1393,10 @@ IndexMode). standard 와 time_series 인덱스의 기본 codec 은 LZ4 다.
 
 _source 비활성 → 주의, synthetic _source → 참고(DISK-007).
 
-비활성은 두 가지로 찾는다: mapping.json 의 매핑 파라미터 "_source": {"enabled": false}(문서화된 방식)와
-settings.json 의 index.mapping.source.mode=disabled. index.mapping.source.mode=synthetic 은 참고로 보여 준다. stored 는
-기본값이라 보여 주지 않는다. system 인덱스는 제외한다.
+비활성은 두 가지로 찾는다: mapping.json 의 매핑 파라미터 "_source": {"enabled": false}(문서에 나온 방법)와 settings.json 의
+index.mapping.source.mode=disabled. index.mapping.source.mode=synthetic 과 columnar_stored(9.5 columnar
+모드)는 참고로 나열한다: 돌려받는 _source 는 원본이 아니라 다시 만든 것이다. stored 는 기본값이라 나열하지 않는다.
+system 인덱스는 건너뛴다.
 
 ### MAP-003 — 동적 매핑 통제가 없는 인덱스 템플릿
 
@@ -1750,7 +1755,8 @@ size_idle_heap_pct, 디스크 < size_idle_disk_pct(frozen 은 디스크 제외)�
 
 이 클러스터 안에 스택 모니터링 데이터(.monitoring-* 또는 *stack_monitoring* 데이터 스트림)가 있으면 자기 자신에게
 수집하는 구성이다(운영 환경은 별도 모니터링 클러스터 권장). 없으면 별도 클러스터로 보내는지 번들만으로 알 수 없으므로
-확인을 안내한다. 레거시 내부 수집(xpack.monitoring.collection.enabled=true)도 함께 표기한다.
+확인을 안내한다. 레거시 내부 수집(xpack.monitoring.collection.enabled=true)도 함께 표기하고,
+9.5 부터는 모니터링 플러그인 수집이 deprecated 이며 10.0 에서 제거된다는 점을 덧붙인다(공식 deprecations).
 
 ### LIC-001 — 라이선스 정상
 
@@ -2432,7 +2438,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 - 적용 우선순위(공식): transient > persistent > elasticsearch.yml > 기본값
 - dynamic 은 `PUT _cluster/settings`(또는 인덱스 설정 API)로 바꿀 수 있고, `null` 로 지정하면 기본값으로 돌아갑니다.
 - static 은 모든 대상 노드의 elasticsearch.yml 에서만 바꿀 수 있고 재기동이 필요합니다. 인덱스 static 설정은 닫힌 인덱스에서만 바꿀 수 있습니다.
-- 번들의 `cluster_settings_defaults` 는 yml 값이 반영된 값이고, API 로 명시한 키는 기본값을 보고하지 않습니다. 그래서 '원래 기본값' 은 이 표(공식 문서 기준 9.4)를 사용합니다.
+- 번들의 `cluster_settings_defaults` 는 yml 값이 반영된 값이고, API 로 명시한 키는 기본값을 보고하지 않습니다. 그래서 '원래 기본값' 은 이 표(공식 문서 기준 9.5)를 사용합니다.
 - ↑ 는 기본값보다 크게, ↓ 는 작게 바꿨을 때의 영향입니다. 이 표에 없는 설정은 리포트에 '설명 미등록' 으로 값만 표기합니다.
 
 | 설정 | 기본값 | 종류 | 범위 | 의미 | 변경 영향 | 위험도(↑/↓) | 문서 |
@@ -2474,7 +2480,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `index.blocks.read_only` | false | dynamic | index | 읽기 전용. | true 면 쓰기·메타데이터 변경이 거부됩니다. | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
 | `index.blocks.read_only_allow_delete` | false | dynamic | index | 읽기 전용(삭제 허용). flood stage 가 자동 설정. | true 면 색인이 거부됩니다. 디스크 여유 확보 후 해제해야 합니다(8.x 는 여유 회복 시 자동 해제). | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
 | `index.blocks.write` | false | dynamic | index | 쓰기 차단. | true 면 색인이 거부됩니다. | WARNING | [Index blocks](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-block) |
-| `index.codec` | default(LZ4) | static | index | stored field 압축 방식(logsdb·time_series 모드는 best_compression 기본). | best_compression 은 저장 공간을 줄이는 대신 문서 조회 시 압축 해제 비용이 늘어납니다. static 이라 닫힌 인덱스에서만 바꿀 수 있고, 기존 세그먼트는 merge 후 반영됩니다. | INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
+| `index.codec` | default(LZ4) | static | index | stored field 압축 방식(logsdb 와 9.5 의 columnar·logsdb_columnar 모드는 best_compression 기본, standard·time_series 는 LZ4). | best_compression 은 저장 공간을 줄이는 대신 문서 조회 시 압축 해제 비용이 늘어납니다. static 이라 닫힌 인덱스에서만 바꿀 수 있고, 기존 세그먼트는 merge 후 반영됩니다. | INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.highlight.max_analyzed_offset` | 1000000 | dynamic | index | 하이라이트 시 분석할 최대 문자 수. | ↑ 대형 문서 하이라이팅이 CPU·heap 을 크게 씁니다.<br>↓ 긴 문서의 하이라이트가 잘리거나 실패합니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.mapping.depth.limit` | 20 | dynamic | index | 객체 중첩 최대 깊이. | ↑ 깊은 중첩 문서가 허용됩니다.<br>↓ 색인이 거부될 수 있습니다. | INFO / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
 | `index.mapping.nested_fields.limit` | 100(9.3 이전에 만든 인덱스는 50) | dynamic | index | nested 타입 필드 수 한도. | ↑ nested 는 숨은 문서를 만들어 저장·검색 비용이 큽니다.<br>↓ 매핑이 거부됩니다. | WARNING / INFO | [Mapping limit settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/mapping-limit) |
@@ -2489,8 +2495,10 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `index.max_script_fields` | 32 | dynamic | index | 요청당 script_fields 최대 수. | ↑ 검색 CPU 사용이 늘어납니다.<br>↓ 해당 요청이 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_shingle_diff` | 3 | dynamic | index | shingle 필터 min/max 차이 허용치. | ↑ 토큰 수가 급증합니다.<br>↓ 분석기 정의가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_terms_count` | 65536 | dynamic | index | terms 쿼리의 최대 항목 수. | ↑ 대형 terms 쿼리가 CPU·heap 을 크게 씁니다.<br>↓ 해당 쿼리가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
-| `index.merge.policy.max_merged_segment` | 5gb (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 로 만들어지는 세그먼트의 최대 크기. | ↑ 세그먼트 수가 줄어 검색(특히 kNN)이 빨라지지만 merge 한 번의 I/O 가 커집니다.<br>↓ 세그먼트가 많아져 검색이 느려집니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.segments_per_tier` | 10 (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | tier 당 허용 세그먼트 수. | ↑ merge 는 줄지만 세그먼트가 많아집니다.<br>↓ merge 가 잦아져 I/O 가 늘어납니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.floor_segment` | 16mb (9.5 이전 2mb) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 대상을 고를 때 이보다 작은 세그먼트는 이 크기로 간주합니다. | ↑ 작은 세그먼트를 더 빨리 합쳐 세그먼트는 줄지만 merge I/O 가 늘어납니다.<br>↓ 작은 세그먼트가 쌓여 검색이 더 많은 세그먼트를 거칩니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merge_at_once` | 16 (9.5 이전 10) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 한 번에 합치는 최대 세그먼트 수(tiered merge policy). | ↑ merge 횟수는 줄고 한 번의 I/O 는 커집니다.<br>↓ 작은 merge 가 잦아지고 세그먼트 수가 천천히 줄어듭니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merged_segment` | 5gb (8.11 이후 data stream 인덱스는 100gb) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 로 만들어지는 세그먼트의 최대 크기. | ↑ 세그먼트 수가 줄어 검색(특히 kNN)이 빨라지지만 merge 한 번의 I/O 가 커집니다.<br>↓ 세그먼트가 많아져 검색이 느려집니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.segments_per_tier` | 8 (9.5 이전 10) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | tier 당 허용 세그먼트 수. | ↑ merge 는 줄지만 세그먼트가 많아집니다.<br>↓ merge 가 잦아져 I/O 가 늘어납니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
 | `index.number_of_replicas` | 1 | dynamic | index | 샤드당 replica 수. | ↑ 가용성·검색 처리량은 늘지만 디스크와 색인 비용이 배수로 늘어납니다.<br>↓ 0 이면 노드 1대 장애로 데이터가 유실될 수 있습니다. | INFO / WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.queries.cache.enabled` | true | static | index | 노드 query(filter) 캐시 사용. | false 면 반복 필터를 매번 다시 계산합니다. | INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
 | `index.refresh_interval` | 1s(미지정 시 search idle 적용) | dynamic | index | 새 문서가 검색에 보이기까지의 주기. | ↑ 색인 처리량이 늘고 merge 부담이 줄지만 검색 반영이 늦어집니다. -1 은 refresh 중지.<br>↓ 세그먼트가 잦게 생겨 CPU·merge 부담이 커집니다. 명시하면 search idle 최적화가 꺼집니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |

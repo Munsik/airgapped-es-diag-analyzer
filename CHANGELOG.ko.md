@@ -3,6 +3,27 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.14.1] - 2026-10-03
+
+판정 기준을 Elasticsearch 9.5 로 올렸습니다. 9.5 릴리스 노트, breaking changes, deprecations 를 모든 판정과 대조했고, 문서에 값이 없는 부분은 Elasticsearch 9.5 소스로 확인했습니다. 설정 지식 베이스 96종.
+
+### 변경
+
+- 판정 기준: Elasticsearch 9.4 → 9.5. 9.5 클러스터에서 VER-001 이 더 이상 나오지 않음
+- 버전별 merge policy 기본값(Elasticsearch 소스 MergePolicyConfig): 9.5 부터 `segments_per_tier` 10 → 8, `floor_segment` 2mb → 16mb, `max_merge_at_once` 10 → 16. `max_merged_segment` 는 항상 5gb 로 봤음 → 8.11 부터 data stream 인덱스는 100gb(time-based merge policy), 그 외 5gb. SET-006 은 클러스터 버전의 기본값과 비교. `floor_segment`, `max_merge_at_once` 를 지식 베이스에 추가
+- DISK-006: logsdb 만 제외했음 → 9.5 의 columnar·logsdb_columnar 모드(tech preview)도 best_compression 이 기본이라 제외. SET-006 도 이 모드의 best_compression 을 기본값으로 봄
+- DISK-007: `index.mapping.source.mode: columnar_stored`(columnar 모드)도 synthetic 과 함께 나열. 돌려받는 _source 가 다시 만든 것이기 때문
+- IDX-013: columnar·logsdb_columnar 모드 data stream 에는 logsdb 전환을 권하지 않음
+- PERF-008: vectordb_document 모드(9.5)는 벡터 파일용 `index.store.preload` 를 스스로 설정하므로, 그 값 그대로면 나열하지 않음
+- OPS-007: 9.5 이상에서 레거시 내부 수집을 쓰면 모니터링 플러그인 수집이 deprecated 이며 10.0 에서 제거된다는 안내를 덧붙임(공식 deprecations)
+- 지식 베이스: `index.codec` 설명에서 time_series 가 best_compression 기본이라는 잘못된 문구를 고침(logsdb 와 columnar 모드만 해당)
+- `tests/test_es95.py`
+
+### 확인했지만 바꿀 것 없음
+
+- 9.5 breaking changes(CCS 제외 순서, ES|QL FUSE, TSDB look-ahead 구간)와 9.5.1(ILM allocate 가 auto_expand_replicas 제거)은 어떤 판정에도 걸리지 않음
+- 판정과 관계없는 9.5 신규 기본값: batched query phase, ES95 TSDB doc values codec, adaptive replica selection, OTLP logs·traces
+
 ## [0.14.0] - 2026-10-02
 
 모든 리포트 맨 위에 병목 요약을 넣고, 최근 재시작한 노드를 노드 간 비교에서 빼고, 네트워크 스토리지 위의 frozen shared cache, 스토리지 비용과 사이징 판정, 여러 번들의 구간별 처리량, 노드별 비교 표, HTML 리포트 검색창을 추가했습니다. 공식 문서와 전체를 다시 대조해 고친 내용도 담았습니다. 공식 수치가 없는 임계값은 모두 `[도구]` 로 표기하고 `--thresholds` 로 바꿀 수 있습니다.

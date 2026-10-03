@@ -401,12 +401,20 @@ KB = {
         "true", "static", "index", N_("settings_kb._.196"), change=N_("settings_kb._.197"),
         risk="INFO", doc="qcache"),
     "index.merge.policy.max_merged_segment": S(
-        "5gb", "dynamic", "index", N_("settings_kb._.198"),
+        N_("settings_kb.max_merged_default"), "dynamic", "index", N_("settings_kb._.198"),
         up=N_("settings_kb._.199"),
         down=N_("settings_kb._.200"), risk=("INFO", "INFO"), doc="merge", basis="source"),
     "index.merge.policy.segments_per_tier": S(
-        "10", "dynamic", "index", N_("settings_kb._.201"),
+        N_("settings_kb.segments_per_tier_default"), "dynamic", "index", N_("settings_kb._.201"),
         up=N_("settings_kb._.202"), down=N_("settings_kb._.203"),
+        risk=("INFO", "INFO"), doc="merge", basis="source"),
+    "index.merge.policy.floor_segment": S(
+        N_("settings_kb.floor_segment_default"), "dynamic", "index", N_("settings_kb._.237"),
+        up=N_("settings_kb._.238"), down=N_("settings_kb._.239"),
+        risk=("INFO", "INFO"), doc="merge", basis="source"),
+    "index.merge.policy.max_merge_at_once": S(
+        N_("settings_kb.max_merge_at_once_default"), "dynamic", "index", N_("settings_kb._.240"),
+        up=N_("settings_kb._.241"), down=N_("settings_kb._.242"),
         risk=("INFO", "INFO"), doc="merge", basis="source"),
     "index.highlight.max_analyzed_offset": S(
         "1000000", "dynamic", "index", N_("settings_kb._.204"),
@@ -535,6 +543,11 @@ def _recovery_default(node):
     return "250mb"
 
 
+# Index modes whose default codec is best_compression (IndexMode.getDefaultCodec in the Elasticsearch source):
+# logsdb, and the columnar modes added in 9.5 (tech preview). standard, time_series, lookup and vectordb_document use the default (LZ4).
+BEST_COMPRESSION_MODES = ("logsdb", "columnar", "logsdb_columnar")
+
+
 def default_for(key, ctx=None, node=None, index=None):
     """Default that depends on the version, the node or the index, or None to use the KB value.
 
@@ -542,6 +555,9 @@ def default_for(key, ctx=None, node=None, index=None):
     index.mapping.nested_fields.limit: 100 for indices created on index version 9_050_0_00 (9.3) or later, 50 before.
     indices.breaker.total.limit: 95% with use_real_memory (default), 70% when a node turns it off.
     indices.recovery.max_bytes_per_sec: per node role and memory (see _recovery_default).
+    index.codec: best_compression for index modes that default to it (BEST_COMPRESSION_MODES), default otherwise.
+    index.merge.policy.*: 9.5 changed segments_per_tier 10 → 8, floor_segment 2mb → 16mb and max_merge_at_once 10 → 16.
+    max_merged_segment is 100gb for time-based indices (with a data stream timestamp field, from 8.11) and 5gb otherwise.
     All taken from the Elasticsearch source of the matching versions.
     """
     try:
@@ -562,6 +578,20 @@ def default_for(key, ctx=None, node=None, index=None):
             return "95%"
         if key == "indices.recovery.max_bytes_per_sec" and node is not None:
             return _recovery_default(node)
+        if key == "index.codec" and ctx is not None and index is not None:
+            mode = str(ctx.index_mode(index) or "standard").lower()
+            return "best_compression" if mode in BEST_COMPRESSION_MODES else None
+        if key.startswith("index.merge.policy.") and ctx is not None:
+            new = ctx.version_tuple >= (9, 5, 0)
+            if key == "index.merge.policy.segments_per_tier":
+                return "8" if new else "10"
+            if key == "index.merge.policy.floor_segment":
+                return "16mb" if new else "2mb"
+            if key == "index.merge.policy.max_merge_at_once":
+                return "16" if new else "10"
+            if key == "index.merge.policy.max_merged_segment" and index is not None:
+                timed = ctx.version_tuple >= (8, 11, 0) and bool(ctx.data_stream_of(index))
+                return "100gb" if timed else "5gb"
     except (TypeError, ValueError, AttributeError):
         return None
     return None

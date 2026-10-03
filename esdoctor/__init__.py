@@ -6,7 +6,7 @@ Uses only the Python 3.8+ standard library and makes no outbound network calls.
 """
 from .i18n import N_
 
-__version__ = "0.14.0"
+__version__ = "0.14.1"
 
 # ---------------------------------------------------------------------------
 # Baseline for findings
@@ -16,7 +16,7 @@ __version__ = "0.14.0"
 #   - SUPPORTED_MIN    : lowest version where the rules work as intended (below it only some rules run)
 # Analyzing a version newer than the baseline raises VER-001 (defaults and behavior may have changed).
 # ---------------------------------------------------------------------------
-ES_BASELINE = (9, 4)
+ES_BASELINE = (9, 5)
 DOCS_CHECKED = "2026-10"
 VALIDATED_BUNDLE = N_("pkg.validated_bundle")
 FIELD_TESTED = N_("pkg.field_tested")
@@ -33,4 +33,5 @@ VERSION_GATES = [
     ((9, 0), "IDX-013", N_("pkg.gate.idx013")),
     ((9, 1), "VEC-002", N_("pkg.gate.vec002b")),
     ((9, 2), "VEC-003", N_("pkg.gate.vec003")),
+    ((9, 5), "SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007", N_("pkg.gate.es95")),
 ]

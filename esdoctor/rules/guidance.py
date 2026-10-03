@@ -9,6 +9,7 @@ import collections
 
 from ..i18n import T, N_, tr
 from ..model import Finding, Severity, table
+from ..settings_kb import BEST_COMPRESSION_MODES
 from ..util import dicts, dig, fmt_bytes, fmt_num, parse_bytes, pct, num, items, strs
 
 CFG = "config"
@@ -425,8 +426,8 @@ def r_logsdb_adoption(ctx):
     """Elasticsearch 9.0+ and logs-*-* data streams whose write index is not in logsdb mode → Info (IDX-013).
 
     Official: from 9.0, logsdb is set automatically on new logs-*-* data streams. Data streams that existed before an
-    upgrade from 8.x, including integration and APM streams, are not switched. Data streams set to time_series are skipped,
-    and so are bundles without settings.json and data_stream.json index_mode, where the mode cannot be determined.
+    upgrade from 8.x, including integration and APM streams, are not switched. Data streams set to time_series, or to the
+    columnar or logsdb_columnar modes added in 9.5, are skipped, and so are bundles without settings.json and data_stream.json index_mode, where the mode cannot be determined.
     The switch is cluster.logsdb.enabled: it defaults to false when logs data existed before 9.0 (logsdb.prior_logs_usage),
     and while it is false even new logs-*-* indices stay standard. Its value is shown when the bundle reports it.
     """
@@ -445,7 +446,7 @@ def r_logsdb_adoption(ctx):
         known = ctx.index_setting(w, "index.mode") is not None or ds.get("index_mode") or \
             any(i.get("index_mode") for i in dicts(ds.get("indices"))) or w in ctx.index_settings
         mode = ctx.index_mode(w)
-        if not known or mode in ("logsdb", "time_series"):
+        if not known or mode in ("logsdb", "time_series", "columnar", "logsdb_columnar"):
             continue
         b = dig(ctx.indices_stats, w, "primaries", "store", "size_in_bytes")
         rows.append([name, w, mode, fmt_bytes(b) if b is not None else "-", ds.get("template") or "-"])
@@ -701,11 +702,22 @@ def r_replica_throughput(ctx):
         refs=[D_SEARCH], source="settings.json / indices_stats.json")]
 
 
+# index.store.preload that the vectordb_document index mode (9.5) sets on its own when the user leaves it unset
+# (IndexMode.VECTORDB_DOCUMENT_MODE_PRELOAD_EXTENSIONS in the Elasticsearch source).
+VECTORDB_PRELOAD = ("cenivf", "veb", "veq", "vex")
+
+
 def r_store_preload(ctx):
-    """Info if any index has index.store.preload set; Warning if the count is > preload_index_count_warn."""
+    """Info if any index has index.store.preload set; Warning if the count is > preload_index_count_warn.
+
+    vectordb_document indices (9.5) get index.store.preload for their vector files automatically, so that exact value is not listed.
+    """
     rows = []
     for name in ctx.index_settings.keys():
         v = ctx.index_setting(name, "index.store.preload")
+        if v and str(ctx.index_mode(name) or "").lower() == "vectordb_document" and \
+                tuple(sorted(x.strip() for x in (v if isinstance(v, list) else str(v).strip("[]").split(",")) if x.strip())) == VECTORDB_PRELOAD:
+            continue
         if v:
             rows.append([name, str(v)])
     if not rows:
@@ -746,8 +758,9 @@ def r_remote_storage(ctx):
 def r_codec(ctx):
     """User indices with primary store >= codec_check_min_bytes and index.codec left at default (not set) → Info.
 
-    Only logsdb is excluded: it is the only index mode whose default codec is best_compression (official logsdb docs, and IndexMode in
-    the Elasticsearch source). standard and time_series indices default to the LZ4 codec.
+    Index modes whose default codec is best_compression are excluded: logsdb, and the columnar and logsdb_columnar modes added in 9.5
+    (official logsdb docs, and IndexMode in the Elasticsearch source). standard, time_series and vectordb_document indices default to
+    the LZ4 codec.
     """
     rows = []
     for name, st in ctx.indices_stats.items():
@@ -757,7 +770,7 @@ def r_codec(ctx):
         if size < ctx.t["codec_check_min_bytes"]:
             continue
         mode = str(ctx.index_mode(name) or "standard").lower()
-        if mode == "logsdb":
+        if mode in BEST_COMPRESSION_MODES:
             continue        # best_compression is the default for this index mode
         codec = ctx.index_setting(name, "index.codec")
         if codec is None or str(codec).lower() == "default":
@@ -780,8 +793,9 @@ def r_source_mode(ctx):
     """_source disabled → Warning; synthetic _source → Info (DISK-007).
 
     Disabled is found two ways: the mapping parameter "_source": {"enabled": false} in mapping.json (the documented way), and
-    index.mapping.source.mode=disabled in settings.json. index.mapping.source.mode=synthetic is listed as Info. stored is the
-    default and is not listed. System indices are skipped.
+    index.mapping.source.mode=disabled in settings.json. index.mapping.source.mode=synthetic, and columnar_stored (9.5 columnar
+    modes), are listed as Info: the returned _source is rebuilt, not the original. stored is the default and is not listed.
+    System indices are skipped.
     """
     disabled, synthetic = [], []
     seen = set()
@@ -797,8 +811,8 @@ def r_source_mode(ctx):
         mode = str(ctx.index_setting(name, "index.mapping.source.mode") or "").lower()
         if mode == "disabled" and name not in seen:
             disabled.append([name, "index.mapping.source.mode: disabled"])
-        elif mode == "synthetic":
-            synthetic.append([name, "index.mapping.source.mode: synthetic"])
+        elif mode in ("synthetic", "columnar_stored"):
+            synthetic.append([name, "index.mapping.source.mode: " + mode])
     if disabled:
         disabled.sort()
         return [Finding(

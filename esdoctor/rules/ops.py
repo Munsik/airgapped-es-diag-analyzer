@@ -382,23 +382,25 @@ def r_monitoring(ctx):
 
     If this cluster holds stack monitoring data (.monitoring-* or *stack_monitoring* data streams), it is monitoring itself
     (production should use a separate monitoring cluster). If there is none, the bundle cannot show whether the data goes to another cluster,
-    so the report asks you to confirm. Legacy internal collection (xpack.monitoring.collection.enabled=true) is reported as well.
+    so the report asks you to confirm. Legacy internal collection (xpack.monitoring.collection.enabled=true) is reported as well;
+    from 9.5 the note adds that collecting with the monitoring plugin is deprecated and is removed in 10.0 (official deprecations).
     """
     import re as _re
     names = [n for n in ctx.indices_stats.keys() if _re.search(r"(^|\.)monitoring-|stack_monitoring", n)]
     legacy = str(ctx.setting("xpack.monitoring.collection.enabled")).lower() == "true"
+    dep = T("rules.ops.r_monitoring.10") if legacy and ctx.version_tuple >= (9, 5, 0) else ""
     if names:
         return [Finding(
             "OPS-007", CAT, Severity.INFO, T("rules.ops.r_monitoring.01"),
             observed=T("rules.ops.r_monitoring.02")
-                     % (len(names), T("rules.ops.r_monitoring.03") if legacy else ""),
+                     % (len(names), T("rules.ops.r_monitoring.03") if legacy else "") + dep,
             impact=T("rules.ops.r_monitoring.04"),
             recommend=T("rules.ops.r_monitoring.05"),
             evidence=table(["index"], [[n] for n in sorted(names)[: ctx.t["top_n"]]]),
             source="indices_stats.json / cluster_settings.json")]
     return [Finding(
         "OPS-007", CAT, Severity.INFO, T("rules.ops.r_monitoring.06"),
-        observed=T("rules.ops.r_monitoring.07"),
+        observed=T("rules.ops.r_monitoring.07") + dep,
         impact=T("rules.ops.r_monitoring.08"),
         recommend=T("rules.ops.r_monitoring.09"),
         source="indices_stats.json")]

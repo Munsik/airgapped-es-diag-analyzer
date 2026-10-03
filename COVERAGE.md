@@ -4,7 +4,7 @@ English · [한국어](COVERAGE.ko.md)
 
 > This table shows which rule covers each item in the Elastic documentation, or why the item cannot be evaluated.
 > For the exact conditions and thresholds of each rule, see [RULES.md](RULES.md). For the change history, see [CHANGELOG.md](CHANGELOG.md).
-> Reference version: Elasticsearch 9.4 documentation (checked 2026-09).
+> Reference version: Elasticsearch 9.5 documentation (checked 2026-10).
 > Validation scope: tested on real bundles in **api mode** (ECH 9.4.4 and 9.5.3) and **local mode** (self-managed 8.19.21, single node). Remote mode and multi-node local mode are not validated yet.
 
 Each item in the Elastic documentation was checked one by one. Items that a diagnostics bundle can prove are implemented as rules.
