@@ -45,7 +45,8 @@ def r_shard_density(ctx):
 
     '20 shards per 1GB of heap' is the official guideline for versions before 8.3. From 8.3 the heap overhead per shard dropped sharply
     (Elastic blog), and the docs replaced the guideline during 8.3.x with the 'field mapper heap estimate (SHD-010)' and cluster.max_shards_per_node (CLU-015).
-    So on 8.3 or later it is not rated and only the current numbers are shown.
+    So on 8.3 or later (or when the version is unknown) it is not rated and only the current numbers are shown. Dedicated frozen
+    nodes are never rated: they hold partial mounts under their own limit (cluster.max_shards_per_node.frozen).
     """
     counts = collections.Counter()
     for s in ctx.shards:
@@ -54,7 +55,7 @@ def r_shard_density(ctx):
             counts[node] += 1
     if not counts:
         return []
-    legacy = ctx.version_tuple < (8, 3, 0)
+    legacy = (0, 0, 0) < ctx.version_tuple < (8, 3, 0)
     rows, bad = [], []
     for n in ctx.nodes:
         c = counts.get(n.name, 0)
@@ -62,7 +63,7 @@ def r_shard_density(ctx):
         per_gb = (c / heap_gb) if heap_gb else None
         rows.append([n.name, fmt_num(c), "%.1fGB" % heap_gb if heap_gb else "-",
                      "%.1f" % per_gb if per_gb else "-", ",".join(n.roles)])
-        if legacy and per_gb is not None and per_gb >= ctx.t["shards_per_gb_heap_warn"]:
+        if legacy and not ctx.is_frozen_only(n) and per_gb is not None and per_gb >= ctx.t["shards_per_gb_heap_warn"]:
             bad.append((n.name, per_gb, c))
     ev = table(["node", T("rules.shards.r_shard_density.01"), "heap", T("rules.shards.r_shard_density.02"), "roles"], rows)
     if not legacy:
@@ -86,7 +87,9 @@ def r_shard_density(ctx):
 
 
 def r_shard_size(ctx):
-    """Primary shard store >= shard_size_gb_crit → Critical (SHD-002), >= shard_size_gb_warn (official upper bound 50GB) → Warning (SHD-003)."""
+    """Primary shard store >= shard_size_gb_crit → Critical (SHD-002), above shard_size_gb_warn (official upper bound 50GB) by more than
+    docs_rollover_overshoot_pct → Warning (SHD-003). Rollover at max_primary_shard_size 50gb (the built-in policies) is checked every
+    indices.lifecycle.poll_interval, so shards end a little above 50GB by design."""
     big, huge = [], []
     for s in ctx.shards:
         if (s.get("prirep") or "").lower() != "p" or ctx.is_partial_mount(s.get("index")):
@@ -97,7 +100,7 @@ def r_shard_size(ctx):
         gb = b / float(GB)
         if gb >= ctx.t["shard_size_gb_crit"]:
             huge.append([s.get("index"), s.get("shard"), fmt_bytes(b), s.get("node")])
-        elif gb >= ctx.t["shard_size_gb_warn"]:
+        elif gb >= ctx.t["shard_size_gb_warn"] * (1 + ctx.t["docs_rollover_overshoot_pct"] / 100.0):
             big.append([s.get("index"), s.get("shard"), fmt_bytes(b), s.get("node")])
     out = []
     if huge:
@@ -159,7 +162,9 @@ def r_small_shards(ctx):
 
 
 def r_replica_zero(ctx):
-    """User indices with number_of_replicas=0, no auto_expand_replicas, and not a searchable snapshot index → Warning."""
+    """User indices with number_of_replicas=0, no auto_expand_replicas, and not a searchable snapshot index → Warning.
+
+    With a single data node a replica cannot be allocated anywhere, so 0 replicas is the only green setting: Info there."""
     rows = []
     for name in ctx.indices_stats.keys():
         if ctx.is_system_index(name):
@@ -175,7 +180,7 @@ def r_replica_zero(ctx):
         return []
     rows.sort(key=lambda r: -(parse_bytes(r[1]) or 0))
     return [Finding(
-        "IDX-001", CAT, Severity.WARNING, T("rules.shards.r_replica_zero.01"),
+        "IDX-001", CAT, Severity.INFO if len(ctx.data_nodes) == 1 else Severity.WARNING, T("rules.shards.r_replica_zero.01"),
         observed=T("rules.shards.r_replica_zero.02") % len(rows),
         impact=T("rules.shards.r_replica_zero.03"),
         recommend=T("rules.shards.r_replica_zero.04"),
@@ -260,22 +265,31 @@ def r_segments(ctx):
 
 
 def r_merge_throttle(ctx):
-    """merges.total_throttled_time / merges.total_time >= merge_throttle_ratio_warn and cumulative throttled time > 60 seconds → Warning."""
-    rows = []
+    """merges.total_throttled_time / merges.total_time >= merge_throttle_ratio_warn and cumulative throttled time > 60 seconds → listed.
+
+    The throttled time is the time merges slept because the merge scheduler rate-limits merge disk writes (auto_throttle, an adaptive
+    rate that rises when merges back up). A high share alone usually means merges were smoothed while merge activity was low, so it is
+    Info. Only when the same index also had indexing throttled (indexing.throttle_time_in_millis > 0, see IDX-014) did merges fall
+    behind → Warning.
+    """
+    rows, behind = [], 0
     for name, st in ctx.indices_stats.items():
         mt = num(st, "total", "merges", "total_time_in_millis")
         th = num(st, "total", "merges", "total_throttled_time_in_millis")
         if mt and th / float(mt) >= ctx.t["merge_throttle_ratio_warn"] and th > 60000:
-            rows.append([name, fmt_ms(mt), fmt_ms(th), "%.0f%%" % (th / float(mt) * 100)])
+            it = num(st, "total", "indexing", "throttle_time_in_millis")
+            behind += 1 if it else 0
+            rows.append([name, fmt_ms(mt), fmt_ms(th), "%.0f%%" % (th / float(mt) * 100), fmt_ms(it) if it else "-"])
     if not rows:
         return []
-    rows.sort(key=lambda r: -float(r[3].rstrip("%")))
+    rows.sort(key=lambda r: (r[4] == "-", -float(r[3].rstrip("%"))))
     return [Finding(
-        "IDX-005", CAT, Severity.WARNING, T("rules.shards.r_merge_throttle.01"),
+        "IDX-005", CAT, Severity.WARNING if behind else Severity.INFO, T("rules.shards.r_merge_throttle.01"),
         observed=T("rules.shards.r_merge_throttle.02") % len(rows),
         impact=T("rules.shards.r_merge_throttle.03"),
         recommend=T("rules.shards.r_merge_throttle.04"),
-        evidence=table(["index", T("rules.shards.r_merge_throttle.05"), T("rules.shards.r_merge_throttle.06"), T("rules.shards.r_merge_throttle.07")], rows[: ctx.t["top_n"]]),
+        evidence=table(["index", T("rules.shards.r_merge_throttle.05"), T("rules.shards.r_merge_throttle.06"), T("rules.shards.r_merge_throttle.07"),
+                        T("rules.shards.r_merge_throttle.08")], rows[: ctx.t["top_n"]]),
         source="indices_stats.json")]
 
 
@@ -330,22 +344,25 @@ def r_search_latency(ctx):
 
 def r_index_failures(ctx):
     """Indices with indexing.index_failed or search.query_failure > 0. Warning if user indices are included, Info if only system indices are.
-    Sorted by the failure ratio, index_failed / (index_failed + index_total), so indices that lose a large share of their writes come first."""
+    Sorted by the failure ratio, index_failed / (index_failed + index_total), so indices that lose a large share of their writes come first.
+    From 8.18 the stats report index_failed_due_to_version_conflict separately. Version conflicts are expected with op_type=create
+    retries (Elastic Agent, Fleet), so an index whose only failures are version conflicts does not make the finding a Warning."""
     rows, user_rows = [], []
     for name, st in ctx.indices_stats.items():
         failed = num(st, "total", "indexing", "index_failed")
+        vc = num(st, "total", "indexing", "index_failed_due_to_version_conflict")
         qf = num(st, "total", "search", "query_failure")
         if failed or qf:
             it = num(st, "total", "indexing", "index_total")
             ratio = failed / float(failed + it) if (failed + it) else 0
-            row = [name, fmt_num(failed), "%.1f%%" % (ratio * 100) if failed else "-", fmt_num(qf),
+            row = [name, fmt_num(failed), fmt_num(vc), "%.1f%%" % (ratio * 100) if failed else "-", fmt_num(qf),
                    fmt_num(it), (ratio, failed + qf)]
             rows.append(row)
-            if not ctx.is_system_index(name):
+            if not ctx.is_system_index(name) and (failed - vc > 0 or qf):
                 user_rows.append(row)
     if not rows:
         return []
-    rows.sort(key=lambda r: (-r[5][0], -r[5][1]))
+    rows.sort(key=lambda r: (-r[6][0], -r[6][1]))
     return [Finding(
         "IDX-006", CAT,
         Severity.WARNING if user_rows else Severity.INFO,
@@ -353,8 +370,9 @@ def r_index_failures(ctx):
         observed=T("rules.shards.r_index_failures.03") % len(rows),
         impact=T("rules.shards.r_index_failures.04"),
         recommend=T("rules.shards.r_index_failures.05"),
-        evidence=table(["index", "index_failed", T("rules.shards.r_index_failures.06"), "query_failure", "index_total"],
-                       [r[:5] for r in rows[: ctx.t["top_n"]]]),
+        evidence=table(["index", "index_failed", T("rules.shards.r_index_failures.07"), T("rules.shards.r_index_failures.06"),
+                        "query_failure", "index_total"],
+                       [r[:6] for r in rows[: ctx.t["top_n"]]]),
         source="indices_stats.json")]
 
 
@@ -493,14 +511,15 @@ def r_read_only_blocks(ctx):
 
 
 def r_tier_preference(ctx):
-    """Whether the data tier an index requires actually exists on the nodes."""
+    """Whether the data tier an index requires actually exists on the nodes. The generic data role counts as every tier,
+    frozen included (DataTier in the Elasticsearch source)."""
     available = set()
     for n in ctx.nodes:
         for r in n.roles:
             if r.startswith("data_"):
                 available.add(r)
         if "data" in n.roles:
-            available.update({"data_content", "data_hot", "data_warm", "data_cold"})
+            available.update({"data_content", "data_hot", "data_warm", "data_cold", "data_frozen"})
     if not available:
         return []
     rows = []
@@ -523,9 +542,15 @@ def r_tier_preference(ctx):
 
 
 def r_index_count(ctx):
-    """Average size per shard (store / shards) < 200MB, shards >= 300, and total store > 50GB → Warning. Otherwise only a size summary is shown as Info."""
+    """Average size per shard (store / shards) < 200MB, shards >= 300, and total store > 50GB → Warning. Otherwise only a size summary is shown as Info.
+
+    Partially mounted (frozen) shards report a store size of 0, so they are taken out of the shard count for the average.
+    """
     n_idx = dig(ctx.cluster_stats, "indices", "count") or len(ctx.indices_stats)
     shards = dig(ctx.cluster_stats, "indices", "shards", "total") or ctx.health.get("active_shards")
+    partial = sum(1 for s in ctx.shards if (s.get("state") or "").upper() == "STARTED" and ctx.is_partial_mount(s.get("index")))
+    if shards and partial:
+        shards = max(0, shards - partial)
     store = dig(ctx.cluster_stats, "indices", "store", "size_in_bytes")
     docs = dig(ctx.cluster_stats, "indices", "docs", "count")
     avg = (store / shards) if (store and shards) else None
@@ -552,9 +577,12 @@ def r_index_count(ctx):
 
 
 def r_shard_balance(ctx):
-    """Warning if the spread in shard count between nodes within the same tier is 25% of the average or more.
+    """Spread in shard count between nodes within the same tier of 25% of the average or more, and at least shard_balance_min_diff
+    shards → Warning before 8.6, Info from 8.6.
 
     Each tier holds different data and has a different node count, so differences in shard count between tiers are normal and are not compared.
+    From 8.6 the desired balance allocator also weighs write load and disk usage, and the docs say shard counts may end up uneven on purpose
+    to spread the node work evenly, so the spread is reported but not rated as a problem.
     """
     counts = collections.Counter(s.get("node") for s in ctx.shards if s.get("node"))
     rows, flagged = [], []
@@ -566,12 +594,12 @@ def r_shard_balance(ctx):
             continue
         nums = [c for _, c in vals]
         avg = sum(nums) / float(len(nums))
-        if avg and (max(nums) - min(nums)) / avg >= 0.25:
+        if avg and (max(nums) - min(nums)) / avg >= 0.25 and (max(nums) - min(nums)) >= ctx.t["shard_balance_min_diff"]:
             flagged.append(T("rules.shards.r_shard_balance.01") % (tier, max(nums), min(nums), avg))
     if not flagged:
         return []
     return [Finding(
-        "SHD-006", CAT, Severity.WARNING, T("rules.shards.r_shard_balance.02"),
+        "SHD-006", CAT, Severity.INFO if ctx.version_tuple >= (8, 6, 0) else Severity.WARNING, T("rules.shards.r_shard_balance.02"),
         observed=" / ".join(flagged),
         impact=T("rules.shards.r_shard_balance.03"),
         recommend=T("rules.shards.r_shard_balance.04"),
@@ -601,7 +629,11 @@ def r_data_stream_health(ctx):
 
 
 def r_cache_efficiency(ctx):
-    """Efficiency of the query cache and the shard request cache."""
+    """Efficiency of the query cache and the shard request cache.
+
+    Only the request cache is rated (hit rate < 20% and evictions > hits → Warning). Query cache evictions also count entries dropped
+    when segments close after merges, and misses include lookups the caching policy chose not to cache, so a low query cache hit rate
+    on its own is normal and only shown."""
     qc_hit = num(ctx.indices_stats_all, "total", "query_cache", "hit_count")
     qc_miss = num(ctx.indices_stats_all, "total", "query_cache", "miss_count")
     qc_evict = num(ctx.indices_stats_all, "total", "query_cache", "evictions")
@@ -617,8 +649,7 @@ def r_cache_efficiency(ctx):
                  "%.1f%%" % qc_rate if qc_rate is not None else "-", fmt_num(qc_evict)],
                 ["request cache", fmt_num(rc_hit), fmt_num(rc_miss),
                  "%.1f%%" % rc_rate if rc_rate is not None else "-", fmt_num(rc_evict)]])
-    warn = (qc_rate is not None and qc_rate < 20 and qc_evict > qc_hit) or \
-           (rc_rate is not None and rc_rate < 20 and rc_evict > rc_hit)
+    warn = rc_rate is not None and rc_rate < 20 and rc_evict > rc_hit
     if not warn:
         return [Finding("PERF-003", CAT, Severity.INFO, T("rules.shards.r_cache_efficiency.03"),
                         observed=T("rules.shards.r_cache_efficiency.04")
@@ -686,9 +717,10 @@ def r_write_hotspot(ctx):
 
 
 def r_indexing_throttle(ctx):
-    """Indexing throttled because merges fell behind (IDX-014).
+    """Indexing throttled (IDX-014).
 
-    Official: once merging is fully unthrottled and still behind, indexing for the shard is throttled until merges catch up.
+    Official: once merging is fully unthrottled and still behind, indexing for the shard is throttled until merges catch up. The indexing
+    memory controller also throttles the busiest shards when indexing buffers exceed 1.5 x indices.memory.index_buffer_size (source).
     indices_stats indexing.is_throttled = true at collection time → Warning. Only cumulative indexing.throttle_time > 0 → Info.
     """
     now, past = [], []
@@ -722,7 +754,8 @@ def r_translog_uncommitted(ctx):
     operations are replayed on recovery (the default was 512MB before 8.8). Average uncommitted size per shard copy (index total / copies) at or above the
     effective threshold → Warning: flushes are not keeping up, and recovery of those shards will replay that much.
     """
-    default = parse_bytes(ctx.t["translog_flush_threshold_default"] if ctx.version_tuple >= (8, 8, 0)
+    old = (0, 0, 0) < ctx.version_tuple < (8, 8, 0)     # unknown version: assume the current default
+    default = parse_bytes(ctx.t["translog_flush_threshold_default"] if not old
                           else ctx.t["translog_flush_threshold_legacy"]) or 10 * 1024 ** 3
     rows = []
     for name, st in ctx.indices_stats.items():

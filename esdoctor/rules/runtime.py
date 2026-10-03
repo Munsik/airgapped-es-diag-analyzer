@@ -25,7 +25,8 @@ _CONTEXT = [
     ("org.elasticsearch.painless", N_("rules.runtime._.07"), N_("rules.runtime._.08")),
     ("addIgnoredFieldFromContext", N_("rules.runtime._.09"),
      N_("rules.runtime._.10")),
-    ("GlobalOrdinals", N_("rules.runtime._.11"), N_("rules.runtime._.12")),
+    ("GlobalOrdinalsBuilder", N_("rules.runtime._.11"), N_("rules.runtime._.12")),
+    ("OrdinalMap.build", N_("rules.runtime._.11"), N_("rules.runtime._.12")),
     ("RegExp", N_("rules.runtime._.13"), N_("rules.runtime._.14")),
 ]
 
@@ -50,8 +51,11 @@ def _classify(stack, tname):
     for sig, label, hint in _CONTEXT:
         if any(sig in frame for frame in stack):
             return tr(label), tr(hint)
+    search_thread = "[search]" in tname
     for frame in stack:
         for sig, label, hint in _SIGNATURES:
+            if search_thread and sig == "org.apache.lucene.index":
+                continue            # index readers (TermsEnum, doc values) on a search thread are search work, not indexing
             if sig in frame:
                 return tr(label), tr(hint)
     for sig, label, hint in _CONTEXT + _SIGNATURES:
@@ -159,7 +163,7 @@ _LOG_PATTERNS = [
     (r"failed to obtain node lock", Severity.CRITICAL, N_("rules.runtime._.37"),
      N_("rules.runtime._.38")),
     (r"master not discovered|no known master node|master_not_discovered",
-     Severity.CRITICAL, N_("rules.runtime._.39"),
+     Severity.WARNING, N_("rules.runtime._.39"),
      N_("rules.runtime._.40")),
     (r"failed to execute bulk item|MapperParsingException|mapper_parsing_exception",
      Severity.WARNING, N_("rules.runtime._.41"),
@@ -168,13 +172,16 @@ _LOG_PATTERNS = [
      N_("rules.runtime._.44")),
     (r"EsRejectedExecutionException|rejected execution", Severity.WARNING, N_("rules.runtime._.45"),
      N_("rules.runtime._.46")),
-    (r"\[gc\]\[.*\]\[old\]|\[o\.e\.m\.j\.JvmGcMonitorService\].*\[old\]",
+    (r"\[gc\]\[old\]|\[gc\]\[\d+\] overhead, spent",
      Severity.WARNING, N_("rules.runtime._.47"),
      N_("rules.runtime._.48")),
     (r"failed to flush", Severity.INFO, N_("rules.runtime._.49"), ""),
-    (r"disk watermark \[.*\] exceeded|flood stage disk watermark",
+    (r"high disk watermark \[[^\]]*\] exceeded|flood stage disk watermark \[[^\]]*\] exceeded",
      Severity.CRITICAL, N_("rules.runtime._.50"),
      N_("rules.runtime._.51")),
+    (r"low disk watermark \[[^\]]*\] exceeded",
+     Severity.WARNING, N_("rules.runtime._.56"),
+     N_("rules.runtime._.57")),
     (r"transport.*Connection reset|NodeDisconnectedException|node_disconnected",
      Severity.WARNING, N_("rules.runtime._.52"),
      N_("rules.runtime._.53")),
@@ -189,7 +196,8 @@ _STARTUP_NOISE = re.compile(r"JVM arguments|-XX:[+-]\w*OutOfMemoryError|JVM home
 
 def _es_log_files(files):
     """Keeps only ES server logs. gc.log* is a JVM unified log, so ES patterns do not apply to it,
-    and <cluster>_server.json is the JSON version of the same content as <cluster>.log, so it is excluded when that .log file is present, to avoid counting twice.
+    and <cluster>_server.json is the JSON version of the same content as <cluster>.log, so it is excluded when that .log file is present, to avoid counting twice (a rolled .json.gz likewise when the
+    matching .log.gz is present).
     """
     names = set(files)
     out = []
@@ -201,6 +209,8 @@ def _es_log_files(files):
             twin = f[: -len("_server.json")] + ".log"
             if twin in names:
                 continue
+        if base.endswith(".json.gz") and (f[: -len(".json.gz")] + ".log.gz") in names:
+            continue
         out.append(f)
     return out
 

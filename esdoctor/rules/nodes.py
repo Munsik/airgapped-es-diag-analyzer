@@ -163,7 +163,7 @@ def r_gc(ctx):
 
 
 def r_os(ctx):
-    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). A container node (os.cgroup present) with cpu% below load_host_cpu_pct_max is not rated: inside a container the load average can be the host's, so it is listed as Info. swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window."""
+    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). A container node (Elastic Cloud / ECE / ECK, or a cgroup CPU quota or memory limit) with cpu% below load_host_cpu_pct_max is not rated: inside a container the load average can be the host's, so it is listed as Info. On Linux the load average also counts processes waiting on disk, so high load with low CPU often points to storage. swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window."""
     out = []
     rows, load_warn, load_crit, swap_on, throttle, load_host = [], [], [], [], [], []
     swap_used = []
@@ -174,7 +174,7 @@ def r_os(ctx):
         rows.append([n.name, ctx.tier_of(n) or ("master" if n.is_master_eligible else ",".join(n.roles)),
                      fmt_num(cpus), n.cpu_pct if n.cpu_pct is not None else "-",
                      l1, l5, l15, ("%.2f" % per) if per else "-", fmt_bytes(n.swap_total)])
-        in_container = isinstance(dig(n.stats, "os", "cgroup"), dict) and bool(dig(n.stats, "os", "cgroup"))
+        in_container = ctx.in_container(n)
         if per is not None and per >= ctx.t["load_per_cpu_warn"] and in_container \
                 and n.cpu_pct is not None and n.cpu_pct < ctx.t["load_host_cpu_pct_max"]:
             load_host.append(n.name)    # load average inside a container can be the host's; the node itself is idle
@@ -297,7 +297,8 @@ def r_write_latency(ctx):
     for months. On a node that does not index, merges come from a force merge (ILM forcemerge, the force merge that
     searchable_snapshot runs in the preceding phase by default, or a manual _forcemerge) or from merges finishing after rollover.
     Those merge large segments, so a long average there does not mean slow storage.
-    Any metric with fewer than write_latency_min_ops operations is skipped.
+    Any metric with fewer than write_latency_min_ops operations is skipped. Merge time is wall-clock time that includes the time
+    a merge was paused by merge I/O throttling or stopped, so throttled and stopped time are subtracted first.
     Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
     and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;
     read them with IDX-005 (merge throttling) and IDX-014 (indexing throttled).
@@ -317,6 +318,9 @@ def r_write_latency(ctx):
         for key, sect, lim_info, lim_warn in specs:
             tot = num(n.stats, "indices", sect, "total")
             ms = num(n.stats, "indices", sect, "total_time_in_millis")
+            if sect == "merges":
+                ms = max(0.0, ms - num(n.stats, "indices", sect, "total_throttled_time_in_millis")
+                         - num(n.stats, "indices", sect, "total_stopped_time_in_millis"))
             if tot < ctx.t["write_latency_min_ops"] or not ms:
                 cells.append("-")
                 continue
@@ -344,8 +348,8 @@ def r_write_latency(ctx):
 
 
 def r_disk(ctx):
-    """Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001), at or above high → Critical (DISK-002), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK."""
-    rows, over_low, over_high, over_flood, warn = [], [], [], [], []
+    """Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001; on dedicated frozen nodes ES only logs a warning at flood_stage.frozen and blocks nothing, so those are a separate Warning), at or above high → Critical (DISK-002), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK."""
+    rows, over_low, over_high, over_flood, warn, frozen_flood = [], [], [], [], [], []
     by_tier = {}
     for n in ctx.data_nodes or ctx.nodes:
         total, avail = n.fs_total, n.fs_avail
@@ -360,7 +364,7 @@ def r_disk(ctx):
             rows.append([n.name, tier, "%.1f%%" % up, fmt_bytes(total), fmt_bytes(avail),
                          T("rules.nodes.r_disk.01"), T("rules.nodes.r_disk.01"), ("%.2f%% (frozen)" % fflood) if fflood else "-"])
             if fflood and up >= fflood:
-                over_flood.append(n.name)
+                frozen_flood.append(n.name)     # ES only logs a warning here: no index block on dedicated frozen nodes
             continue
         by_tier.setdefault(tier, []).append(up)
         low = ctx.watermark_used_pct("low", total)
@@ -388,6 +392,13 @@ def r_disk(ctx):
             impact=T("rules.nodes.r_disk.10"),
             recommend=T("rules.nodes.r_disk.11"),
             evidence=ev, affected=over_flood, refs=[DOC_DISK], source="nodes_stats.json"))
+    if frozen_flood:
+        out.append(Finding(
+            "DISK-001", CAT, Severity.WARNING, T("rules.nodes.r_disk.30"),
+            observed=T("rules.nodes.r_disk.31") % ", ".join(frozen_flood),
+            impact=T("rules.nodes.r_disk.32"),
+            recommend=T("rules.nodes.r_disk.33"),
+            evidence=ev, affected=frozen_flood, refs=[DOC_DISK], source="nodes_stats.json"))
     if over_high:
         out.append(Finding(
             "DISK-002", CAT, Severity.CRITICAL, T("rules.nodes.r_disk.12"),
@@ -481,7 +492,10 @@ def r_thread_pools(ctx):
 
 
 def r_breakers(ctx):
-    """breaker.tripped >= breaker_tripped_warn → Warning; Critical if usage at collection time is also 70% or more (BRK-001; the cumulative trip history alone never raises it to Critical). No trip history and estimated / limit >= 70% → Warning (BRK-002)."""
+    """breaker.tripped >= breaker_tripped_warn → Warning; Critical if usage at collection time is also at the usage line (BRK-001; the
+    cumulative trip history alone never raises it to Critical). No trip history and estimated / limit at the usage line → Warning (BRK-002).
+    Usage line: breaker_used_pct_warn, but breaker_parent_used_pct_warn for the parent breaker, whose estimate is the real heap use
+    (indices.breaker.total.use_real_memory, default true) against a limit of 95% of heap; 70% there would only mean about 66% heap."""
     rows, tripped = [], []
     tripped_live = False
     for n in ctx.nodes:
@@ -490,12 +504,13 @@ def r_breakers(ctx):
             est = num(br, "estimated_size_in_bytes")
             lim = num(br, "limit_size_in_bytes")
             use = pct(est, lim)
+            line = ctx.t["breaker_parent_used_pct_warn"] if name == "parent" else ctx.t["breaker_used_pct_warn"]
             if t >= ctx.t["breaker_tripped_warn"]:
-                if use and use >= 70:
+                if use and use >= line:
                     tripped_live = True
                 tripped.append([n.name, name, fmt_num(t), fmt_bytes(est), fmt_bytes(lim),
                                 "%.1f%%" % use if use else "-"])
-            elif use and use >= 70:
+            elif use and use >= line:
                 rows.append([n.name, name, fmt_num(t), fmt_bytes(est), fmt_bytes(lim), "%.1f%%" % use])
     out = []
     if tripped:
@@ -510,7 +525,7 @@ def r_breakers(ctx):
     if rows:
         out.append(Finding(
             "BRK-002", CAT, Severity.WARNING, T("rules.nodes.r_breakers.06"),
-            observed=T("rules.nodes.r_breakers.07") % len(rows),
+            observed=T("rules.nodes.r_breakers.07") % (len(rows), ctx.t["breaker_used_pct_warn"], ctx.t["breaker_parent_used_pct_warn"]),
             impact=T("rules.nodes.r_breakers.08"),
             recommend=T("rules.nodes.r_breakers.09"),
             evidence=table(["node", "breaker", "tripped", "estimated", "limit", T("rules.nodes.r_breakers.05")], rows),
@@ -519,12 +534,14 @@ def r_breakers(ctx):
 
 
 def r_indexing_pressure(ctx):
-    """Warning if any of the *_rejections (coordinating/primary/replica) under indexing_pressure.memory.total is > 0."""
+    """Warning if any of the *_rejections (coordinating/primary/replica) under indexing_pressure.memory.total is > 0.
+
+    A value of -1 means the node could not report the counter (mixed versions during an upgrade) and is ignored."""
     rows = []
     for n in ctx.nodes:
         mem = dig(n.stats, "indexing_pressure", "memory", default={}) or {}
         tot = mem.get("total") or {}
-        rej = {k: v for k, v in tot.items() if k.endswith("rejections") and v}
+        rej = {k: v for k, v in tot.items() if k.endswith("rejections") and num(v) > 0}
         if rej:
             rows.append([n.name, ", ".join("%s=%s" % (k, fmt_num(v)) for k, v in rej.items()),
                          fmt_bytes(dig(mem, "current", "all_in_bytes")),
@@ -532,7 +549,7 @@ def r_indexing_pressure(ctx):
     if not rows:
         return []
     return [Finding(
-        "IP-001", CAT, Severity.WARNING, "Indexing pressure rejection",
+        "IP-001", CAT, Severity.WARNING, T("rules.nodes.r_indexing_pressure.04"),
         observed=T("rules.nodes.r_indexing_pressure.01") % len(rows),
         impact=T("rules.nodes.r_indexing_pressure.02"),
         recommend=T("rules.nodes.r_indexing_pressure.03"),

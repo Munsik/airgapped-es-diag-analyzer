@@ -2,7 +2,7 @@
 
 [English](README.md) · 한국어
 
-**버전 0.14.2** · 판정 기준 Elasticsearch 9.5 공식 문서 · Python 3.8+ · 외부 의존성 없음
+**버전 0.14.3** · 판정 기준 Elasticsearch 9.5 공식 문서 · Python 3.8+ · 외부 의존성 없음
 
 Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) 가 만든 진단 번들을 **폐쇄망 안에서** 분석해 클러스터의 현재 이슈·잠재 이슈·설정 위험을 리포트로 만듭니다.
 
@@ -49,7 +49,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 - **tier 인식** — hot/warm/cold/frozen 을 구분해 같은 역할끼리만 비교
 - **비교 모드** — 이전 번들과 비교해 누적 카운터를 "지금도 증가 중인가" 로 판정하고, 노드별 이전/지금 표를 보여 줌. 번들이 3개 이상이면 사이징용 구간별 처리량(peak/off-peak)도 계산
 - **대형 번들 대응** — 수백 MB 파일(cluster_state, mapping)은 필요한 조각만 파싱하거나 인덱스 단위로 요약하며 읽어 메모리를 제한
-- **번들 활용 범위 명시** — 진단 번들 104개 파일 중 62개를 판정에 사용, 나머지 42개는 중복·기능 미사용 시 비어 있음·판정 대상 아님으로 사유를 [COVERAGE.md](COVERAGE.md) 에 기록
+- **번들 활용 범위 명시** — 진단 번들 104개 파일 중 63개를 판정에 사용, 나머지 41개는 중복·기능 미사용 시 비어 있음·판정 대상 아님으로 사유를 [COVERAGE.md](COVERAGE.md) 에 기록
 - **미수집·도구 오류 구분** — 파일이 없으면 판정하지 않고, 룰 하나가 실패해도 리포트는 끝까지 생성
 - **투명한 명세** — 판정 조건·임계값을 코드에서 자동 추출한 [RULES.md](RULES.md)
 - **단일 파일 HTML 리포트** — 인라인 CSS/JS 만 사용해 어떤 브라우저에서도 오프라인으로 열림
@@ -200,7 +200,7 @@ bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, 빌드 전용 가�
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq\_hnsw 기본 |
 | 9.0 | IDX-013 | 새 `logs-*-*` data stream 에 logsdb 자동 적용. 8.x 에서 업그레이드하기 전부터 있던 data stream 은 그대로 |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` 기본 적용 |
-| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | merge policy 기본값 변경(segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16), columnar·logsdb_columnar 는 best_compression·synthetic _source 기본, vectordb_document 는 index.store.preload 자동 설정, 모니터링 플러그인 수집 deprecated |
+| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | merge policy 기본값 변경(segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16), columnar·logsdb_columnar 는 best_compression·synthetic _source 기본, vectordb_document 는 index.store.preload 자동 설정, 모니터링 플러그인 수집 10.0 제거 예고 |
 
 ---
 
@@ -219,9 +219,9 @@ bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, 빌드 전용 가�
 
 | 구분 | 의미 | 판정 ID 수 |
 | --- | --- | --- |
-| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 68 |
+| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 59 |
 | 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 57 |
-| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 59 |
+| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 68 |
 | 비교 계산 | 두 번들 간 증가분·증가율·선형 외삽 | DIF-001~013 |
 
 고객에게 전달할 때 "공식 기준·사실 보고" 는 근거로, "도구 판단" 은 권고로 제시하십시오.
@@ -414,7 +414,7 @@ python3 analyze.py --print-thresholds > my.json   # 기본값 추출
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-임계값 141개의 출처(`[공식]` / `[도구]`)는 `esdoctor/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
+임계값 146개의 출처(`[공식]` / `[도구]`)는 `esdoctor/thresholds.py` 주석과 RULES.md 부록에 있습니다. `[공식]` 값은 바꾸지 않는 것을 권장합니다.
 
 ---
 
@@ -456,7 +456,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 985개, 문제 0 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 999개, 문제 0 |
 | `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현. 한국어·영어 두 언어로 실행 | 110개 통과 |
 | `tests/drive_branches.py` | 시나리오 63개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 63개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
@@ -466,6 +466,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_write_path.py` | 쓰기 경로·운영 판정(PERF-012, OS-007, SHD-016, IDX-014·015, CLU-017, MAP-004, DIF-013)의 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_doc_audit.py` | 공식 문서 재대조로 고친 부분(JVM-002 oops 플래그, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom 조건, 개발 모드, 상황에 따라 달라지는 설정 기본값)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_es95.py` | 버전별 기본값: merge policy 기본값, 8.16 부터의 allow_rebalance, columnar·logsdb_columnar·vectordb_document index mode(DISK-006, DISK-007, IDX-013, PERF-008, SET-006), 모니터링 플러그인 deprecation(OPS-007)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
+| `tests/test_audit_0143.py` | 0.14.3 로직 점검 수정 사항: transient 우선 설정, API 오류 응답을 없는 파일로 처리, 비교 기준 번들 선택, 재시작을 반영한 증가분(DIF-005/006/007), DIF-013 우선 판정, 사용 바이트와 tier 구성 기준 DIF-008, DIF-009 최소 처리량, skipped 규칙의 DIF-012, time-based merge policy, gz 로그 tail, OVS-001 shrink 약수, 롤오버된 인덱스의 MAP-004, 컨테이너 판별(OS-001)을 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_bottleneck_cost.py` | 병목 요약, 최근 재시작 노드의 비교 제외(HOT-001·002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001~006, 증상 tier 로 좁힌 병목 원인, tier 단위 DIF-008, DIF-014 구간 검사, tier 단위 SET-005 를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
 | `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |
@@ -532,6 +533,7 @@ bash tests/run_all.sh diagnostic.zip
 │   ├── test_bottleneck_cost.py # 병목 요약·스토리지 비용 판정 검증(합성 데이터)
 │   ├── test_doc_audit.py       # 공식 문서 재대조 수정 사항 검증(합성 데이터)
 │   ├── test_es95.py            # Elasticsearch 9.5 기준 검증(합성 데이터)
+│   ├── test_audit_0143.py      # 0.14.3 로직 점검 검증(합성 데이터)
 │   └── make_broken_bundle.py   # 장애 주입 번들 생성
 ├── docs/STYLE.md              # 문체·용어 규칙
 ├── README.md / README.ko.md

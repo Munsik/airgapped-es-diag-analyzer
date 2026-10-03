@@ -8,7 +8,7 @@
 
 | Item | Value |
 | --- | --- |
-| Tool version | esdoctor 0.14.2 |
+| Tool version | esdoctor 0.14.3 |
 | Elasticsearch baseline version | 9.5 |
 | Official docs checked | 2026-10 |
 | Validated on real bundles | 9.4.4 (ECH, 3 nodes, single tier) / 9.5.3 (ECH, 14 nodes, hot/warm/cold/frozen), api mode |
@@ -29,7 +29,7 @@
 | 9.0 | IDX-013 | logsdb applies automatically to new logs-*-* data streams only |
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq_hnsw |
 | 9.2 | VEC-003 | index.mapping.exclude_source_vectors is enabled by default |
-| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | Merge policy defaults change (segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16). The columnar and logsdb_columnar modes default to best_compression and synthetic _source, vectordb_document sets index.store.preload itself, and monitoring plugin collection is deprecated |
+| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | Merge policy defaults change (segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16). The columnar and logsdb_columnar modes default to best_compression and synthetic _source, vectordb_document sets index.store.preload itself, and monitoring plugin collection is announced for removal in 10.0 |
 
 If the analyzed cluster is newer than the baseline version, the report shows `VER-001`.
 
@@ -142,7 +142,9 @@ Master pending tasks. Count >= pending_tasks_crit or longest wait >= max_task_wa
 
 **Decision logic**
 
-Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical; 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= dedicated_master_data_nodes data nodes → Warning (CLU-007). The official docs only say dedicated masters make sense once a cluster has more than a handful of nodes; the node count is a field guideline.
+Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical,
+and so is a single node that can be elected when the others are voting_only (official: a voting-only node never acts as the elected
+master); 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= dedicated_master_data_nodes data nodes → Warning (CLU-007). The official docs only say dedicated masters make sense once a cluster has more than a handful of nodes; the node count is a field guideline.
 
 ### CLU-008, CLU-009, CLU-010: Node version mismatch
 
@@ -180,7 +182,7 @@ Rates only cluster settings that differ from the default (explicitly set in pers
 | Item | Details |
 | --- | --- |
 | Function | `cluster.r_shard_capacity` |
-| Evidence basis | Official |
+| Evidence basis | Tool threshold |
 | Possible severities | Critical, Warning |
 | Thresholds | `max_shards_per_node_crit_pct` = 95 ([Tool] Usage against cluster.max_shards_per_node that becomes Critical)<br>`max_shards_per_node_headroom_pct_warn` = 80 ([Tool] Usage against cluster.max_shards_per_node) |
 | Required input | (cluster_settings.json) and (cluster_health.json) and (nodes.json) |
@@ -245,7 +247,10 @@ write task holds resources and blocks follow-up work. One row per action with th
 
 **Decision logic**
 
-Rated only when the data nodes have 2 or more distinct zone attribute values (availability_zone / zone / logical_availability_zone / rack_id). Node count per zone: max - min >= 2 or max >= min x 2 → Warning (CLU-018). awareness.attributes not set → Warning (CLU-019).
+Rated only when the data nodes have 2 or more distinct zone attribute values (availability_zone / zone / logical_availability_zone / rack_id).
+Node count per zone is compared within each data tier (tiers are often spread over a different number of zones by design):
+a tier with 2 or more zones and max - min >= 2 or max >= min x 2 → Warning (CLU-018). awareness.attributes not set in cluster
+settings or in any node's elasticsearch.yml → Warning (CLU-019).
 
 ### CLU-020: Shard recovery in progress
 
@@ -428,7 +433,7 @@ old share = old collection_time / uptime, old GC per hour = old count / uptime (
 
 **Decision logic**
 
-load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). A container node (os.cgroup present) with cpu% below load_host_cpu_pct_max is not rated: inside a container the load average can be the host's, so it is listed as Info. swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window.
+load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). A container node (Elastic Cloud / ECE / ECK, or a cgroup CPU quota or memory limit) with cpu% below load_host_cpu_pct_max is not rated: inside a container the load average can be the host's, so it is listed as Info. On Linux the load average also counts processes waiting on disk, so high load with low CPU often points to storage. swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window.
 
 ### DISK-001, DISK-002, DISK-003, DISK-004, DISK-005: Disk flood stage exceeded
 
@@ -445,7 +450,7 @@ load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → War
 
 **Decision logic**
 
-Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001), at or above high → Critical (DISK-002), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK.
+Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001; on dedicated frozen nodes ES only logs a warning at flood_stage.frozen and blocks nothing, so those are a separate Warning), at or above high → Critical (DISK-002), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK.
 
 ### TP-001, TP-002: Thread pool rejections occurred
 
@@ -472,15 +477,18 @@ Cumulative rejected count across all thread pools. Sum > 0 → Warning; sum >= r
 | Findings | BRK-001 Circuit breaker trip history / BRK-002 High circuit breaker usage |
 | Evidence basis | Reported fact / Tool threshold |
 | Possible severities | Critical, Warning |
-| Thresholds | `breaker_tripped_warn` = 1 ([Tool] Breaker trip count (1 = any history)) |
+| Thresholds | `breaker_parent_used_pct_warn` = 90 (Parent breaker estimated size / limit (%) that counts as high usage. The parent estimate is the real heap use and its limit is 95% of heap, so 90 means about 85% of heap)<br>`breaker_tripped_warn` = 1 ([Tool] Breaker trip count (1 = any history))<br>`breaker_used_pct_warn` = 70 (Circuit breaker estimated size / limit (%) that counts as high usage (request, fielddata, in_flight_requests and others)) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes_stats.json |
 
 **Decision logic**
 
-breaker.tripped >= breaker_tripped_warn → Warning; Critical if usage at collection time is also 70% or more (BRK-001; the cumulative trip history alone never raises it to Critical). No trip history and estimated / limit >= 70% → Warning (BRK-002).
+breaker.tripped >= breaker_tripped_warn → Warning; Critical if usage at collection time is also at the usage line (BRK-001; the
+cumulative trip history alone never raises it to Critical). No trip history and estimated / limit at the usage line → Warning (BRK-002).
+Usage line: breaker_used_pct_warn, but breaker_parent_used_pct_warn for the parent breaker, whose estimate is the real heap use
+(indices.breaker.total.use_real_memory, default true) against a limit of 95% of heap; 70% there would only mean about 66% heap.
 
-### IP-001: Indexing pressure rejection
+### IP-001: Indexing pressure rejections
 
 | Item | Details |
 | --- | --- |
@@ -493,6 +501,8 @@ breaker.tripped >= breaker_tripped_warn → Warning; Critical if usage at collec
 **Decision logic**
 
 Warning if any of the *_rejections (coordinating/primary/replica) under indexing_pressure.memory.total is > 0.
+
+A value of -1 means the node could not report the counter (mixed versions during an upgrade) and is ignored.
 
 ### FD-001, FD-002: fielddata uses a large share of the heap
 
@@ -566,7 +576,8 @@ Only nodes that actually index are rated: indexing rate of the node (indices.ind
 for months. On a node that does not index, merges come from a force merge (ILM forcemerge, the force merge that
 searchable_snapshot runs in the preceding phase by default, or a manual _forcemerge) or from merges finishing after rollover.
 Those merge large segments, so a long average there does not mean slow storage.
-Any metric with fewer than write_latency_min_ops operations is skipped.
+Any metric with fewer than write_latency_min_ops operations is skipped. Merge time is wall-clock time that includes the time
+a merge was paused by merge I/O throttling or stopped, so throttled and stopped time are subtracted first.
 Average >= *_avg_ms_warn → Warning, >= *_avg_ms_info → Info (PERF-012). These are field baselines, not official numbers,
 and cumulative averages since node start. Slow flushes and merges usually point to storage that cannot keep up;
 read them with IDX-005 (merge throttling) and IDX-014 (indexing throttled).
@@ -612,7 +623,8 @@ Shard density per node.
 
 '20 shards per 1GB of heap' is the official guideline for versions before 8.3. From 8.3 the heap overhead per shard dropped sharply
 (Elastic blog), and the docs replaced the guideline during 8.3.x with the 'field mapper heap estimate (SHD-010)' and cluster.max_shards_per_node (CLU-015).
-So on 8.3 or later it is not rated and only the current numbers are shown.
+So on 8.3 or later (or when the version is unknown) it is not rated and only the current numbers are shown. Dedicated frozen
+nodes are never rated: they hold partial mounts under their own limit (cluster.max_shards_per_node.frozen).
 
 ### SHD-006: Uneven shard count across nodes in the same tier
 
@@ -620,15 +632,19 @@ So on 8.3 or later it is not rated and only the current numbers are shown.
 | --- | --- |
 | Function | `shards.r_shard_balance` |
 | Evidence basis | Tool threshold |
-| Possible severities | Warning |
+| Possible severities | Warning, Info |
+| Thresholds | `shard_balance_min_diff` = 10 (Minimum difference in shard count between nodes of the same tier before the spread is reported (SHD-006)) |
 | Required input | (indices.json or shards.json or cat_shards.txt) |
 | Source files | indices.json / nodes.json |
 
 **Decision logic**
 
-Warning if the spread in shard count between nodes within the same tier is 25% of the average or more.
+Spread in shard count between nodes within the same tier of 25% of the average or more, and at least shard_balance_min_diff
+shards → Warning before 8.6, Info from 8.6.
 
 Each tier holds different data and has a different node count, so differences in shard count between tiers are normal and are not compared.
+From 8.6 the desired balance allocator also weighs write load and disk usage, and the docs say shard counts may end up uneven on purpose
+to spread the node work evenly, so the spread is reported but not rated as a problem.
 
 ### IDX-010: Unhealthy data streams
 
@@ -659,6 +675,10 @@ data stream status RED → Critical, YELLOW → Warning.
 
 Efficiency of the query cache and the shard request cache.
 
+Only the request cache is rated (hit rate < 20% and evictions > hits → Warning). Query cache evictions also count entries dropped
+when segments close after merges, and misses include lookups the caching policy chose not to cache, so a low query cache hit rate
+on its own is normal and only shown.
+
 ### SHD-002, SHD-003: Very large shards
 
 | Item | Details |
@@ -667,14 +687,16 @@ Efficiency of the query cache and the shard request cache.
 | Findings | SHD-002 Very large shards / SHD-003 Large shards |
 | Evidence basis | Official / Tool threshold |
 | Possible severities | Critical, Warning |
-| Thresholds | `shard_size_gb_crit` = 200 ([Tool] Upper bound based on recovery time)<br>`shard_size_gb_warn` = 50 ([Official] Shards of 10-50GB)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
+| Thresholds | `docs_rollover_overshoot_pct` = 5 ([Tool] Allowed overshoot of a rolled-over shard past 200M docs (ILM checks every poll_interval))<br>`shard_size_gb_crit` = 200 ([Tool] Upper bound based on recovery time)<br>`shard_size_gb_warn` = 50 ([Official] Shards of 10-50GB)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (indices.json or shards.json or cat_shards.txt) |
 | Source files | indices.json |
 | References | [Shard sizing guide](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
 
 **Decision logic**
 
-Primary shard store >= shard_size_gb_crit → Critical (SHD-002), >= shard_size_gb_warn (official upper bound 50GB) → Warning (SHD-003).
+Primary shard store >= shard_size_gb_crit → Critical (SHD-002), above shard_size_gb_warn (official upper bound 50GB) by more than
+docs_rollover_overshoot_pct → Warning (SHD-003). Rollover at max_primary_shard_size 50gb (the built-in policies) is checked every
+indices.lifecycle.poll_interval, so shards end a little above 50GB by design.
 
 ### SHD-004: Too many small shards
 
@@ -698,7 +720,7 @@ Warning if user-index primaries with store < small_shard_mb number at least smal
 | --- | --- |
 | Function | `shards.r_replica_zero` |
 | Evidence basis | Tool threshold |
-| Possible severities | Warning |
+| Possible severities | Warning, Info |
 | Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (settings.json) and (indices_stats.json) |
 | Source files | settings.json / indices_stats.json |
@@ -706,6 +728,8 @@ Warning if user-index primaries with store < small_shard_mb number at least smal
 **Decision logic**
 
 User indices with number_of_replicas=0, no auto_expand_replicas, and not a searchable snapshot index → Warning.
+
+With a single data node a replica cannot be allocated anywhere, so 0 replicas is the only green setting: Info there.
 
 ### IDX-002: Replica count exceeds the number of data nodes
 
@@ -752,20 +776,25 @@ For indices with primary store >= 1GB, deleted / (docs + deleted) >= deleted_doc
 
 Primary segments / primary shards >= segments_per_shard_warn and primary store > 100MB → Warning.
 
-### IDX-005: Merge throttling observed
+### IDX-005: Merge I/O throttling observed
 
 | Item | Details |
 | --- | --- |
 | Function | `shards.r_merge_throttle` |
 | Evidence basis | Tool threshold |
-| Possible severities | Warning |
+| Possible severities | Warning, Info |
 | Thresholds | `merge_throttle_ratio_warn` = 0.05 ([Tool])<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (indices_stats.json) |
 | Source files | indices_stats.json |
 
 **Decision logic**
 
-merges.total_throttled_time / merges.total_time >= merge_throttle_ratio_warn and cumulative throttled time > 60 seconds → Warning.
+merges.total_throttled_time / merges.total_time >= merge_throttle_ratio_warn and cumulative throttled time > 60 seconds → listed.
+
+The throttled time is the time merges slept because the merge scheduler rate-limits merge disk writes (auto_throttle, an adaptive
+rate that rises when merges back up). A high share alone usually means merges were smoothed while merge activity was low, so it is
+Info. Only when the same index also had indexing throttled (indexing.throttle_time_in_millis > 0, see IDX-014) did merges fall
+behind → Warning.
 
 ### PERF-001, PERF-002: Indices with high average search latency
 
@@ -798,6 +827,8 @@ For indices with query_total >= min_query_total_for_latency, average query laten
 
 Indices with indexing.index_failed or search.query_failure > 0. Warning if user indices are included, Info if only system indices are.
 Sorted by the failure ratio, index_failed / (index_failed + index_total), so indices that lose a large share of their writes come first.
+From 8.18 the stats report index_failed_due_to_version_conflict separately. Version conflicts are expected with op_type=create
+retries (Elastic Agent, Fleet), so an index whose only failures are version conflicts does not make the finding a Warning.
 
 ### MAP-001, MAP-002: Indices with a raised mapping field limit
 
@@ -872,7 +903,8 @@ Needs checking (Info, IDX-011): a write/read_only block on a standalone index th
 
 **Decision logic**
 
-Whether the data tier an index requires actually exists on the nodes.
+Whether the data tier an index requires actually exists on the nodes. The generic data role counts as every tier,
+frozen included (DataTier in the Elasticsearch source).
 
 ### SHD-005: Index/shard scale summary
 
@@ -888,6 +920,8 @@ Whether the data tier an index requires actually exists on the nodes.
 **Decision logic**
 
 Average size per shard (store / shards) < 200MB, shards >= 300, and total store > 50GB → Warning. Otherwise only a size summary is shown as Info.
+
+Partially mounted (frozen) shards report a store size of 0, so they are taken out of the shard count for the average.
 
 ### SHD-016: Write-target shards concentrated on some nodes
 
@@ -908,7 +942,7 @@ indexing.index_total > 0 (a low-volume stream can keep an idle write index for m
 (max - min) / average >= write_shard_skew_warn and max - min >= write_shard_skew_min → Warning. SHD-006 compares all shards;
 this one compares only shards that take writes, which is where indexing load lands.
 
-### IDX-014: Indexing throttled because merges fell behind
+### IDX-014: Indexing throttled
 
 | Item | Details |
 | --- | --- |
@@ -921,9 +955,10 @@ this one compares only shards that take writes, which is where indexing load lan
 
 **Decision logic**
 
-Indexing throttled because merges fell behind (IDX-014).
+Indexing throttled (IDX-014).
 
-Official: once merging is fully unthrottled and still behind, indexing for the shard is throttled until merges catch up.
+Official: once merging is fully unthrottled and still behind, indexing for the shard is throttled until merges catch up. The indexing
+memory controller also throttles the busiest shards when indexing buffers exceed 1.5 x indices.memory.index_buffer_size (source).
 indices_stats indexing.is_throttled = true at collection time → Warning. Only cumulative indexing.throttle_time > 0 → Info.
 
 ### IDX-015: Uncommitted translog above the flush threshold
@@ -966,8 +1001,8 @@ Oversharding per index.
 Scope: user indices with primary >= 2 that are not a data stream write index or a searchable snapshot.
 Fully mounted (cold) indices have an accurate size but cannot be shrunk, so only the number of oversharded ones is counted, with guidance on fixing the cause.
 Rating: average size per primary shard < oversharding_floor_shard_gb (official lower bound 10GB) means oversharded.
-Recommended primary count = max(1, ceil(total primary size / oversharding_target_shard_gb (official upper bound 50GB)))
-(the smallest count that keeps each shard at or under 50GB). Excess shards = (current - recommended) × (1 + replica).
+Recommended primary count = the smallest factor of the current count (shrink can only go to a factor) that keeps each shard at or
+under oversharding_target_shard_gb (official upper bound 50GB). Excess shards = (current - recommended) × (1 + replica).
 Excess shard total >= oversharding_excess_warn or share of all shards >= oversharding_excess_ratio_warn → Warning;
 any other indices in scope → Info.
 
@@ -977,7 +1012,7 @@ any other indices in scope → Info.
 | --- | --- |
 | Function | `sharding.r_datastream_small_rollover` |
 | Evidence basis | Tool threshold |
-| Possible severities | Warning |
+| Possible severities | Warning, Info |
 | Thresholds | `ds_min_backing_indices` = 5 ([Tool] Minimum backing index count for the data stream rating)<br>`ds_small_backing_shard_gb` = 1 ([Tool] Median backing shard size threshold)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (data_stream.json) and (indices_stats.json) |
 | Source files | data_stream.json / indices_stats.json |
@@ -989,7 +1024,10 @@ Checks whether a data stream rolls over too often and small backing indices pile
 
 Excluding the write index and partial (frozen) mounted backing indices (whose size is the cache size), if there are
 ds_min_backing_indices or more backing indices and the median size per primary shard is
-below ds_small_backing_shard_gb → Warning. This is the typical sign of rollover happening on max_age only.
+below ds_small_backing_shard_gb, the data stream is listed. When its rollover has no size condition (max_primary_shard_size or
+max_size in the ILM policy) the cause is rollover on age alone → Warning. When a size condition exists (the built-in
+logs@lifecycle and metrics@lifecycle policies, and data stream lifecycle, roll over at 50GB per primary shard) the stream simply
+receives little data → Info, and the advice is a longer max_age or fewer data streams.
 
 ### OVS-003: User shard size distribution
 
@@ -1135,7 +1173,8 @@ so the index deleted count divided by the number of primaries is added (shown as
 Rollover always runs once a shard reaches 200M documents, and ILM checks the condition every poll_interval (10m by default),
 so a rolled-over index normally ends a little above 200M. Rolled-over indices are reported only when they exceed 200M by more
 than docs_rollover_overshoot_pct (SHD-013, rollover ran late). Searchable snapshot mounts take no writes and are rated the same way.
-The write index and indices without rollover keep SHD-008.
+The write index and indices without rollover keep SHD-008. The implicit 200M rollover exists from 8.8 (ILM source), so before 8.8
+rolled-over indices also keep SHD-008.
 
 ### SHD-014, SHD-015: logsdb shards above the tool's recommended range
 
@@ -1143,7 +1182,7 @@ The write index and indices without rollover keep SHD-008.
 | --- | --- |
 | Function | `guidance.r_logsdb_shard_size` |
 | Findings | SHD-014 logsdb shards above the tool's recommended range / SHD-015 logsdb indices rolled over below the official shard size range |
-| Evidence basis | Official / Tool threshold |
+| Evidence basis | Tool threshold |
 | Possible severities | Info |
 | Thresholds | `ds_min_backing_indices` = 5 ([Tool] Minimum backing index count for the data stream rating)<br>`ilm_implicit_max_shard_docs` = 200,000,000 ([Official] Rollover always runs at 200M docs per shard; higher values have no effect)<br>`logsdb_rows_max` = 100 ([Tool] Maximum indices listed in the logsdb shard size table)<br>`logsdb_shard_gb_high` = 30 ([Tool] Upper end of the logsdb shard range (official upper bound is 50GB))<br>`logsdb_shard_gb_low` = 10 ([Official] Lower end of the 10-50GB shard range)<br>`shard_size_gb_warn` = 50 ([Official] Shards of 10-50GB) |
 | Required input | (indices.json or shards.json or cat_shards.txt) and (settings.json or data_stream.json) |
@@ -1203,14 +1242,15 @@ and while it is false even new logs-*-* indices stay standard. Its value is show
 
 **Decision logic**
 
-Based on 3000 indices per 1GB of heap on master-eligible nodes.
+Based on 3000 indices per 1GB of heap on master-eligible nodes. Voting-only nodes are left out: they never act as the elected
+master and the docs say they may need less heap. Over 80% of the capacity → Warning, over 100% → Critical.
 
 ### SHD-010: Mapping metadata takes too much of the heap
 
 | Item | Details |
 | --- | --- |
 | Function | `guidance.r_mapping_heap_overhead` |
-| Evidence basis | Official |
+| Evidence basis | Tool threshold |
 | Possible severities | Warning, Info, OK |
 | Thresholds | `heap_baseline_bytes` = 512MiB ([Official] Extra 0.5GB margin in the field mapper estimate)<br>`mapping_heap_pct_warn` = 50 ([Tool] Estimated mapping overhead / heap) |
 | Required input | (nodes_stats.json) and (cluster_stats.json) |
@@ -1247,7 +1287,7 @@ Current write targets (data stream write index, alias write index) are excluded,
 | Item | Details |
 | --- | --- |
 | Function | `guidance.r_total_shards_per_node` |
-| Evidence basis | Official |
+| Evidence basis | Tool threshold |
 | Possible severities | Info |
 | Thresholds | `heavy_index_docs` = 10,000,000 ([Tool] Threshold for a heavily indexed index)<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (settings.json) and (indices_stats.json) |
@@ -1258,12 +1298,15 @@ Current write targets (data stream write index, alias write index) are excluded,
 
 Whether index.routing.allocation.total_shards_per_node is set to prevent hot spots (heavily indexed indices).
 
+Only current write targets are listed: rolled-over and searchable snapshot indices take no writes, so the setting does nothing there
+(for data streams it belongs in the index template).
+
 ### PERF-004: Indexing buffer per actively written shard is too small
 
 | Item | Details |
 | --- | --- |
 | Function | `guidance.r_index_buffer` |
-| Evidence basis | Official |
+| Evidence basis | Tool threshold |
 | Possible severities | Info |
 | Thresholds | `index_buffer_per_shard_warn` = 32MiB ([Tool] Per write-target shard (official upper bound is 512MB)) |
 | Required input | (nodes.json) and (indices.json or shards.json or cat_shards.txt) |
@@ -1277,6 +1320,7 @@ Indexing buffer per shard.
 indices.memory.index_buffer_size (default 10% of heap) is shared by the 'recently written (active)' shards.
 A shard with no writes for 5 minutes or more (indices.memory.shard_inactive_time, from the source) becomes inactive and gives its buffer back. The bundle cannot show directly which shards are active,
 so only shards that are confirmed write targets (data stream write indices plus indices that were indexing at collection time) are counted.
+A data stream write index whose recent_write_load (9.x stats) is 0 has had no recent writes and is left out.
 
 ### PERF-005: Too many open search contexts
 
@@ -1325,12 +1369,15 @@ Info if search.default_search_timeout is not set or is -1 (unlimited).
 
 Formula recommended in the search-speed guide: replicas = max(max_failures, ceil(num_nodes/num_primaries) - 1).
 
+num_nodes is the number of data nodes in the tier that holds the index (the tier of its primary shards), not every data node.
+Searchable snapshot mounts are skipped (0 replicas by design).
+
 ### PERF-008: Indices using index.store.preload
 
 | Item | Details |
 | --- | --- |
 | Function | `guidance.r_store_preload` |
-| Evidence basis | Official |
+| Evidence basis | Tool threshold |
 | Possible severities | Warning, Info |
 | Thresholds | `preload_index_count_warn` = 5 ([Tool])<br>`top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (settings.json) |
@@ -1376,7 +1423,8 @@ User indices with primary store >= codec_check_min_bytes and index.codec left at
 
 Index modes whose default codec is best_compression are excluded: logsdb, and the columnar and logsdb_columnar modes added in 9.5
 (official logsdb docs, and IndexMode in the Elasticsearch source). standard, time_series and vectordb_document indices default to
-the LZ4 codec.
+the LZ4 codec. Searchable snapshot mounts are skipped (their settings come from the snapshot and cannot change), and so are
+indices without a stored _source (synthetic or time_series, where the codec mostly affects little stored data).
 
 ### DISK-007: Indices with _source disabled
 
@@ -1450,14 +1498,19 @@ Whether high-dimension float vectors are quantized (rated after merging componen
 
 From 8.14, a float dense_vector without index_options gets quantized HNSW by default (int8_hnsw; bbq_hnsw for 384 dimensions
 or more from 9.1; bbq_disk from 9.4 when the license allows it). byte and bit vectors are not quantized and are not rated.
-So 'not set' is not treated as a problem on 8.14 or later; only an explicit non-quantized type (hnsw/flat) is rated.
+So 'not set' is not treated as a problem on 8.14 or later; only an explicit non-quantized type (hnsw/flat) is rated (VEC-002).
+Fields with index: false (or no index parameter before 8.11, when dense_vector was not indexed by default) have no HNSW and are
+skipped, and nothing is rated below 8.12 where no quantized type exists.
+VEC-003 (Info): from 9.2, index.mapping.exclude_source_vectors is on by default, so only templates that set it to false are listed.
+Before 9.2 the setting does not exist; templates whose mappings._source.excludes does not cover the vector fields are listed,
+and the text explains the trade-off of excluding them that way.
 
 ### VEC-004: Too many segments in vector indices
 
 | Item | Details |
 | --- | --- |
 | Function | `guidance.r_vector_segments` |
-| Evidence basis | Official |
+| Evidence basis | Tool threshold |
 | Possible severities | Warning |
 | Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table)<br>`vector_segments_per_shard_warn` = 20 ([Tool]) |
 | Required input | (indices_stats.json) and (indices.json or shards.json or cat_shards.txt) |
@@ -1485,6 +1538,7 @@ For indices with vector data, primary segments / primary shards >= vector_segmen
 **Decision logic**
 
 CPU saturation per tier. Warning if every node in a tier has load15/CPU >= load_per_cpu_warn or CPU% >= tier_cpu_pct_warn.
+As in OS-001, a container node with low CPU use does not count by load alone (the load can be the host's).
 
 This differs from skew between nodes (HOT-001). Even when the load is spread evenly, a tier that is at its limit needs more nodes or less load.
 The cgroup CPU throttling (OS-003) and the rejections of the write, write_coordination and search thread pools (TP-001) of that tier are shown as supporting evidence.
@@ -1494,7 +1548,7 @@ The cgroup CPU throttling (OS-003) and the rejections of the write, write_coordi
 | Item | Details |
 | --- | --- |
 | Function | `hotspot.r_resource_hotspot` |
-| Evidence basis | Official |
+| Evidence basis | Tool threshold |
 | Possible severities | Warning, OK |
 | Thresholds | `disk_imbalance_pct_warn` = 15 ([Tool] Disk usage spread between nodes (percentage points))<br>`hotspot_cpu_pct_floor` = 50 ([Tool])<br>`hotspot_cpu_pct_gap` = 40 ([Tool])<br>`hotspot_disk_pct_floor` = 50 ([Tool])<br>`hotspot_heap_pct_floor` = 70 ([Tool] Ignored if the maximum is below this)<br>`hotspot_heap_pct_gap` = 30 ([Tool] Heap spread between nodes (percentage points))<br>`node_compare_min_uptime_hours` = 24 ([Tool] Nodes up for less than this are left out of node-to-node comparisons) |
 | Required input | (nodes_stats.json) |
@@ -1547,7 +1601,9 @@ or fewer than 10000 operations in total are skipped. Values include replica work
 
 **Decision logic**
 
-Desired balance not converged (shards that are not in their desired location).
+Desired balance not converged. Shards not in their desired location (cat allocation shards.undesired) >= undesired_shards_warn →
+Warning when nothing is relocating or initializing (stuck), Info while a rebalance is moving them (HOT-003). A balance computation
+still running (internal desired balance stats computation_active=true) → Info (HOT-004).
 
 ### REC-001: Recovery in progress: check the recovery bandwidth limit
 
@@ -1565,7 +1621,7 @@ Desired balance not converged (shards that are not in their desired location).
 
 Recovery bandwidth limit.
 
-The default of indices.recovery.max_bytes_per_sec (40mb) is not a problem by itself.
+The default of indices.recovery.max_bytes_per_sec (40mb) is not a problem by itself, and 0 or less means unlimited.
 It is reported as a possible recovery bottleneck only while a recovery or relocation is actually running.
 
 ### TPL-001: Legacy template shadowed by composable template (presumed)
@@ -1688,7 +1744,7 @@ How many days of ingest the landing tier can still take before the high watermar
 
 Daily ingest = store size (replicas included) of user indices created in the last ingest_window_days, plus the part of older write
 indices that falls in the window (size x window / age), divided by the window (shorter if the cluster is younger). Searchable
-snapshot mounts and system indices are left out. Landing tier = tiers holding shards of write targets (frozen excluded); when
+snapshot mounts, system indices and shrink or downsample copies (new creation date, old data) are left out. Landing tier = tiers holding shards of write targets (frozen excluded); when
 one of them is a hot tier, only the hot tiers count, because new data stream indices go to hot by default and a write target
 elsewhere is usually a small index whose policy moves it without rollover.
 Headroom = sum over those nodes of (bytes allowed at the high watermark - bytes used). Days = headroom / daily ingest.
@@ -1722,7 +1778,7 @@ sit. Rows show index count, documents, primary and total store, and the share of
 | Function | `cost.r_tier_sizing` |
 | Evidence basis | Tool threshold |
 | Possible severities | Info |
-| Thresholds | `load_per_cpu_warn` = 1.0 ([Tool] load15 / CPU cores)<br>`size_idle_cpu_pct` = 20 ([Tool] Tier counts as having large headroom when every node is below this CPU%)<br>`size_idle_disk_pct` = 30 ([Tool] ... and below this disk% (not used for frozen))<br>`size_idle_heap_pct` = 50 ([Tool] ... and below this heap%)<br>`size_idle_load_per_cpu` = 0.3 ([Tool] ... and below this load15 per CPU)<br>`tier_cpu_pct_warn` = 75 ([Tool] CPU% at which a whole tier counts as saturated) |
+| Thresholds | `size_idle_cpu_pct` = 20 ([Tool] Tier counts as having large headroom when every node is below this CPU%)<br>`size_idle_disk_pct` = 30 ([Tool] ... and below this disk% (not used for frozen))<br>`size_idle_heap_pct` = 50 ([Tool] ... and below this heap%)<br>`size_idle_load_per_cpu` = 0.3 ([Tool] ... and below this load15 per CPU)<br>`tier_cpu_pct_warn` = 75 ([Tool] CPU% at which a whole tier counts as saturated) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes_stats.json |
 | References | [Data tiers](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
@@ -1731,7 +1787,8 @@ sit. Rows show index count, documents, primary and total store, and the share of
 
 Sizing signals per data tier from one bundle (COST-006).
 
-Pressure: any of every node busy (load15 per CPU >= load_per_cpu_warn or CPU >= tier_cpu_pct_warn, the HOT-005 test), write or
+Pressure: any of every node busy (load15 per CPU >= load_per_cpu_warn or CPU >= tier_cpu_pct_warn, the HOT-005 test with its
+container guard), write or
 search rejections on the tier's nodes, indexing pressure rejections, or a node at or above the high watermark (frozen excluded). Large headroom: every node of the tier has been up for at least
 node_compare_min_uptime_hours and has CPU below size_idle_cpu_pct, load15 per CPU below size_idle_load_per_cpu, heap below
 size_idle_heap_pct and disk below size_idle_disk_pct (disk not used for frozen), with no rejections. Anything else is
@@ -1756,8 +1813,9 @@ Whether cluster monitoring data exists (OPS-007, Info).
 
 If this cluster holds stack monitoring data (.monitoring-* or *stack_monitoring* data streams), it is monitoring itself
 (production should use a separate monitoring cluster). If there is none, the bundle cannot show whether the data goes to another cluster,
-so the report asks you to confirm. Legacy internal collection (xpack.monitoring.collection.enabled=true) is reported as well;
-from 9.5 the note adds that collecting with the monitoring plugin is deprecated and is removed in 10.0 (official deprecations).
+so the report asks you to confirm. Legacy internal collection (xpack.monitoring.collection.enabled=true, in cluster settings or
+elasticsearch.yml) is reported as well, with a note that it has been deprecated since 7.16; from 9.5 the note adds that it is
+removed in 10.0 (official deprecations).
 
 ### LIC-001: License is valid
 
@@ -1788,7 +1846,7 @@ license.status != active → Critical. Time to expiry <= license_expiry_days_cri
 
 **Decision logic**
 
-No repository and no snapshot → Critical (SNP-001). FAILED/PARTIAL snapshot present → Warning, and Critical if no later successful snapshot exists (SNP-002). Age of the last SUCCESS snapshot (the SLM policy's last_success time if snapshot.json has no time) >= snapshot_age_hours_crit → Critical, >= warn → Warning, otherwise OK (SNP-003; in-progress, failed and partial snapshots are excluded from the RPO calculation). Time data present but no successful snapshot → Critical. IN_PROGRESS present → Info (SNP-004). Cumulative SLM failures >= snapshot_failed_warn → Warning (SNP-005). SLM operation_mode != RUNNING → Warning (SNP-006). SLM policy whose last failure is more recent than its last success → Critical (SNP-007).
+No repository and no snapshot → Critical (SNP-001). FAILED/PARTIAL snapshot present → Warning, and Critical if a later successful snapshot is known not to exist (SNP-002; snapshots listed without times stay Warning). Age of the last SUCCESS snapshot (the SLM policy's last_success time if snapshot.json has no time) >= snapshot_age_hours_crit → Critical, >= warn → Warning, otherwise OK (SNP-003; in-progress, failed and partial snapshots are excluded from the RPO calculation). Time data present but no successful snapshot → Critical. IN_PROGRESS present → Info (SNP-004). Cumulative SLM failures >= snapshot_failed_warn → Info (SNP-005, lifetime counter). SLM operation_mode != RUNNING → Warning (SNP-006). SLM policy whose last failure is more recent than its last success → Critical (SNP-007).
 
 ### ILM-001, ILM-002, ILM-003: ILM is stopped
 
@@ -1804,7 +1862,7 @@ No repository and no snapshot → Critical (SNP-001). FAILED/PARTIAL snapshot pr
 
 **Decision logic**
 
-ILM operation_mode != RUNNING → Warning (ILM-001). ilm_explain with step=ERROR or a failed_step → Critical if a rollover-related step failed, otherwise (delete, shrink or migrate steps, failure to delete a write index, etc.) Warning (ILM-002). User indices without ILM (managed=false) and primary > 10GB → Info (ILM-003).
+ILM operation_mode != RUNNING → Warning (ILM-001). ilm_explain with step=ERROR or a failed_step → Critical if a rollover-related step failed, otherwise (delete, shrink or migrate steps, failure to delete a write index, etc.) Warning (ILM-002). User indices without ILM (managed=false) and primary > 10GB → Info (ILM-003); indices managed by data stream lifecycle are not counted as unmanaged. A rollover-step error on an index that is no longer written (rolled over) is Warning, not Critical.
 
 ### ML-001, ML-002: Transforms in failed state
 
@@ -1815,12 +1873,13 @@ ILM operation_mode != RUNNING → Warning (ILM-001). ilm_explain with step=ERROR
 | Evidence basis | Reported fact |
 | Possible severities | Warning |
 | Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
-| Required input | (transform_stats.json or ml_anomaly_detectors.json) |
-| Source files | commercial/ml_anomaly_detectors.json / commercial/transform_stats.json |
+| Required input | (transform_stats.json or ml_stats.json or ml_anomaly_detectors.json) |
+| Source files | commercial/ml_stats.json / commercial/transform_stats.json |
 
 **Decision logic**
 
-transform state failed/aborting → Warning (ML-001). Anomaly detection job state=failed → Warning (ML-002).
+transform state failed/aborting → Warning (ML-001). Anomaly detection job state=failed → Warning (ML-002). The job state is in
+the job stats (commercial/ml_stats.json, GET _ml/anomaly_detectors/_stats); the job config file has no state.
 
 ### SEC-001: TLS certificates are not close to expiry
 
@@ -1871,13 +1930,14 @@ GeoIP failed_downloads or expired_databases > 0 → Info (can be normal in an ai
 | --- | --- |
 | Function | `ops.r_ccr` |
 | Evidence basis | Reported fact |
-| Possible severities | Warning |
+| Possible severities | Warning, Info |
 | Required input | (ccr_stats.json) |
 | Source files | commercial/ccr_stats.json |
 
 **Decision logic**
 
-Warning if a CCR follower shard has read_exceptions or failed_read/write_requests.
+CCR follower shards with read_exceptions (current errors) or a fatal_exception → Warning (OPS-002). failed_read/write_requests
+are cumulative per follower task, so a shard with only those counters is listed at Info (a past remote restart leaves them).
 
 ## Mappings, ILM policies, cluster coordination, detailed stats
 
@@ -1940,7 +2000,8 @@ Counts fields per index from the actual mappings in mapping.json, using the offi
 Field count >= total_fields.limit × mapping_fields_near_limit_pct → Warning (MAP-004; Info only if every listed index has ignore_dynamic_beyond_limit=true).
 Indices without ignore_dynamic_beyond_limit are listed first because they are the ones that can fail indexing; the table also shows
 who manages the data stream template (Fleet package or Elastic), since integration templates usually set the ignore option.
-Searchable snapshot mounts are skipped because they are read-only.
+Searchable snapshot mounts and rolled-over indices are skipped for MAP-004 because they receive no new fields. Runtime fields
+count toward the limit only from 8.5 (MappingLookup in the source).
 text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × nested_fields_near_limit_pct → Warning (MAP-006). The default limit is 100 for indices created on 9.3 or later and 50 before.
 
 ### VEC-005: High-dimension float vectors in live indices are not quantized
@@ -1959,7 +2020,10 @@ text field with fielddata=true → Warning (MAP-005). nested field count >= nest
 
 Finds high-dimension float dense_vector fields in the actual index mappings that explicitly use a non-quantized type (hnsw, flat) (VEC-005, Warning).
 
-Below 8.14, a missing index_options is also non-quantized, so those fields are included. This backs up the template-based rule (VEC-002) with the actual indices.
+A missing index_options is also non-quantized for indices created before 8.14 (index version 8_505_0_00), so those fields are included.
+Fields with index: false have no HNSW graph and are skipped, as are fields without the index parameter on indices created before 8.11
+(index version 8_500_0_00), where dense_vector was not indexed by default. Below 8.12 no quantized type exists, so nothing is rated.
+This backs up the template-based rule (VEC-002) with the actual indices.
 
 ### ILM-004, ILM-005, ILM-007, ILM-006: ILM policies that roll over without a size condition
 
@@ -1981,7 +2045,8 @@ Rollover and delete configuration of the ILM policies used by user indices.
 No max_primary_shard_size (or max_size) in the hot rollover → Warning (ILM-004): the official recommendation is rollover by shard size,
 and max_age alone leaves small indices piling up depending on the ingest rate (a cause of OVS-002). max_primary_shard_size > 50GB → Warning (ILM-005).
 No delete phase → Info (ILM-006, unlimited retention). Elastic-managed policies (_meta.managed=true) are checked like the others and marked "(Elastic managed)" in the table.
-max_primary_shard_docs above 200,000,000 → Info (ILM-007): rollover always runs at 200M documents per shard, so a higher value has no effect (official).
+max_primary_shard_docs above 200,000,000 → Info (ILM-007): from 8.8 rollover always runs at 200M documents per shard, so a higher
+value has no effect (official). Before 8.8 there is no such implicit condition, so ILM-007 is not raised.
 
 ### ILM-008, ILM-009: Not enough free disk for force merge
 
@@ -2043,6 +2108,8 @@ This is a temporary setting used when removing or replacing master-eligible node
 Shutdown records from nodes_shutdown_status. STALLED → Critical, IN_PROGRESS → Info, COMPLETE but the node is still in the cluster → Warning (SHUT-001).
 
 A shutdown record stays until it is deleted. If it is left after the work, shard allocation to that node can stay restricted.
+That applies to REMOVE, REPLACE and SIGTERM records. A RESTART record does not restrict allocation (it only delays reallocation
+after the node leaves) and shows COMPLETE at once, so a completed RESTART record stays Info.
 
 ### IDX-012: Shard store exceptions (suspected corruption)
 
@@ -2050,14 +2117,15 @@ A shutdown record stays until it is deleted. If it is left after the work, shard
 | --- | --- |
 | Function | `deep.r_shard_store_errors` |
 | Evidence basis | Reported fact |
-| Possible severities | Critical |
+| Possible severities | Critical, Warning |
 | Thresholds | `top_n` = 15 ([Tool] Maximum rows in an evidence table) |
 | Required input | (shard_stores.json) |
 | Source files | shard_stores.json |
 
 **Decision logic**
 
-Shard copies with a store_exception in shard_stores → Critical (IDX-012, suspected data corruption).
+Shard copies with a store_exception in shard_stores (IDX-012). Corruption signs (CorruptIndexException, checksum, corrupt) →
+Critical. Other store exceptions, such as a shard lock held during a close or a missing shard path, are often transient → Warning.
 
 ### OPS-003: Remote cluster connection lost
 
@@ -2080,14 +2148,16 @@ Remote clusters with connected=false in remote_cluster_info → Warning (OPS-003
 | Function | `deep.r_frozen_cache` |
 | Evidence basis | Tool threshold |
 | Possible severities | Warning, Info |
+| Thresholds | `frozen_cache_turnover_per_day` = 1.0 (Frozen shared cache evictions per day, as a multiple of the cache region count, that counts as excessive turnover (FRZ-001)) |
 | Required input | (searchable_snapshots_cache_stats.json) |
 | Source files | searchable_snapshots_cache_stats.json |
 
 **Decision logic**
 
-Frozen shared cache statistics. Warning if any node has more evictions than cache regions (FRZ-001); otherwise Info when there is data.
-
-Evictions > region count means the whole cache has been replaced at least once, a sign that the cache is small compared to the searched data (tool threshold).
+Frozen shared cache statistics (FRZ-001). Evictions are cumulative since the node started, and they also count regions freed when
+a partially mounted index is deleted or moves away (ILM delete), so the count is turned into a daily rate over the node uptime.
+Evictions per day above frozen_cache_turnover_per_day x the region count (the whole cache replaced at least that often) → Warning,
+a sign that the cache is small compared to the searched data (tool threshold); otherwise Info when there is data.
 
 ### FRZ-002: Frozen shared cache on a network filesystem
 
@@ -2201,7 +2271,8 @@ Warning if a trained model deployment has a state other than started, or an allo
 
 **Decision logic**
 
-Watcher manually stopped while watches exist → Warning (OPS-005). Autoscaling required capacity larger than current capacity → Info (OPS-004).
+Watcher manually stopped → Warning when watches are still counted, otherwise Info (OPS-005; stopping Watcher clears the watch
+counts in its stats). Autoscaling required storage or memory larger than the current one → Info (OPS-004).
 Rollup jobs present → Info (OPS-006, rollup is deprecated and replaced by downsampling).
 
 ## Runtime (hot threads, logs)
@@ -2242,16 +2313,16 @@ No logs/ directory → Info (LOG-000). If the bundle was collected in local/remo
 
 ## OS settings (syscalls/ in local and remote mode)
 
-### SYS-001, SYS-002, SYS-003, SYS-004: vm.max_map_count is below the bootstrap check minimum
+### SYS-001, SYS-002, SYS-003, SYS-004: mmap is turned off (node.store.allow_mmap: false)
 
 | Item | Details |
 | --- | --- |
 | Function | `syscalls.r_os_config` |
-| Findings | SYS-001 vm.max_map_count is below the bootstrap check minimum / SYS-002 Swap is present and vm.swappiness is high / SYS-003 Elasticsearch process limits are below the minimum requirement / SYS-004 Kernel OOM killer records |
+| Findings | SYS-001 mmap is turned off (node.store.allow_mmap: false) / SYS-002 Swap is present and vm.swappiness is high / SYS-003 Elasticsearch process limits are below the minimum requirement / SYS-004 Kernel OOM killer records |
 | Evidence basis | Official / Reported fact |
 | Possible severities | Critical, Warning, Info, OK |
 | Required input | (syscalls/sysctl.txt or syscalls/proc-limit.txt or syscalls/dmesg.txt) |
-| Source files | syscalls/dmesg.txt / syscalls/proc-limit.txt / syscalls/sysctl.txt |
+| Source files | syscalls/dmesg.txt / syscalls/proc-limit.txt / syscalls/sysctl.txt / syscalls/sysctl.txt / nodes.json |
 | References | [vm.max_map_count setting](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/vm-max-map-count)<br>[Bootstrap checks](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/bootstrap-checks)<br>[Swap disabled](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/setup-configuration-memory)<br>[File descriptors setting](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/file-descriptors)<br>[Thread count limit setting](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/max-number-of-threads) |
 
 **Decision logic**
@@ -2260,6 +2331,7 @@ OS settings of the host where diagnostics ran (SYS-001 to SYS-004).
 
 vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation, in the docs since 8.15 to 8.17; 262144 before) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: target process is java/elasticsearch → Critical, any other process → Warning (SYS-004); no entry → OK.
 When every node runs in development mode (loopback transport or single-node discovery), bootstrap checks are not enforced, so the Critical results of SYS-001 and SYS-003 drop to Warning.
+When every node sets node.store.allow_mmap: false, ES skips the max map count check, so SYS-001 is Info only.
 
 ## Trend (--baseline comparison mode)
 
@@ -2318,6 +2390,7 @@ Node with the same name has a smaller uptime than before -> critical (DIF-002, r
 **Decision logic**
 
 Per node and pool increase in rejected. Total > 0 -> warning, >= rejected_crit -> critical (DIF-005). Cumulative value is not 0 but the increase is 0 -> info (DIF-004, past history).
+A node that restarted in the interval (uptime went down) counts from 0: its whole current value is the increase, over its uptime.
 
 ### DIF-006: Old GC trend
 
@@ -2331,7 +2404,8 @@ Per node and pool increase in rejected. Total > 0 -> warning, >= rejected_crit -
 
 **Decision logic**
 
-Increase in old GC. Per-hour increase >= old_gc_per_hour_warn or GC time share of the interval >= old_gc_time_ratio_warn -> warning, otherwise info. Nodes whose counter went down (restart) are skipped.
+Increase in old GC. Per-hour increase >= old_gc_per_hour_warn or GC time share of the interval >= old_gc_time_ratio_warn -> warning, otherwise info.
+A node that restarted (uptime went down) counts from 0 over its uptime.
 
 ### DIF-007: Circuit breakers tripping now
 
@@ -2344,7 +2418,7 @@ Increase in old GC. Per-hour increase >= old_gc_per_hour_warn or GC time share o
 
 **Decision logic**
 
-Increase in breaker tripped > 0 -> critical.
+Increase in breaker tripped > 0 -> critical. A node that restarted (uptime went down) counts from 0.
 
 ### DIF-008: Projected disk saturation from growth rate
 
@@ -2363,7 +2437,9 @@ Estimates when each data tier reaches the high watermark from the disk growth ra
 Within a tier, ILM moves and rebalancing put shards on whichever node has room, so over a few hours one node can grow fast
 while another shrinks. The tier total is what fills up: days = sum of the bytes left before the high watermark on the tier's
 nodes / sum of their growth per hour. Nodes are still listed one by one. Tier days <= 7 → Critical, <= disk_projection_days_warn
-→ Warning, otherwise Info. Frozen-only nodes pre-allocate the shared cache, so they are left out.
+→ Warning, otherwise Info. Frozen-only nodes pre-allocate the shared cache, so they are left out. Growth is the change in used
+bytes, so a resized disk does not count as growth. A tier whose node membership changed between the two bundles is listed but
+not rated: shards moved between nodes, so its growth is not ingest.
 
 ### DIF-009: Throughput in the interval and distribution across nodes
 
@@ -2372,7 +2448,7 @@ nodes / sum of their growth per hour. Nodes are still listed one by one. Tier da
 | Function | `diff.r_throughput` |
 | Evidence basis | Computed |
 | Possible severities | Warning, Info |
-| Thresholds | `workload_skew_ratio_warn` = 1.8 ([Tool] Busiest node / average) |
+| Thresholds | `workload_skew_min_per_sec` = 10 (Minimum average operations per second per node in a tier before the indexing skew is rated (DIF-009))<br>`workload_skew_ratio_warn` = 1.8 ([Tool] Busiest node / average) |
 | Source files | nodes_stats.json (comparison of the two bundles) |
 
 **Decision logic**
@@ -2380,7 +2456,7 @@ nodes / sum of their growth per hour. Nodes are still listed one by one. Tier da
 Converts the per-node increase in index_total / query_total over the interval to throughput per second (replica work included).
 
 Only data nodes are counted. The skew is compared within each tier: busiest node / tier average >= workload_skew_ratio_warn -> warning,
-otherwise info. A node that restarted during the interval (uptime went down) has reset counters, so it is shown but left out of
+otherwise info. A tier whose average is below workload_skew_min_per_sec operations per second is too quiet to rate. A node that restarted during the interval (uptime went down) has reset counters, so it is shown but left out of
 the totals and the skew.
 
 ### DIF-010, DIF-011: Top index growth
@@ -2430,7 +2506,9 @@ Info only.
 
 **Decision logic**
 
-Compares the Critical and Warning finding ids of the previous and current bundle and lists what is new, worse or resolved. It summarizes other findings, so it is always Info (this avoids counting the same problem twice).
+Findings that are new or resolved compared with the earlier bundle.
+
+A finding whose rule did not run on the current bundle (input file missing, listed in skipped) is not counted as resolved.
 
 ## Settings knowledge base
 
@@ -2497,9 +2575,9 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `index.max_shingle_diff` | 3 | dynamic | index | Allowed difference between min and max for the shingle filter. | ↑ The number of tokens grows sharply.<br>↓ Analyzer definitions are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_terms_count` | 65536 | dynamic | index | Maximum number of terms in a terms query. | ↑ Large terms queries use a lot of CPU and heap.<br>↓ Those queries are rejected. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.merge.policy.floor_segment` | 16mb (2mb before 9.5) (from the Elasticsearch source; not in the docs) | dynamic | index | Segments smaller than this are treated as this size when merges are chosen. | ↑ Small segments are merged sooner; fewer segments but more merge I/O.<br>↓ Small segments pile up and search visits more segments. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.max_merge_at_once` | 16 (10 before 9.5) (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum number of segments merged in one merge (tiered merge policy). | ↑ Larger merges in fewer rounds; each merge does more I/O.<br>↓ More, smaller merges; segment count goes down more slowly. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.max_merged_segment` | 5gb (100gb for data stream indices from 8.11) (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum size of a segment produced by a merge. | ↑ Fewer segments make search faster (kNN in particular), but each merge does more I/O.<br>↓ Segments pile up and search gets slower. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.segments_per_tier` | 8 (10 before 9.5) (from the Elasticsearch source; not in the docs) | dynamic | index | Number of segments allowed per tier. | ↑ Fewer merges, but more segments.<br>↓ Merges run more often and I/O increases. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merge_at_once` | 16 (10 before 9.5) (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum number of segments merged in one merge (tiered merge policy; time-based indices ignore it). | ↑ Larger merges in fewer rounds; each merge does more I/O.<br>↓ More, smaller merges; segment count goes down more slowly. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merged_segment` | 5gb (100gb from 8.11 for time-based indices, whose mapping has an indexed @timestamp date field) (from the Elasticsearch source; not in the docs) | dynamic | index | Maximum size of a segment produced by a merge. | ↑ Fewer segments make search faster (kNN in particular), but each merge does more I/O.<br>↓ Segments pile up and search gets slower. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.segments_per_tier` | 8 (10 before 9.5) (from the Elasticsearch source; not in the docs) | dynamic | index | Number of segments allowed per tier (tiered merge policy; time-based indices use a log byte size policy that ignores it). | ↑ Fewer merges, but more segments.<br>↓ Merges run more often and I/O increases. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
 | `index.number_of_replicas` | 1 | dynamic | index | Number of replicas per shard. | ↑ Availability and search throughput increase, but disk and indexing cost grow in proportion to the replica count.<br>↓ With 0, the failure of a single node can lose data. | INFO / WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.queries.cache.enabled` | true | static | index | Use of the node query (filter) cache. | With false, repeated filters are recomputed every time. | INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
 | `index.refresh_interval` | 1s (search idle applies when not set) | dynamic | index | How often new documents become visible to search. | ↑ Indexing throughput increases and merge load decreases, but documents become searchable later. -1 stops refresh.<br>↓ Segments are created more often, which increases CPU and merge load. Setting it explicitly turns off the search idle optimization. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
@@ -2574,7 +2652,11 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `disk_imbalance_pct_warn` | 15 | [Tool] Disk usage spread between nodes (percentage points) |
 | `disk_low_margin_pct` | 10 | [Tool] Percentage points left before the effective low watermark |
 | `rejected_crit` | 1,000 | [Tool] Total cumulative rejections |
+| `frozen_cache_turnover_per_day` | 1.0 | Frozen shared cache evictions per day, as a multiple of the cache region count, that counts as excessive turnover (FRZ-001) |
+| `shard_balance_min_diff` | 10 | Minimum difference in shard count between nodes of the same tier before the spread is reported (SHD-006) |
 | `breaker_tripped_warn` | 1 | [Tool] Breaker trip count (1 = any history) |
+| `breaker_used_pct_warn` | 70 | Circuit breaker estimated size / limit (%) that counts as high usage (request, fielddata, in_flight_requests and others) |
+| `breaker_parent_used_pct_warn` | 90 | Parent breaker estimated size / limit (%) that counts as high usage. The parent estimate is the real heap use and its limit is 95% of heap, so 90 means about 85% of heap |
 | `shards_per_gb_heap_warn` | 20 | [Official] 20 shards per 1GB of heap (versions before 8.3 only) |
 | `shards_per_gb_heap_crit` | 30 | [Tool] Versions before 8.3 only |
 | `max_shards_per_node_headroom_pct_warn` | 80 | [Tool] Usage against cluster.max_shards_per_node |
@@ -2647,6 +2729,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `hotspot_disk_pct_floor` | 50 | [Tool] |
 | `hotspot_cpu_pct_gap` | 40 | [Tool] |
 | `workload_skew_ratio_warn` | 1.8 | [Tool] Busiest node / average |
+| `workload_skew_min_per_sec` | 10 | Minimum average operations per second per node in a tier before the indexing skew is rated (DIF-009) |
 | `undesired_shards_warn` | 1 | [Tool] |
 | `recovery_rate_low_bytes` | 40MiB | [Official] indices.recovery.max_bytes_per_sec at or below the 40mb default |
 | `oversharding_floor_shard_gb` | 10 | [Official] Recommended lower bound per shard, 10GB |

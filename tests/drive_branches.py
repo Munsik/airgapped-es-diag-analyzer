@@ -295,7 +295,9 @@ SCENARIOS = [
                                                    "total_time": "10m", "index": {"size": {"percent": "40%"}}}]}})),
      ["CLU-015", "CLU-016", "CLU-017", "CLU-020"]),
     ("zone imbalance, no awareness", lambda b: (
-        b.each_node(fn_info=lambda i, n: n.update(attributes={"availability_zone": "a" if i < 2 else "b"})),
+        # zones are compared within a tier: four hot nodes, three in zone a and one in zone b
+        _roles(b, [["master", "data_hot"], ["data_hot"], ["data_hot"], ["data_hot"]]),
+        b.each_node(fn_info=lambda i, n: n.update(attributes={"availability_zone": "b" if i == 3 else "a"})),
         b.edit("cluster_settings.json", lambda c: [c[s].pop("cluster", None) for s in ("persistent", "transient")] and c),
         # awareness can also be set in yml (effective value = defaults section), so remove it there too to make it "unset"
         b.edit("cluster_settings_defaults.json",
@@ -317,7 +319,7 @@ SCENARIOS = [
             s["os"]["mem"].update(adjusted_total_in_bytes=int(s["jvm"]["mem"]["heap_max_in_bytes"] * 1.5)),
             s["jvm"].update(uptime_in_millis=3600000),
             s["jvm"]["gc"]["collectors"]["old"].update(collection_count=3, collection_time_in_millis=108000),
-            s["breakers"]["parent"].update(limit_size_in_bytes=1000, estimated_size_in_bytes=800, tripped=0))),
+            s["breakers"]["parent"].update(limit_size_in_bytes=1000, estimated_size_in_bytes=950, tripped=0))),
         b.put("fielddata.json", [{"node": "n1", "field": "message", "size": "200mb"}])),
      ["JVM-001!WARNING", "JVM-003!WARNING", "JVM-005!WARNING", "OS-006!WARNING", "BRK-002!WARNING", "FD-002!INFO"]),
     # A 1.6TB disk has an effective low of 87.65% and high of 90.74% because of max_headroom. Use 89%: above low, below high.
@@ -369,7 +371,7 @@ SCENARIOS = [
     ("monitoring: self collection", lambda b: b.add_index(".ds-.monitoring-es-8-mb-2026.09.01-000001"), ["OPS-007!INFO"]),
     ("ML and transform failures", lambda b: (
         b.put("transform_stats.json", {"transforms": [{"id": "t1", "state": "failed", "reason": "x"}]}),
-        b.put("ml_anomaly_detectors.json", {"jobs": [{"job_id": "j1", "state": "failed"}]})),
+        b.put("ml_stats.json", {"jobs": [{"job_id": "j1", "state": "failed"}]})),
      ["ML-001", "ML-002"]),
     ("certificate 20 days", lambda b: b.put("ssl_certs.json", _cert(20)), ["SEC-001!CRITICAL"]),
     ("certificate 60 days", lambda b: b.put("ssl_certs.json", _cert(60)), ["SEC-001!WARNING"]),
@@ -423,7 +425,7 @@ SCENARIOS = [
      ["VEC-001!WARNING", "VEC-002!WARNING", "VEC-003!INFO"]),
     ("desired balance not converged, legacy template shadowed", lambda b: (
         b.edit("allocation.json", lambda a: [r.update({"shards.undesired": "4"}) for r in a] and a),
-        b.put("internal_desired_balance.json", {"stats": {"computation_converged": False}}),
+        b.put("internal_desired_balance.json", {"stats": {"computation_active": True, "computation_converged": 12}}),
         b.put("templates.json", {"legacy-logs": {"index_patterns": ["logs-*"], "order": 0}}),
         b.edit("index_templates.json", lambda t: t.setdefault("index_templates", []).append(
             {"name": "logs-new", "index_template": {"index_patterns": ["logs-app-*"], "priority": 100}}))),
@@ -463,11 +465,11 @@ SCENARIOS = [
         b.put("remote_cluster_info.json", {"dr": {"connected": False, "mode": "sniff", "num_nodes_connected": 0}})),
      ["CLU-022!WARNING", "SHUT-001!CRITICAL", "IDX-012!CRITICAL", "OPS-003!WARNING"]),
     ("leftover shutdown record (COMPLETE)", lambda b: b.put("nodes_shutdown_status.json", {"nodes": [
-        {"node_id": b.node_ids()[0], "type": "RESTART", "status": "COMPLETE", "shard_migration": {"status": "COMPLETE"}}]}),
+        {"node_id": b.node_ids()[0], "type": "REMOVE", "status": "COMPLETE", "shard_migration": {"status": "COMPLETE"}}]}),
      ["SHUT-001!WARNING"]),
     ("frozen cache churn, script limit, cluster state publish failure", lambda b: (
         b.put("searchable_snapshots_cache_stats.json", {"nodes": {b.node_ids()[0]: {"shared_cache": {
-            "reads": 900, "bytes_read_in_bytes": 10 ** 9, "evictions": 5000, "num_regions": 100,
+            "reads": 900, "bytes_read_in_bytes": 10 ** 9, "evictions": 10 ** 7, "num_regions": 100,
             "size_in_bytes": 1600 * 1024 ** 2}}}}),
         b.each_node(fn_stats=lambda i, s: (s["script"].update(compilation_limit_triggered=12),
                                            s.setdefault("discovery", {}).setdefault("cluster_state_update", {})
@@ -566,8 +568,9 @@ def main():
         shutil.copytree(os.path.join(base, root_name), dd)
     B(d1).each_node(fn_stats=lambda i, s: (s["jvm"].update(uptime_in_millis=10 ** 10),
                                            s["thread_pool"]["write"].update(rejected=50)))
-    B(d2).each_node(fn_stats=lambda i, s: (s["jvm"].update(uptime_in_millis=10 ** 6),
-                                           s["thread_pool"]["write"].update(rejected=50)))
+    # node 0 restarted (its counters start again from 0); the others keep the same cumulative rejections (past history)
+    B(d2).each_node(fn_stats=lambda i, s: (s["jvm"].update(uptime_in_millis=10 ** 6 if i == 0 else 10 ** 10 + 3600000),
+                                           s["thread_pool"]["write"].update(rejected=0 if i == 0 else 50)))
     ni, ns = B(d2).get("nodes.json"), B(d2).get("nodes_stats.json")
     drop = list(ni["nodes"].keys())[-1]
     ni["nodes"].pop(drop)

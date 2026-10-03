@@ -34,8 +34,8 @@ def r_cluster_status(ctx):
          ["active_shards_percent", "%s%%" % active_pct]])
     if st == "red":
         return [Finding("CLU-001", CAT, Severity.CRITICAL, T("rules.cluster.r_cluster_status.04"),
-                        observed=T("rules.cluster.r_cluster_status.05") %
-                                 ctx.health.get("unassigned_primary_shards"),
+                        observed=(T("rules.cluster.r_cluster_status.05") % _unassigned_primaries(ctx))
+                        if _unassigned_primaries(ctx) else T("rules.cluster.r_cluster_status.14"),
                         impact=T("rules.cluster.r_cluster_status.06"),
                         recommend=T("rules.cluster.r_cluster_status.07"),
                         evidence=ev, refs=[DOC_ALLOC], source="cluster_health.json")]
@@ -50,12 +50,26 @@ def r_cluster_status(ctx):
                     evidence=ev, source="cluster_health.json")]
 
 
+def _unassigned_primaries(ctx):
+    """unassigned_primary_shards from cluster health, or counted from the shard list when health lacks the field (older versions)."""
+    v = ctx.health.get("unassigned_primary_shards")
+    if v is not None:
+        return v
+    return sum(1 for s in ctx.shards if (s.get("state") or "").upper() == "UNASSIGNED" and s.get("prirep") == "p")
+
+
+def _is_unassigned(s):
+    """state=UNASSIGNED. Initializing shards keep their unassigned reason (ur), so ur alone counts only when the row has no state."""
+    st = (s.get("state") or "").upper()
+    return st == "UNASSIGNED" or (not st and bool(s.get("ur")))
+
+
 def r_unassigned_reason(ctx):
     """Counts shards with state=UNASSIGNED in the shard list, grouped by unassigned.reason. Any unassigned primary → Critical; replicas only → Warning (CLU-002). If allocation_explain.json is present, the decider result is reported too: can_allocate != yes → Warning, otherwise Info (CLU-003)."""
     rows = []
     reasons = collections.Counter()
     for s in ctx.shards:
-        if (s.get("state") or "").upper() == "UNASSIGNED" or s.get("ur"):
+        if _is_unassigned(s):
             reason = s.get("ur") or s.get("unassigned.reason") or "UNKNOWN"
             reasons[reason] += 1
             if len(rows) < ctx.t["top_n"]:
@@ -161,8 +175,10 @@ def r_pending_tasks(ctx):
 
 
 def r_master_quorum(ctx):
-    """Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical; 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= dedicated_master_data_nodes data nodes → Warning (CLU-007). The official docs only say dedicated masters make sense once a cluster has more than a handful of nodes; the node count is a field guideline."""
-    [n for n in ctx.master_nodes if not n.is_voting_only]
+    """Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical,
+    and so is a single node that can be elected when the others are voting_only (official: a voting-only node never acts as the elected
+    master); 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= dedicated_master_data_nodes data nodes → Warning (CLU-007). The official docs only say dedicated masters make sense once a cluster has more than a handful of nodes; the node count is a field guideline."""
+    electable = [n for n in ctx.master_nodes if not n.is_voting_only]
     total = len(ctx.master_nodes)
     out = []
     names = [n.name for n in ctx.master_nodes]
@@ -171,9 +187,11 @@ def r_master_quorum(ctx):
                         observed=T("rules.cluster.r_master_quorum.02"),
                         impact=T("rules.cluster.r_master_quorum.03"),
                         recommend=T("rules.cluster.r_master_quorum.04"), source="nodes.json")]
-    if total == 1 and len(ctx.nodes) > 1:
+    if (total == 1 or len(electable) == 1) and len(ctx.nodes) > 1:
+        only = (electable or ctx.master_nodes)[0].name
         out.append(Finding("CLU-006", CAT, Severity.CRITICAL, T("rules.cluster.r_master_quorum.05"),
-                           observed=T("rules.cluster.r_master_quorum.06") % names[0],
+                           observed=(T("rules.cluster.r_master_quorum.06") % only) if total == 1
+                           else T("rules.cluster.r_master_quorum.17") % (only, total - 1),
                            impact=T("rules.cluster.r_master_quorum.07"),
                            recommend=T("rules.cluster.r_master_quorum.08"),
                            affected=names, source="nodes.json"))
@@ -184,7 +202,7 @@ def r_master_quorum(ctx):
                            recommend=T("rules.cluster.r_master_quorum.12"),
                            affected=names, source="nodes.json"))
     # Dedicated master recommendation
-    dedicated = [n for n in ctx.master_nodes if n.is_dedicated_master]
+    dedicated = [n for n in ctx.master_nodes if n.is_dedicated_master and not n.is_voting_only]
     if not dedicated and len(ctx.data_nodes) >= ctx.t["dedicated_master_data_nodes"]:
         out.append(Finding("CLU-007", CAT, Severity.WARNING, T("rules.cluster.r_master_quorum.13"),
                            observed=T("rules.cluster.r_master_quorum.14")
@@ -438,22 +456,34 @@ def r_long_tasks(ctx):
 
 
 def r_zone_balance(ctx):
-    """Rated only when the data nodes have 2 or more distinct zone attribute values (availability_zone / zone / logical_availability_zone / rack_id). Node count per zone: max - min >= 2 or max >= min x 2 → Warning (CLU-018). awareness.attributes not set → Warning (CLU-019)."""
+    """Rated only when the data nodes have 2 or more distinct zone attribute values (availability_zone / zone / logical_availability_zone / rack_id).
+    Node count per zone is compared within each data tier (tiers are often spread over a different number of zones by design):
+    a tier with 2 or more zones and max - min >= 2 or max >= min x 2 → Warning (CLU-018). awareness.attributes not set in cluster
+    settings or in any node's elasticsearch.yml → Warning (CLU-019)."""
     zones = collections.Counter()
+    per_tier = collections.OrderedDict()
     for n in ctx.data_nodes:
         z = n.attrs.get("availability_zone") or n.attrs.get("zone") or \
             n.attrs.get("logical_availability_zone") or n.attrs.get("rack_id")
         if z:
             zones[z] += 1
+            per_tier.setdefault(ctx.tier_of(n) or "-", collections.Counter())[z] += 1
     if len(zones) < 2:
         return []
-    mx, mn = max(zones.values()), min(zones.values())
-    awareness = ctx.setting("cluster.routing.allocation.awareness.attributes")
+    awareness = ctx.setting("cluster.routing.allocation.awareness.attributes") or \
+        any(n.setting("cluster.routing.allocation.awareness.attributes") for n in ctx.nodes)
     out = []
-    if mx - mn >= 2 or (mx > mn and mx >= 2 * mn):
+    uneven = []
+    for tier, zc in per_tier.items():
+        if len(zc) < 2:
+            continue
+        mx, mn = max(zc.values()), min(zc.values())
+        if mx - mn >= 2 or (mx > mn and mx >= 2 * mn):
+            uneven.append("%s: %s" % (tier, ", ".join("%s=%d" % kv for kv in sorted(zc.items()))))
+    if uneven:
         out.append(Finding(
             "CLU-018", CAT, Severity.WARNING, T("rules.cluster.r_zone_balance.01"),
-            observed=T("rules.cluster.r_zone_balance.02") % ", ".join("%s=%d" % kv for kv in zones.items()),
+            observed=T("rules.cluster.r_zone_balance.02") % "; ".join(uneven),
             impact=T("rules.cluster.r_zone_balance.03"),
             recommend=T("rules.cluster.r_zone_balance.04"),
             source="nodes.json"))

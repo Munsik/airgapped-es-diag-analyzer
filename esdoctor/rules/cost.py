@@ -231,9 +231,13 @@ def r_tier_usage(ctx):
 
 
 def _drains(ctx, name):
-    """True when the index has an ILM policy with a phase after hot (moves to another tier or is deleted)."""
+    """True when the index has an ILM policy with a phase after hot (moves to another tier or is deleted), or is managed by data stream
+    lifecycle with a retention (data is deleted) or a frozen_after (data moves)."""
     pol = ctx.index_setting(name, "index.lifecycle.name")
     if not pol:
+        if ctx.dlm_managed(name):
+            lc = (ctx.data_stream_of(name) or {}).get("lifecycle") or {}
+            return bool(lc.get("data_retention") or lc.get("effective_retention") or lc.get("frozen_after"))
         return False
     ph = _phases(ctx, pol)
     return any(isinstance(ph.get(p), dict) for p in LATER_PHASES)
@@ -244,7 +248,7 @@ def r_ingest_headroom(ctx):
 
     Daily ingest = store size (replicas included) of user indices created in the last ingest_window_days, plus the part of older write
     indices that falls in the window (size x window / age), divided by the window (shorter if the cluster is younger). Searchable
-    snapshot mounts and system indices are left out. Landing tier = tiers holding shards of write targets (frozen excluded); when
+    snapshot mounts, system indices and shrink or downsample copies (new creation date, old data) are left out. Landing tier = tiers holding shards of write targets (frozen excluded); when
     one of them is a hot tier, only the hot tiers count, because new data stream indices go to hot by default and a write target
     elsewhere is usually a small index whose policy moves it without rollover.
     Headroom = sum over those nodes of (bytes allowed at the high watermark - bytes used). Days = headroom / daily ingest.
@@ -260,6 +264,8 @@ def r_ingest_headroom(ctx):
     for name in ctx.index_settings.keys():
         if ctx.is_system_index(name) or ctx.is_searchable_snapshot(name):
             continue
+        if ctx.index_setting(name, "index.resize.source.name") or ctx.index_setting(name, "index.downsample.source.name"):
+            continue        # shrink / downsample copies get a new creation date but hold old data, not new ingest
         try:
             created[name] = float(str(ctx.index_setting(name, "index.creation_date")))
         except (TypeError, ValueError):
@@ -399,7 +405,8 @@ def r_storage_by_type(ctx):
 def r_tier_sizing(ctx):
     """Sizing signals per data tier from one bundle (COST-006).
 
-    Pressure: any of every node busy (load15 per CPU >= load_per_cpu_warn or CPU >= tier_cpu_pct_warn, the HOT-005 test), write or
+    Pressure: any of every node busy (load15 per CPU >= load_per_cpu_warn or CPU >= tier_cpu_pct_warn, the HOT-005 test with its
+    container guard), write or
     search rejections on the tier's nodes, indexing pressure rejections, or a node at or above the high watermark (frozen excluded). Large headroom: every node of the tier has been up for at least
     node_compare_min_uptime_hours and has CPU below size_idle_cpu_pct, load15 per CPU below size_idle_load_per_cpu, heap below
     size_idle_heap_pct and disk below size_idle_disk_pct (disk not used for frozen), with no rejections. Anything else is
@@ -421,7 +428,7 @@ def r_tier_sizing(ctx):
         load = [n.load15 / n.processors for n in nodes if n.load15 is not None and n.processors]
         heap = [n.heap_used_pct for n in nodes if n.heap_used_pct is not None]
         disk = [n.disk_used_pct for n in nodes if n.disk_used_pct is not None] if tier != "frozen" else []
-        busy = [((n.load15 / n.processors) >= ctx.t["load_per_cpu_warn"] if (n.load15 and n.processors) else False)
+        busy = [ctx.load_high(n)
                 or (n.cpu_pct is not None and n.cpu_pct >= ctx.t["tier_cpu_pct_warn"]) for n in nodes]
         reasons = []
         if nodes and all(busy):

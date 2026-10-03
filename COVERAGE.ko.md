@@ -273,7 +273,7 @@ ECH/ECE/ECK 배포로 감지되면 위 CFG 항목은 오케스트레이터 관�
 
 ## 12. 진단 번들 파일 활용 현황
 
-기준 번들(9.4.4·9.5.3, api 모드 — 두 번들의 파일 구성은 104개로 동일)의 파일 중 **62개를 판정에 사용**합니다. 나머지 42개는 아래 사유로 쓰지 않습니다.
+기준 번들(9.4.4·9.5.3, api 모드 — 두 번들의 파일 구성은 104개로 동일)의 파일 중 **63개를 판정에 사용**합니다. 나머지 41개는 아래 사유로 쓰지 않습니다.
 새 수집 도구 버전에서 파일이 추가되면 이 표를 기준으로 활용 여부를 다시 판단합니다.
 local / remote 모드 번들의 추가 파일(서버 로그, OS 명령 결과 등)은 아직 대조하지 않았습니다.
 
@@ -281,7 +281,7 @@ local / remote 모드 번들의 추가 파일(서버 로그, OS 명령 결과 �
 | --- | --- |
 | 이미 읽는 JSON 의 텍스트판·부분 집합(중복) | `cat/cat_aliases.txt` `cat/cat_count.txt` `cat/cat_fielddata.txt` `cat/cat_health.txt` `cat/cat_master.txt` `cat/cat_nodeattrs.txt` `cat/cat_pending_tasks.txt` `cat/cat_recovery.txt` `cat/cat_repositories.txt` `cat/cat_segments.txt` `cat/cat_templates.txt` `count.json` `master.json` `nodes_short.json` `plugins.json`(nodes.json 의 플러그인 사용) `fielddata_stats.json`(nodes_stats·fielddata.json 사용) `segments.json`(indices_stats 의 세그먼트 수 사용) `allocation_explain_disk.json`(allocation_explain.json 사용) `commercial/ilm_explain_only_errors.json`(ilm_explain.json 사용) |
 | 설정·정의 목록(상태 정보 없음) | `commercial/enrich_policies.json` `commercial/ccr_autofollow_patterns.json` `commercial/ml_datafeeds.json` `commercial/ml_dataframe.json` `commercial/ml_trained_models.json` `commercial/transform.json` `commercial/logstash_pipeline.json` `commercial/rollup_caps.json` `commercial/rollup_index_caps.json` |
-| 대상 기능을 쓸 때만 내용이 있고 현재 판정 기준이 없음 | `commercial/ccr_follower_info.json` `commercial/enrich_stats.json` `commercial/ml_dataframe_stats.json` `commercial/ml_info.json` `commercial/ml_stats.json` `commercial/profiling_status.json` `commercial/searchable_snapshots_stats.json` `commercial/transform_basic_stats.json` `commercial/transform_node_stats.json` |
+| 대상 기능을 쓸 때만 내용이 있고 현재 판정 기준이 없음 | `commercial/ccr_follower_info.json` `commercial/enrich_stats.json` `commercial/ml_dataframe_stats.json` `commercial/ml_info.json` `commercial/profiling_status.json` `commercial/searchable_snapshots_stats.json` `commercial/transform_basic_stats.json` `commercial/transform_node_stats.json` |
 | 보안 구성(판정 범위 밖, 민감 정보) | `commercial/security_priv.json` `commercial/security_roles.json` `commercial/security_role_mappings.json` `commercial/security_users.json` |
 | API 호출 통계(운영 참고 정보) | `nodes_usage.json` |
 

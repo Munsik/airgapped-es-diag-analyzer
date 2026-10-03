@@ -109,7 +109,8 @@ def r_path_settings(ctx):
         if build not in ("tar", "zip"):
             continue
         for pth in data_list + ([logs] if logs else []):
-            if home and isinstance(pth, str) and pth.startswith(home):
+            if home and isinstance(pth, str) and (pth.rstrip("/") == home.rstrip("/")
+                                                  or pth.startswith(home.rstrip("/") + "/")):
                 in_home.append(n.name)
                 break
     if in_home:
@@ -200,7 +201,8 @@ def r_jvm_diag_settings(ctx):
         if not args:
             continue
         joined = " ".join(args)
-        if "HeapDumpOnOutOfMemoryError" not in joined or "-XX:-HeapDumpOnOutOfMemoryError" in joined:
+        hd = [a for a in args if "HeapDumpOnOutOfMemoryError" in a]
+        if not hd or hd[-1].startswith("-XX:-"):       # the last flag wins in the JVM
             no_dump.append(n.name)
         if not _gc_logging_enabled(args):
             no_gclog.append(n.name)
@@ -240,8 +242,10 @@ def r_docs_per_shard(ctx):
     Rollover always runs once a shard reaches 200M documents, and ILM checks the condition every poll_interval (10m by default),
     so a rolled-over index normally ends a little above 200M. Rolled-over indices are reported only when they exceed 200M by more
     than docs_rollover_overshoot_pct (SHD-013, rollover ran late). Searchable snapshot mounts take no writes and are rated the same way.
-    The write index and indices without rollover keep SHD-008.
+    The write index and indices without rollover keep SHD-008. The implicit 200M rollover exists from 8.8 (ILM source), so before 8.8
+    rolled-over indices also keep SHD-008.
     """
+    implicit = not ((0, 0, 0) < ctx.version_tuple < (8, 8, 0))
     pri_count = collections.Counter()
     for s in ctx.shards:
         if (s.get("prirep") or "").lower() == "p":
@@ -263,7 +267,7 @@ def r_docs_per_shard(ctx):
         if est >= ctx.t["docs_per_shard_crit"]:
             crit.append(row)
         elif docs >= limit:
-            if ctx.rolled_over(idx) or ctx.is_searchable_snapshot(idx):
+            if implicit and (ctx.rolled_over(idx) or ctx.is_searchable_snapshot(idx)):
                 if docs > late_limit:
                     ds = ctx.data_stream_of(idx)
                     late.append([idx, s.get("shard"), fmt_num(docs), "+%.1f%%" % ((docs / float(limit) - 1) * 100),
@@ -304,7 +308,7 @@ def _rollover_trigger(ctx, idx, docs, shard_bytes, is_write):
     if is_write:
         return T("rules.guidance.r_logsdb_shard_size.20")
     ro = ctx.rollover_conditions(ctx.ilm_policy_of(idx))
-    if docs is not None and docs >= ctx.t["ilm_implicit_max_shard_docs"]:
+    if docs is not None and docs >= ctx.t["ilm_implicit_max_shard_docs"] and not ((0, 0, 0) < ctx.version_tuple < (8, 8, 0)):
         return T("rules.guidance.r_logsdb_shard_size.21")
     mds = num(ro, "max_primary_shard_docs", default=None)
     if mds and docs is not None and docs >= mds * 0.95:
@@ -352,7 +356,7 @@ def r_logsdb_shard_size(ctx):
             docs = None
         if idx not in biggest or b > biggest[idx][0]:
             biggest[idx] = (b, docs)
-    logsdb = [i for i in biggest if ctx.index_mode(i) == "logsdb"]
+    logsdb = [i for i in biggest if ctx.index_mode(i) in ("logsdb", "logsdb_columnar")]
     if not logsdb:
         return []
     writes = ctx.write_targets()
@@ -470,9 +474,10 @@ def r_logsdb_adoption(ctx):
 
 
 def r_master_heap_per_index(ctx):
-    """Based on 3000 indices per 1GB of heap on master-eligible nodes."""
+    """Based on 3000 indices per 1GB of heap on master-eligible nodes. Voting-only nodes are left out: they never act as the elected
+    master and the docs say they may need less heap. Over 80% of the capacity → Warning, over 100% → Critical."""
     n_idx = dig(ctx.cluster_stats, "indices", "count") or len(ctx.indices_stats)
-    masters = [n for n in ctx.master_nodes if n.heap_max]
+    masters = [n for n in ctx.master_nodes if n.heap_max and not n.is_voting_only]
     if not masters or not n_idx:
         return []
     rows, bad = [], []
@@ -563,10 +568,14 @@ def r_empty_indices(ctx):
 
 
 def r_total_shards_per_node(ctx):
-    """Whether index.routing.allocation.total_shards_per_node is set to prevent hot spots (heavily indexed indices)."""
+    """Whether index.routing.allocation.total_shards_per_node is set to prevent hot spots (heavily indexed indices).
+
+    Only current write targets are listed: rolled-over and searchable snapshot indices take no writes, so the setting does nothing there
+    (for data streams it belongs in the index template)."""
     rows = []
+    writes = set(i for i in ctx.write_targets() if i)
     for name, st in ctx.indices_stats.items():
-        if ctx.is_system_index(name):
+        if ctx.is_system_index(name) or name not in writes or ctx.is_searchable_snapshot(name):
             continue
         it = num(st, "total", "indexing", "index_total")
         if it < ctx.t["heavy_index_docs"]:
@@ -596,12 +605,16 @@ def r_index_buffer(ctx):
     indices.memory.index_buffer_size (default 10% of heap) is shared by the 'recently written (active)' shards.
     A shard with no writes for 5 minutes or more (indices.memory.shard_inactive_time, from the source) becomes inactive and gives its buffer back. The bundle cannot show directly which shards are active,
     so only shards that are confirmed write targets (data stream write indices plus indices that were indexing at collection time) are counted.
+    A data stream write index whose recent_write_load (9.x stats) is 0 has had no recent writes and is left out.
     """
     write_idx = set()
     for ds in ctx.data_streams or []:
         idxs = ds.get("indices") or []
         if idxs:
-            write_idx.add(idxs[-1].get("index_name"))
+            w = idxs[-1].get("index_name")
+            rwl = dig(ctx.indices_stats, w, "total", "indexing", "recent_write_load")
+            if rwl is None or num(rwl) > 0:
+                write_idx.add(w)
     for name, st in ctx.indices_stats.items():
         if (num(st, "total", "indexing", "index_current")) > 0:
             write_idx.add(name)
@@ -667,14 +680,23 @@ def r_search_timeout(ctx):
 
 
 def r_replica_throughput(ctx):
-    """Formula recommended in the search-speed guide: replicas = max(max_failures, ceil(num_nodes/num_primaries) - 1)."""
+    """Formula recommended in the search-speed guide: replicas = max(max_failures, ceil(num_nodes/num_primaries) - 1).
+
+    num_nodes is the number of data nodes in the tier that holds the index (the tier of its primary shards), not every data node.
+    Searchable snapshot mounts are skipped (0 replicas by design)."""
     import math
-    data_nodes = len(ctx.data_nodes) or len(ctx.nodes)
-    if data_nodes < 2:
-        return []
+    by_name = dict((n.name, n) for n in ctx.data_nodes)
+    tier_size = collections.Counter(ctx.tier_of(n) for n in ctx.data_nodes)
+    home = {}
+    for s in ctx.shards:
+        if (s.get("prirep") or "").lower() == "p" and s.get("node") in by_name:
+            home.setdefault(s.get("index"), ctx.tier_of(by_name[s["node"]]))
     rows = []
     for name, st in ctx.indices_stats.items():
-        if ctx.is_system_index(name):
+        if ctx.is_system_index(name) or ctx.is_searchable_snapshot(name) or name not in home:
+            continue
+        data_nodes = tier_size.get(home[name], 0)
+        if data_nodes < 2:
             continue
         qt = num(st, "total", "search", "query_total")
         if qt < ctx.t["search_heavy_query_total"]:
@@ -760,11 +782,15 @@ def r_codec(ctx):
 
     Index modes whose default codec is best_compression are excluded: logsdb, and the columnar and logsdb_columnar modes added in 9.5
     (official logsdb docs, and IndexMode in the Elasticsearch source). standard, time_series and vectordb_document indices default to
-    the LZ4 codec.
+    the LZ4 codec. Searchable snapshot mounts are skipped (their settings come from the snapshot and cannot change), and so are
+    indices without a stored _source (synthetic or time_series, where the codec mostly affects little stored data).
     """
     rows = []
     for name, st in ctx.indices_stats.items():
-        if ctx.is_system_index(name):
+        if ctx.is_system_index(name) or ctx.is_searchable_snapshot(name):
+            continue
+        smode = str(ctx.index_setting(name, "index.mapping.source.mode") or "").lower()
+        if smode in ("synthetic", "disabled") or str(ctx.index_mode(name) or "").lower() == "time_series":
             continue
         size = num(st, "primaries", "store", "size_in_bytes")
         if size < ctx.t["codec_check_min_bytes"]:
@@ -957,9 +983,17 @@ def r_vector_quantization(ctx):
 
     From 8.14, a float dense_vector without index_options gets quantized HNSW by default (int8_hnsw; bbq_hnsw for 384 dimensions
     or more from 9.1; bbq_disk from 9.4 when the license allows it). byte and bit vectors are not quantized and are not rated.
-    So 'not set' is not treated as a problem on 8.14 or later; only an explicit non-quantized type (hnsw/flat) is rated.
+    So 'not set' is not treated as a problem on 8.14 or later; only an explicit non-quantized type (hnsw/flat) is rated (VEC-002).
+    Fields with index: false (or no index parameter before 8.11, when dense_vector was not indexed by default) have no HNSW and are
+    skipped, and nothing is rated below 8.12 where no quantized type exists.
+    VEC-003 (Info): from 9.2, index.mapping.exclude_source_vectors is on by default, so only templates that set it to false are listed.
+    Before 9.2 the setting does not exist; templates whose mappings._source.excludes does not cover the vector fields are listed,
+    and the text explains the trade-off of excluding them that way.
     """
+    if (0, 0, 0) < ctx.version_tuple < (8, 12, 0):
+        return []
     quant_default = ctx.version_tuple >= (8, 14, 0)
+    indexed_default = ctx.version_tuple >= (8, 11, 0)
     rows_dim, rows_src = [], []
 
     def walk(props, path, tname, bucket):
@@ -969,6 +1003,9 @@ def r_vector_quantization(ctx):
             full = (path + "." + fname) if path else fname
             if f.get("type") == "dense_vector":
                 bucket.append(full)
+                idxp = f.get("index")
+                if str(idxp).lower() == "false" or (idxp is None and not indexed_default):
+                    continue
                 dims = f.get("dims")
                 itype = str((f.get("index_options") or {}).get("type") or "")
                 etype = str(f.get("element_type") or "float")
@@ -993,8 +1030,14 @@ def r_vector_quantization(ctx):
         excl = dig(settings, "index", "mapping", "exclude_source_vectors")
         if excl is None:
             excl = settings.get("index.mapping.exclude_source_vectors")
-        if excl is None and ctx.version_tuple < (9, 2, 0):
-            rows_src.append([tname, ", ".join(found)])
+        if ctx.version_tuple >= (9, 2, 0) or ctx.version_tuple == (0, 0, 0):
+            if str(excl).lower() == "false":
+                rows_src.append([tname, ", ".join(found)])
+        else:
+            srcx = [str(x) for x in (dig(mappings, "_source", "excludes") or [])]
+            uncovered = [p for p in found if not any(p == x or (x.endswith("*") and p.startswith(x[:-1])) for x in srcx)]
+            if uncovered:
+                rows_src.append([tname, ", ".join(uncovered)])
     out = []
     if rows_dim:
         out.append(Finding(
@@ -1008,10 +1051,11 @@ def r_vector_quantization(ctx):
     if rows_src:
         out.append(Finding(
             "VEC-003", VEC, Severity.INFO, T("rules.guidance.r_vector_quantization.06"),
-            observed=T("rules.guidance.r_vector_quantization.07")
-                     % len(rows_src),
+            observed=(T("rules.guidance.r_vector_quantization.07") if ctx.version_tuple >= (9, 2, 0) or ctx.version_tuple == (0, 0, 0)
+                      else T("rules.guidance.r_vector_quantization.12")) % len(rows_src),
             impact=T("rules.guidance.r_vector_quantization.08"),
-            recommend=T("rules.guidance.r_vector_quantization.09"),
+            recommend=T("rules.guidance.r_vector_quantization.09") if ctx.version_tuple >= (9, 2, 0) or ctx.version_tuple == (0, 0, 0)
+            else T("rules.guidance.r_vector_quantization.13"),
             evidence=table(["template", T("rules.guidance.r_vector_quantization.10")], rows_src[: ctx.t["top_n"]]),
             refs=[D_KNN], source="index_templates.json / component_templates.json"))
     return out

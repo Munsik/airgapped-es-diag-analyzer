@@ -14,6 +14,12 @@ import zipfile
 from .i18n import T
 
 
+
+def _is_error_body(obj):
+    """An Elasticsearch error response: {"error": ..., "status": <int>} and nothing else."""
+    return (isinstance(obj, dict) and "error" in obj and isinstance(obj.get("status"), int)
+            and set(obj) <= {"error", "status"})
+
 class Bundle(object):
     def __init__(self, path):
         self.path = path
@@ -125,6 +131,9 @@ class Bundle(object):
                     return default
             obj = rows if rows else default
         del raw
+        if _is_error_body(obj):
+            # the diagnostics tool saves a failed API call's error response under the same file name: treat it as missing
+            obj = default
         if cache:
             self._cache[key] = obj
         return obj
@@ -220,7 +229,7 @@ class Bundle(object):
         for n in self._names:
             low = n.lower()
             if "/logs/" in low or low.startswith("logs/"):
-                if low.endswith(".log") or low.endswith(".json") or ".log." in low:
+                if low.endswith((".log", ".json", ".json.gz")) or ".log." in low:
                     out.append(n)
         return out
 
@@ -231,11 +240,20 @@ class Bundle(object):
         except Exception:
             return ""
         if rel.lower().endswith(".gz"):
-            # rolled-over log (.log.gz). To avoid a decompression bomb, decompress only up to max_bytes and use the tail
+            # rolled-over log (.log.gz, .json.gz). Decompress in chunks and keep only the last max_bytes, so the result is the
+            # most recent part. Decompression stops after 512MB (or 64 x max_bytes if larger) to bound the work on a
+            # decompression bomb; ES rolls its logs at 128MB, so a real rolled log is read to the end.
             try:
                 import gzip, io
+                tail, seen = b"", 0
                 with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:
-                    data = gz.read(max_bytes * 4)
+                    while seen < max(max_bytes * 64, 512 * 1024 * 1024):
+                        chunk = gz.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        seen += len(chunk)
+                        tail = (tail + chunk)[-max_bytes:]
+                data = tail
             except Exception:
                 return ""
         if len(data) > max_bytes:

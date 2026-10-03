@@ -3,6 +3,83 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따릅니다.
 각 항목은 "이전 동작 → 현재 동작 (근거)" 로 적습니다. 이전 리포트와 결과가 다른 이유를 추적하는 용도입니다.
 
+## [0.14.3] - 2026-10-03
+
+모든 판정 로직을 처음부터 다시 점검했습니다. 규칙마다 Elasticsearch 소스(8.x, 9.5), support-diagnostics 파일 구조, 공식 문서와 대조했고 확인된 오류를 고쳤습니다. 결과가 달라지는 항목은 아래와 같습니다.
+
+### 수정: 입력과 컨텍스트
+
+- 클러스터 설정: persistent 를 transient 보다 먼저 읽었음 → Elasticsearch 와 같이 transient 우선
+- API 오류 응답(`{"error": ..., "status": N}`)이 담긴 파일을 데이터로 읽었음 → 없는 파일로 처리
+- `repositories.json`(`GET _snapshot`, 저장소 이름이 키)을 목록으로 읽었음 → 변환해 SNP-001 이 저장소를 인식
+- ML-002 가 state 가 없는 job 설정 파일에서 상태를 읽었음 → `commercial/ml_stats.json`(job 통계)
+- failure store 인덱스(`.fs-`)도 `.ds-` 처럼 시스템 인덱스로 처리
+- 이름 접두어로 searchable snapshot 을 판별하는 것은 번들에 인덱스 설정이 없을 때만 사용
+- alias 로 롤오버를 판단할 때, 다른 인덱스가 그 alias 의 write index 일 때만 롤오버로 봄(단순 읽기 alias 는 제외)
+- RELOCATING 샤드는 출발 노드에 집계
+- 워터마크 headroom: 워터마크를 명시하면 기본 `max_headroom` 을 적용하지 않고, elasticsearch.yml 의 `max_headroom` 도 반영
+- 컨테이너 판별(OS-001, HOT-005, COST-006): cgroup 데이터만 있으면 컨테이너로 봤음 → Elastic Cloud / ECE / ECK, 또는 cgroup CPU quota·memory limit 이 있을 때(cgroup 통계는 모든 Linux 호스트에 있음)
+- 롤오버된 JSON 로그(`*.json.gz`)도 읽고, `.gz` 로그는 앞부분이 아니라 끝부분을 읽음
+- `max_merged_segment` 기본값: data stream 여부 → 매핑에 색인된 `@timestamp` date 필드가 있는지(Elasticsearch 가 time-based merge policy 를 고르는 기준). `segments_per_tier`, `max_merge_at_once` 설명에 time-based policy 는 이 값을 쓰지 않는다고 명시
+
+### 수정: 판정
+
+- CLU-001: unassigned primary 없이 red 면 primary 초기화 중이라고 표시
+- CLU-002: 상태가 UNASSIGNED 가 아닌 샤드는 남아 있는 unassigned 사유만으로 세지 않음
+- CLU-006: voting-only 노드 외에 선출 가능한 마스터가 1대뿐이면 → 치명. CLU-007 은 voting-only 노드를 전용 마스터로 세지 않음
+- CLU-011: flood stage 문구가 실제로 거는 인덱스 단위 block 을 안내
+- CLU-018: zone 별 노드 수를 data tier 안에서 비교. awareness 설정을 elasticsearch.yml 에서도 읽음(CLU-019)
+- OVS-001: 권장 primary 수 = 샤드를 50GB 이하로 유지하는 현재 개수의 약수 중 최소값(shrink 는 약수로만 가능)
+- OVS-002: 롤오버에 크기 조건(또는 data stream lifecycle)이 있으면 단지 수집량이 적은 것 → 참고. 기간만으로 롤오버하면 주의 유지
+- OS-001: Linux 에서 CPU 는 낮고 load 가 높으면 디스크 대기일 수 있음을 안내. OS-004 근거 → 도구 판단
+- BRK-001/002: 사용 기준선을 임계값(70%)으로 분리. parent breaker 는 90%(추정치가 실제 heap 사용량이고 한도가 heap 95%)
+- IP-001: -1(카운터 미보고)은 무시
+- PERF-012: merge 시간에서 throttled·stopped 시간을 뺌
+- DISK-001: 전용 frozen 노드가 `flood_stage.frozen` 을 넘으면 → 별도 주의(Elasticsearch 는 로그만 남김)
+- SYS-001: 모든 노드가 `node.store.allow_mmap: false` 면 참고(검사 자체가 생략됨). SYS-004 는 실제 kill 대상 줄만 셈
+- SHD-001: frozen 전용 노드는 판정하지 않음. SHD-003 은 50GB 롤오버 초과 허용분을 반영. SHD-005 는 partial 마운트를 뺌. SHD-006 은 최소 차이(`shard_balance_min_diff`)가 필요하며 8.6 부터 참고
+- IDX-001: data 노드 1대면 참고. IDX-005: 같은 인덱스에 색인 throttle 이 없으면 참고. IDX-006: version conflict 만으로는 주의가 아님. IDX-009: 범용 data 역할은 frozen 포함. IDX-012: 손상 징후만 치명. IDX-014: 색인 throttle 의 두 원인을 모두 안내. IDX-015: 버전을 모르면 10GB 기본값
+- PERF-003: request cache 만 판정
+- SHD-008/013 과 롤오버 안내: 암묵적 2억건 롤오버는 8.8 부터. 8.8 미만에서는 ILM-007 을 내지 않음
+- SHD-009 와 마스터 heap 산정에서 voting-only 노드 제외. SHD-012 는 현재 write 대상만. SHD-014 는 logsdb_columnar 포함
+- PERF-004: 최근 write load 가 없는 write index 는 제외. PERF-007: 인덱스가 있는 tier 의 노드 수 사용
+- CFG-002: 경로 접두어를 "/" 경계로 비교. CFG-007: 마지막 heap dump 플래그가 적용
+- DISK-006: searchable snapshot 과 저장된 _source 가 없는 인덱스(synthetic, time_series)는 제외
+- VEC-002/005: 8.12 미만은 판정하지 않고 `index: false`(8.11 미만은 index 파라미터 없음) 필드는 제외. VEC-005 는 인덱스 생성 버전 기준. VEC-003: 9.2 부터는 `exclude_source_vectors` 를 끈 template 만, 9.2 미만은 `_source.excludes` 가 벡터 필드를 덮지 않는 template
+- MAP-004: 롤오버된 인덱스 제외, runtime 필드는 8.5 부터 셈. multi-field 의 multi-field 도 셈
+- SHUT-001: 완료된 RESTART 레코드는 주의가 아님
+- FRZ-001: 일 평균 eviction 을 region 수와 비교. FRZ-002: Direct buffer OOM 줄을 해당 노드와 연결
+- ING-002 는 `pipeline:` 키 제외. CLU-024 는 건수와 시간을 같은 노드에서. ILM-008 은 역할로 tier 매칭
+- OPS-004 는 storage 와 memory 를 따로 비교. OPS-005 는 수동 중지 플래그를 읽음
+- SNP-002 는 시각이 없으면 주의 유지. SNP-005 → 참고(전체 기간 누적값)
+- ILM-002: 이미 롤오버된 인덱스의 롤오버 오류 → 주의. ILM-003 은 data stream lifecycle 관리 인덱스 제외
+- SEC-002 는 HTTP bind 주소(`network.host` 보다 `http.host` 우선)를 읽음. OPS-002: 현재 read 오류나 fatal 오류만 주의
+- OPS-007: 레거시 수집 설정을 elasticsearch.yml 에서도 읽음. 7.16 부터 deprecated, 9.5 에서 10.0 제거 예고
+- HOT-003: 샤드 재배치 중이면 참고. HOT-004: `computation_active` 기준. HOT-005 와 COST-006 은 컨테이너 예외 적용. TPL-001 은 서로 다른 template 수. REC-001: 0 이하는 무제한
+- COST-004 는 shrink·downsample 사본 제외. data stream lifecycle 보존 기간도 빠지는 것으로 봄
+- 로그: `[gc][old]` 와 GC overhead 패턴, low watermark 로그 → 주의, high·flood → 치명, master not discovered → 주의, hot threads 의 global ordinals 생성 분류와 search 스레드의 Lucene 프레임 건너뜀
+- SET-001/006: 단위 없는 0, -1 을 같은 종류로 비교, `default` 와 `default(LZ4)` 를 같게 봄, `node.processors` 는 available processors 와 비교
+
+### 수정: 비교 모드
+
+- 분석 대상보다 나중에 수집한 baseline 도 비교 기준이 될 수 있었음 → 그보다 이전 중 가장 최근 것. 모든 baseline 이 나중이면 안내와 함께 중단
+- DIF-005/006/007: 재시작한 노드를 건너뛰거나 과거 이력으로 보던 것 → uptime 동안 0 부터 셈(rejection, GC, trip 이 새로 발생한 것)
+- DIF-013: 서로 다른 클러스터면 DIF-013 만 보고. `_na_` cluster_uuid 는 무시
+- DIF-001: 상태를 알 수 없으면 변화로 보지 않음
+- DIF-008: 증가량은 사용 바이트 변화(디스크 증설은 증가가 아님). 노드 구성이 바뀐 tier 는 표시만 하고 판정하지 않음
+- DIF-009: `workload_skew_min_per_sec` 미만인 tier 는 편중을 판정하지 않음
+- DIF-012: 현재 번들에서 실행되지 않은 규칙의 판정은 "해소" 가 아님
+- 실패한 추세 규칙을 버리지 않고 규칙 오류로 기록
+- DIF-014 는 모든 번들을 함께 시간순 정렬
+
+### 변경
+
+- 병목 요약: coordinating 전용 노드에 증상이 있으면 모든 data 노드로 범위를 넓힘
+- 결정 수치가 도구 기준인 항목의 근거를 도구 판단으로 변경: HOT-001, CLU-015, SHD-010, SHD-012, SHD-015, PERF-004, PERF-008, VEC-004, OS-004
+- 새 임계값: `breaker_used_pct_warn` 70, `breaker_parent_used_pct_warn` 90, `shard_balance_min_diff` 10, `frozen_cache_turnover_per_day` 1.0, `workload_skew_min_per_sec` 10(총 146개)
+- COVERAGE 에서 `ml_stats.json` 을 미사용에서 사용으로 이동
+- `tests/test_audit_0143.py`
+
 ## [0.14.2] - 2026-10-03
 
 설정 지식 베이스 92종(기본값이 하나로 정해지지 않는 prefix 규칙 4개 제외)의 기본값을 Elasticsearch 8.0, 8.19, 9.0, 9.5 소스에서 모두 비교해, 설정 판정이 클러스터 자신의 버전 기본값을 쓰도록 했습니다. 버전이나 index mode 에 따라 달라지는 기본값이 2개 더 있었고, 나머지는 8.0 부터 9.5 까지 같거나 이미 버전별로 계산하고 있었습니다.

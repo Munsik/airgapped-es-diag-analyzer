@@ -115,9 +115,12 @@ def _worst(findings, ids):
 
 
 def _tier_scope(ctx, scope):
-    """The symptom nodes plus every node of their data tiers."""
+    """The symptom nodes plus every node of their data tiers. A symptom node that holds no data (coordinating-only, ingest)
+    passes its work on to the data nodes of every tier, so then the scope is every data node."""
     if not scope:
         return scope
+    if any(not n.is_data for n in ctx.nodes if n.name in scope):
+        return set(scope) | set(n.name for n in ctx.data_nodes)
     tiers = set(ctx.tier_of(n) for n in ctx.nodes if n.name in scope) - set([None])
     return set(scope) | set(n.name for n in ctx.nodes if tiers and ctx.tier_of(n) in tiers)
 

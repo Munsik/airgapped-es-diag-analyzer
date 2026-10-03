@@ -2,7 +2,7 @@
 
 English · [한국어](README.ko.md)
 
-**Version 0.14.2** · Findings based on the Elasticsearch 9.5 official docs · Python 3.8+ · No external dependencies
+**Version 0.14.3** · Findings based on the Elasticsearch 9.5 official docs · Python 3.8+ · No external dependencies
 
 esdoctor analyzes bundles created by Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) **inside an air-gapped network** and produces a report of current issues, potential issues and configuration risks.
 
@@ -49,7 +49,7 @@ It makes no network calls and uses only the Python standard library.
 - **Tier awareness**: hot/warm/cold/frozen are separated, and only nodes with the same role are compared
 - **Comparison mode**: compares against an earlier bundle to decide whether a cumulative counter is still increasing, with a before/now table per node. With three or more bundles it also reports throughput per interval (peak and off-peak) for sizing
 - **Large bundle handling**: files of several hundred MB (cluster_state, mapping) are parsed only where needed or summarized per index, which keeps memory bounded
-- **Stated bundle coverage**: 62 of the 104 files in a diagnostic bundle are used for findings. For the other 42, [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) gives the reason: duplicate, empty when the feature is unused, or not a basis for findings
+- **Stated bundle coverage**: 63 of the 104 files in a diagnostic bundle are used for findings. For the other 41, [COVERAGE.md](COVERAGE.md) ([한국어](COVERAGE.ko.md)) gives the reason: duplicate, empty when the feature is unused, or not a basis for findings
 - **Not collected vs tool error**: a finding is skipped when its input file is missing, and the report is still generated when a single rule fails
 - **Transparent specification**: [RULES.md](RULES.md) ([한국어](RULES.ko.md)) lists every condition and threshold, extracted from the code
 - **Single-file HTML report**: inline CSS and JS only, so it opens offline in any browser
@@ -200,7 +200,7 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 | 9.1 | VEC-002 | float vectors with 384 or more dimensions default to bbq\_hnsw |
 | 9.0 | IDX-013 | logsdb applies automatically to new `logs-*-*` data streams. Data streams that existed before an upgrade from 8.x stay as they are |
 | 9.2 | VEC-003 | `index.mapping.exclude_source_vectors` applies by default |
-| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | Merge policy defaults change (segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16); columnar and logsdb_columnar default to best_compression and synthetic _source; vectordb_document sets index.store.preload itself; monitoring plugin collection deprecated |
+| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | Merge policy defaults change (segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16); columnar and logsdb_columnar default to best_compression and synthetic _source; vectordb_document sets index.store.preload itself; monitoring plugin collection announced for removal in 10.0 |
 
 ---
 
@@ -219,9 +219,9 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 
 | Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
-| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 68 |
+| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 59 |
 | Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 57 |
-| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 59 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 68 |
 | Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-013 |
 
 When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
@@ -414,7 +414,7 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 141 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdoctor/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 146 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdoctor/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
@@ -457,7 +457,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 985 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 999 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 63 scenarios and checks the severity too | 63 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
@@ -467,6 +467,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_write_path.py` | Every branch of the write path and operations findings (PERF-012, OS-007, SHD-016, IDX-014, 015, CLU-017, MAP-004, DIF-013) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_doc_audit.py` | Fixes from the official documentation audit: JVM-002 oops flag, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom conditions, development mode, and context-dependent settings defaults, on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_es95.py` | Version-dependent defaults: merge policy defaults by version, allow_rebalance from 8.16, the columnar, logsdb_columnar and vectordb_document index modes (DISK-006, DISK-007, IDX-013, PERF-008, SET-006), and the monitoring plugin deprecation (OPS-007), on synthetic data, in both languages. No external bundle needed | 0 failures |
+| `tests/test_audit_0143.py` | Fixes from the 0.14.3 logic audit: transient over persistent settings, API error bodies as missing, the comparison base, restart-aware deltas (DIF-005/006/007), DIF-013 gating, DIF-008 on used bytes and tier membership, DIF-009 minimum volume, DIF-012 with skipped rules, the time-based merge policy, gz log tails, OVS-001 shrink factors, MAP-004 on rolled-over indices and container detection (OS-001), on synthetic data. No external bundle needed | 0 failures |
 | `tests/test_bottleneck_cost.py` | Bottleneck summary, recently restarted nodes left out of comparisons (HOT-001, 002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001 to 006, bottleneck causes scoped to the symptom tiers, DIF-008 per tier, DIF-014 interval checks and SET-005 per tier on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |
@@ -533,6 +534,7 @@ The limits below come from what a diagnostic bundle collects, not from the tool.
 │   ├── test_bottleneck_cost.py # bottleneck summary and storage cost checks (synthetic data)
 │   ├── test_doc_audit.py       # fixes from the official documentation audit (synthetic data)
 │   ├── test_es95.py            # Elasticsearch 9.5 baseline checks (synthetic data)
+│   ├── test_audit_0143.py      # 0.14.3 logic audit checks (synthetic data)
 │   └── make_broken_bundle.py   # create a bundle with injected failures
 ├── docs/STYLE.md              # style and glossary
 ├── README.md / README.ko.md

@@ -41,7 +41,11 @@ DEFAULTS = {
 
     # --- Thread pools / breakers ---
     "rejected_crit": 1000,                           # [Tool] Total cumulative rejections
+    "frozen_cache_turnover_per_day": 1.0,            # [Tool] Frozen shared cache evictions per day, as a multiple of the region count (FRZ-001)
+    "shard_balance_min_diff": 10,                    # [Tool] Minimum shard count difference between nodes of a tier before the spread is reported (SHD-006)
     "breaker_tripped_warn": 1,                       # [Tool] Breaker trip count (1 = any history)
+    "breaker_used_pct_warn": 70,                     # [Tool] Breaker estimated / limit (%) for request, fielddata, in_flight_requests etc.
+    "breaker_parent_used_pct_warn": 90,              # [Tool] Parent breaker estimated / limit (%). With use_real_memory (default) the parent estimate is the real heap use and its limit 95% of heap, so 90% is about 85% heap
 
     # --- Shards / indices ---
     "shards_per_gb_heap_warn": 20,                   # [Official] 20 shards per 1GB of heap (versions before 8.3 only)
@@ -128,6 +132,7 @@ DEFAULTS = {
     "hotspot_disk_pct_floor": 50,                    # [Tool]
     "hotspot_cpu_pct_gap": 40,                       # [Tool]
     "workload_skew_ratio_warn": 1.8,                 # [Tool] Busiest node / average
+    "workload_skew_min_per_sec": 10,                 # [Tool] Minimum average indexing operations per second per node before the skew is rated (DIF-009)
     "undesired_shards_warn": 1,                      # [Tool]
     "recovery_rate_low_bytes": 40 * 1024 ** 2,       # [Official] indices.recovery.max_bytes_per_sec at or below the 40mb default
 

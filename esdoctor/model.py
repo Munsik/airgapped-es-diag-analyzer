@@ -50,12 +50,13 @@ class Finding(object):
 
     __slots__ = (
         "id", "category", "severity", "title", "observed", "impact",
-        "recommend", "evidence", "affected", "refs", "source", "basis", "basis_id",
+        "recommend", "evidence", "affected", "refs", "source", "basis", "basis_id", "rule",
     )
 
     def __init__(self, id, category, severity, title, observed="",
                  impact="", recommend="", evidence=None, affected=None,
                  refs=None, source=""):
+        self.rule = None       # "module.function" of the rule that produced it, set by the engine
         self.id = id
         self.category = category
         self.severity = severity

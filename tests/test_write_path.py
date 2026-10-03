@@ -84,7 +84,7 @@ def build(root, version="9.4.4", uuid="uuid-A", name="c1", restart=False):
             st["indices"]["merges"]["total_time_in_millis"] = 1000 * 60000
         if st["name"] == "frozen-1":     # container with host load but idle CPU
             st["os"] = {"cpu": {"percent": 1, "load_average": {"1m": 4.0, "5m": 4.0, "15m": 4.0}},
-                        "cgroup": {"cpu": {"stat": {"number_of_elapsed_periods": 100, "number_of_times_throttled": 0}}}}
+                        "cgroup": {"cpu": {"cfs_quota_micros": 400000, "stat": {"number_of_elapsed_periods": 100, "number_of_times_throttled": 0}}}}
     w(root, "nodes.json", ni)
     w(root, "nodes_stats.json", ns)
     w(root, "version.json", {"cluster_name": name, "cluster_uuid": uuid, "version": {"number": version}})
@@ -100,10 +100,10 @@ def build(root, version="9.4.4", uuid="uuid-A", name="c1", restart=False):
     b.settings = load(root, "settings.json")
     fields = dict(("f%03d" % i, {"type": "keyword"}) for i in range(95))
     w(root, "mapping.json", {
-        ds[0]: {"mappings": {"properties": fields}},
+        ds[-1]: {"mappings": {"properties": fields}},
         "custom-wide": {"mappings": {"properties": fields}},
         "partial-mounted-wide": {"mappings": {"properties": fields}}})
-    b.settings[ds[0]]["settings"]["index"]["mapping"] = {"total_fields": {"limit": "100", "ignore_dynamic_beyond_limit": "true"}}
+    b.settings[ds[-1]]["settings"]["index"]["mapping"] = {"total_fields": {"limit": "100", "ignore_dynamic_beyond_limit": "true"}}
     b.settings["custom-wide"] = {"settings": {"index": {"number_of_shards": "1", "number_of_replicas": "0",
                                                         "mapping": {"total_fields": {"limit": "100"}}}}}
     b.settings["partial-mounted-wide"] = {"settings": {"index": {

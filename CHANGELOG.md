@@ -5,6 +5,83 @@ English · [한국어](CHANGELOG.ko.md)
 This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Each entry is written as "previous behavior → current behavior (reason)". Use it to trace why a result differs from an earlier report.
 
+## [0.14.3] - 2026-10-03
+
+A zero-base review of every finding's logic. Each rule was read again against the Elasticsearch source (8.x and 9.5), the support-diagnostics file layout and the official docs. Confirmed errors were fixed; findings that change are listed below.
+
+### Fixed: inputs and context
+
+- Cluster settings: persistent was read before transient → transient wins, as in Elasticsearch
+- A file holding an API error response (`{"error": ..., "status": N}`) was parsed as data → treated as missing
+- `repositories.json` (`GET _snapshot`, keyed by repository name) was read as a list → converted, so SNP-001 sees the repositories
+- ML-002 read the job state from the job config file, which has none → `commercial/ml_stats.json` (job stats)
+- Failure store indices (`.fs-`) are system indices like `.ds-`
+- Searchable snapshot detection by name prefix is only a fallback when the index has no settings in the bundle
+- An index counts as rolled over through an alias only when another index is that alias's write index (a plain read alias no longer counts)
+- A RELOCATING shard is counted on its source node
+- Watermark headroom: the default `max_headroom` is dropped when the watermark is set explicitly, and a `max_headroom` set in elasticsearch.yml is used
+- Container detection (OS-001, HOT-005, COST-006): any cgroup data → Elastic Cloud / ECE / ECK, or a cgroup CPU quota or memory limit (cgroup stats exist on any Linux host)
+- Rolled JSON logs (`*.json.gz`) are read, and a `.gz` log is read from its end instead of its start
+- `max_merged_segment` default: data stream membership → an indexed `@timestamp` date field in the mapping (how Elasticsearch picks the time-based merge policy); `segments_per_tier` and `max_merge_at_once` note that the time-based policy ignores them
+
+### Fixed: findings
+
+- CLU-001: red with no unassigned primary now says primaries are initializing
+- CLU-002: a shard with a state other than UNASSIGNED is not counted because of a leftover unassigned reason
+- CLU-006: a cluster whose only electable master is one node next to voting-only nodes → Critical. CLU-007 does not count voting-only nodes as dedicated masters
+- CLU-011: the flood stage text points to the index-level block it sets
+- CLU-018: node count per zone is compared within each data tier; awareness is also read from elasticsearch.yml (CLU-019)
+- OVS-001: recommended primaries = the smallest factor of the current count that keeps shards at or under 50GB (shrink only goes to a factor)
+- OVS-002: a stream whose rollover has a size condition (or data stream lifecycle) only receives little data → Info; age-only rollover stays Warning
+- OS-001: high load with low CPU on Linux also points to disk wait; OS-004 basis → tool threshold
+- BRK-001/002: the usage line is a threshold (70%); the parent breaker uses 90% (its estimate is real heap use against 95% of heap)
+- IP-001: -1 (counter not reported) is ignored
+- PERF-012: merge time minus throttled and stopped time
+- DISK-001: a dedicated frozen node above `flood_stage.frozen` → separate Warning (Elasticsearch only logs there)
+- SYS-001: Info when every node sets `node.store.allow_mmap: false` (the check is skipped). SYS-004 counts victim lines only
+- SHD-001: frozen-only nodes are not rated. SHD-003 allows the rollover overshoot past 50GB. SHD-005 leaves out partial mounts. SHD-006 needs a minimum difference (`shard_balance_min_diff`) and is Info from 8.6
+- IDX-001: Info with a single data node. IDX-005: Info unless the same index also had indexing throttled. IDX-006: version conflicts alone do not make it a Warning. IDX-009: the generic data role covers frozen. IDX-012: Critical only for corruption signs. IDX-014: both causes of indexing throttling are named. IDX-015: unknown version uses the 10GB default
+- PERF-003: only the request cache is rated
+- SHD-008/013 and the rollover hint: the implicit 200M document rollover applies from 8.8. ILM-007 is not raised before 8.8
+- SHD-009 and the master heap estimate leave out voting-only nodes. SHD-012 lists current write targets only. SHD-014 covers logsdb_columnar
+- PERF-004: a write index with no recent write load is left out. PERF-007: node count of the index's own tier
+- CFG-002: path prefixes match on "/" boundaries. CFG-007: the last heap dump flag wins
+- DISK-006: searchable snapshots and indices without stored _source (synthetic, time_series) are skipped
+- VEC-002/005: not rated below 8.12, and fields with `index: false` (or no index parameter below 8.11) are skipped; VEC-005 uses the index creation version. VEC-003: from 9.2 only templates that turn `exclude_source_vectors` off; before 9.2, templates whose `_source.excludes` miss the vector fields
+- MAP-004: rolled-over indices are skipped; runtime fields count only from 8.5. Multi-fields of multi-fields are counted
+- SHUT-001: a completed RESTART record is not a Warning
+- FRZ-001: evictions per day against the region count. FRZ-002: Direct buffer OOM lines are tied to the flagged node
+- ING-002 skips `pipeline:` keys. CLU-024 takes count and time from the same node. ILM-008 matches tiers by role
+- OPS-004 compares storage and memory separately. OPS-005 reads the manually stopped flag
+- SNP-002 without times stays Warning. SNP-005 → Info (lifetime counter)
+- ILM-002: a rollover error on an index that is already rolled over → Warning. ILM-003 skips indices managed by data stream lifecycle
+- SEC-002 reads the HTTP bind address (`http.host` before `network.host`). OPS-002: only current read or fatal errors → Warning
+- OPS-007: legacy collection also read from elasticsearch.yml; deprecated since 7.16, with removal in 10.0 announced in 9.5
+- HOT-003: Info while shards relocate. HOT-004: `computation_active`. HOT-005 and COST-006 use the container guard. TPL-001 counts distinct templates. REC-001: 0 or less is unlimited
+- COST-004 leaves out shrink and downsample copies; data stream lifecycle retention counts as draining
+- Logs: `[gc][old]` and GC overhead patterns; low watermark log lines → Warning, high and flood → Critical; master not discovered → Warning; hot threads classify global ordinals building and skip Lucene frames on search threads
+- SET-001/006: a unitless 0 or -1 is compared as the same kind; `default` equals `default(LZ4)`; `node.processors` is compared with the available processors
+
+### Fixed: comparison mode
+
+- The comparison base was the newest baseline even when it was collected after the analyzed bundle → the latest earlier one; when every baseline is later, the run stops with a message
+- DIF-005/006/007: a node that restarted counts from 0 over its uptime (its rejections, GC and trips are new) instead of being skipped or read as past history
+- DIF-013: two different clusters → only DIF-013 is reported. A `_na_` cluster_uuid is ignored
+- DIF-001: an unknown status is not a change
+- DIF-008: growth is the change in used bytes (a resized disk is not growth); a tier whose nodes changed is listed but not rated
+- DIF-009: a tier below `workload_skew_min_per_sec` is not rated for skew
+- DIF-012: a finding whose rule did not run on the current bundle is not "resolved"
+- A failing trend rule is recorded as a rule error instead of being dropped
+- DIF-014 sorts all bundles together
+
+### Changed
+
+- Bottleneck summary: a symptom on a coordinating-only node widens the scope to every data node
+- Basis relabeled to tool threshold where the deciding number is the tool's: HOT-001, CLU-015, SHD-010, SHD-012, SHD-015, PERF-004, PERF-008, VEC-004, OS-004
+- New thresholds: `breaker_used_pct_warn` 70, `breaker_parent_used_pct_warn` 90, `shard_balance_min_diff` 10, `frozen_cache_turnover_per_day` 1.0, `workload_skew_min_per_sec` 10 (146 thresholds)
+- `ml_stats.json` moves from the unused to the used files in COVERAGE
+- `tests/test_audit_0143.py`
+
 ## [0.14.2] - 2026-10-03
 
 The defaults of all 92 settings in the knowledge base (the 4 prefix rules have no single default) were compared in the Elasticsearch source of 8.0, 8.19, 9.0 and 9.5, so that settings findings use the default of the cluster's own version. Two more defaults depend on the version or the index mode; the rest are the same from 8.0 to 9.5, or were already computed per version.

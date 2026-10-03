@@ -258,6 +258,7 @@ def _run_rules(ctx, only=None, skip_ok=False):
         for f in res:
             if skip_ok and f.severity == Severity.OK:
                 continue
+            f.rule = "%s.%s" % (module_name, fn.__name__)
             findings.append(f)
     ctx.skipped_rules = skipped
     findings.extend(_version_findings(ctx))
@@ -327,19 +328,26 @@ def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None, bund
             ctxs.append(Context(bb, t))
         # Oldest first. The bundle right before the analyzed one is the comparison base; with two or more baselines
         # every interval also feeds the peak/off-peak throughput (DIF-014).
-        ctxs.sort(key=lambda c: c.collection_time.timestamp() if c.collection_time else 0)
-        base_ctx = ctxs[-1]
+        when = lambda c: c.collection_time.timestamp() if c.collection_time else 0
+        ctxs.sort(key=when)
+        # The base is the latest baseline collected before the analyzed bundle. A baseline collected later cannot be the base:
+        # every delta would run backwards.
+        earlier = [c for c in ctxs if not (c.collection_time and ctx.collection_time) or when(c) <= when(ctx)]
+        if not earlier:
+            raise ValueError(T("engine.analyze.03") % ", ".join(baselines))
+        base_ctx = earlier[-1]
         base_findings, _ = _run_rules(base_ctx, only, True)
         try:
             diff_summary, diff_findings = diff_mod.compare(
-                base_ctx, ctx, t, base_findings, findings)
+                base_ctx, ctx, t, base_findings, findings, errors,
+                [s["rule"] for s in (getattr(ctx, "skipped_rules", None) or [])])
         except Exception:
             errors.append({"rule": "diff.compare",
                            "error": traceback.format_exc(limit=3)})
             diff_findings = []
         if len(ctxs) >= 2:
             try:
-                diff_findings.extend(diff_mod.r_interval_rates(ctxs + [ctx], t))
+                diff_findings.extend(diff_mod.r_interval_rates(sorted(ctxs + [ctx], key=when), t))
             except Exception:
                 errors.append({"rule": "diff.r_interval_rates",
                                "error": traceback.format_exc(limit=3)})

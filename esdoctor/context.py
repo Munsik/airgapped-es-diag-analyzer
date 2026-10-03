@@ -4,7 +4,7 @@ import collections
 import datetime
 import re
 
-from .util import dicts, dig, parse_bytes, parse_cat_table, num
+from .util import dicts, dig, items, parse_bytes, parse_cat_table, num
 
 
 def _parse_iso(ts):
@@ -213,7 +213,12 @@ class Context(object):
         self.tasks = _d(sj("tasks.json"))
         self.allocation_explain = _d(b.json("allocation_explain.json"))
         self.snapshots = _d(b.json("snapshot.json"))
-        self.repositories = _l(b.json("repositories.json"))
+        # GET _snapshot returns {repo name: {type, settings}}; older tooling or tests may give a list
+        repos = b.json("repositories.json")
+        if isinstance(repos, dict) and "error" not in repos:
+            self.repositories = [dict(v, name=k) if isinstance(v, dict) else {"name": k} for k, v in repos.items()]
+        else:
+            self.repositories = _l(repos)
         self.ssl_certs = _l(b.json("ssl_certs.json"))
         self.dangling = _d(b.json("dangling_indices.json"))
         self.data_streams = _l(_d(b.json("commercial/data_stream.json")).get("data_streams"))
@@ -224,6 +229,7 @@ class Context(object):
         self.slm_status = _d(b.json("commercial/slm_status.json"))
         self.transform_stats = _d(b.json("commercial/transform_stats.json"))
         self.ml_anomaly = _d(b.json("commercial/ml_anomaly_detectors.json"))
+        self.ml_job_stats = _d(b.json("commercial/ml_stats.json"))        # job state lives in _ml/anomaly_detectors/_stats
         self.ml_datafeed_stats = _d(b.json("commercial/ml_datafeeds_stats.json"))
         self.ml_memory = _d(b.json("commercial/ml_memory_stats.json"))
         self.xpack = _d(b.json("commercial/xpack.json"))
@@ -268,6 +274,10 @@ class Context(object):
                 if x.get(k) is not None and not isinstance(x.get(k), str):
                     x = dict(x)
                     x[k] = str(x[k])
+            if " -> " in (x.get("node") or ""):
+                # RELOCATING rows read "source -> ip id target"; the shard still lives on the source node
+                x = dict(x)
+                x["node"] = x["node"].split(" -> ")[0].strip()
             clean.append(x)
         self.shards = clean
         # count shards per index once (avoids an index x shard loop, needed for large clusters)
@@ -323,6 +333,32 @@ class Context(object):
     def orchestrated(self):
         return self.deployment != "self-managed"
 
+    def load_high(self, node):
+        """load15 per CPU >= load_per_cpu_warn, except in a container with low CPU use, where the load can be the host's (as in OS-001)."""
+        per = (node.load15 / node.processors) if (node.load15 and node.processors) else None
+        if per is None or per < self.t["load_per_cpu_warn"]:
+            return False
+        return not (self.in_container(node) and node.cpu_pct is not None and node.cpu_pct < self.t["load_host_cpu_pct_max"])
+
+    def in_container(self, node):
+        """Whether the node runs under a CPU or memory limit (container), where the load average can be the host's.
+
+        os.cgroup alone is not enough: ES reports cgroup stats on any Linux host with cgroups (a systemd service on bare metal too).
+        A container is assumed on Elastic Cloud / ECE / ECK, or when the cgroup has a CPU quota (cfs_quota_micros > 0) or a memory limit.
+        """
+        if self.orchestrated:
+            return True
+        cg = dig(node.stats, "os", "cgroup") or {}
+        if not isinstance(cg, dict) or not cg:
+            return False
+        try:
+            if int(dig(cg, "cpu", "cfs_quota_micros") or -1) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        lim = str(dig(cg, "memory", "limit_in_bytes") or "").strip().lower()
+        return lim.isdigit() and int(lim) < (1 << 60)
+
     #     # ---------------- convenience accessors ----------------
     def shard_count(self, index):
         return self._shards_by_index.get(index, 0)
@@ -350,8 +386,8 @@ class Context(object):
             return (0, 0, 0)
 
     def setting(self, key, default=None):
-        """Looks up a cluster setting in the order persistent -> transient -> defaults."""
-        for scope in ("persistent", "transient"):
+        """Looks up a cluster setting in the order transient -> persistent -> defaults (transient overrides persistent in ES)."""
+        for scope in ("transient", "persistent"):
             d = self.cluster_settings.get(scope) or {}
             v = _flat_get(d, key)
             if v is not None:
@@ -361,7 +397,7 @@ class Context(object):
         return v if v is not None else default
 
     def setting_source(self, key):
-        for scope in ("persistent", "transient"):
+        for scope in ("transient", "persistent"):
             if _flat_get(self.cluster_settings.get(scope) or {}, key) is not None:
                 return scope
         return "default"
@@ -396,7 +432,7 @@ class Context(object):
             if n.startswith(prefix):
                 n = n[len(prefix):]
                 break
-        if n.startswith(".ds-"):
+        if n.startswith((".ds-", ".fs-")):        # data stream backing and failure store indices
             return n[4:].startswith(".")
         return n.startswith(".")
 
@@ -410,7 +446,8 @@ class Context(object):
                 self.index_setting(name, "index.store.snapshot.repository_name") or \
                 str(self.index_setting(name, "index.store.type") or "") == "snapshot":
             return True
-        return bool(name) and name.startswith(("restored-", "partial-"))
+        # The name is only a guess for indices without settings: a normal restore can also be renamed restored-*.
+        return bool(name) and name not in self.index_settings and name.startswith(("restored-", "partial-"))
 
     def is_partial_mount(self, name):
         """Whether the index is partially mounted (frozen). The store size is the local cache size, not the original shard size.
@@ -419,7 +456,7 @@ class Context(object):
         """
         if str(self.index_setting(name, "index.store.snapshot.partial") or "").lower() == "true":
             return True
-        return bool(name) and name.startswith("partial-")
+        return bool(name) and name not in self.index_settings and name.startswith("partial-")
 
     def write_targets(self):
         """Current write targets: data stream write index + alias with is_write_index=true (or a single-index alias)."""
@@ -478,13 +515,27 @@ class Context(object):
             return ex.get("policy")
         return self.index_setting(name, "index.lifecycle.name") or None
 
+    def dlm_managed(self, name):
+        """Whether a backing index is managed by data stream lifecycle (not ILM): the backing index entry says so (8.11+), or the
+        data stream has an enabled lifecycle and no ILM policy."""
+        ds = self.data_stream_of(name)
+        if not isinstance(ds, dict):
+            return False
+        for i in dicts(ds.get("indices")):
+            if i.get("index_name") == name and i.get("managed_by"):
+                return "lifecycle" in str(i.get("managed_by")).lower() and "ilm" not in str(i.get("managed_by")).lower() \
+                    and "index lifecycle" not in str(i.get("managed_by")).lower()
+        lc = ds.get("lifecycle")
+        return isinstance(lc, dict) and str(lc.get("enabled", True)).lower() != "false" and not ds.get("ilm_policy")
+
     def rollover_conditions(self, policy):
         """Rollover action of the hot phase of an ILM policy as a dict ({} when there is none)."""
         ro = dig(self.ilm_policies, policy, "policy", "phases", "hot", "actions", "rollover") if policy else None
         return ro if isinstance(ro, dict) else {}
 
     def rolled_over(self, name):
-        """Whether the index is rolled over (no longer written): past backing index of a data stream, indexing_complete, or a member of an alias that is not the write target."""
+        """Whether the index is rolled over (no longer written): past backing index of a data stream, indexing_complete, or a member
+        of an alias whose write index is another index. A plain read alias over several indices does not make them rolled over."""
         if name in self.write_targets():
             return False
         if str(self.index_setting(name, "index.lifecycle.indexing_complete") or "").lower() == "true":
@@ -493,7 +544,16 @@ class Context(object):
             if any(i.get("index_name") == name for i in dicts(ds.get("indices"))[:-1]):
                 return True
         body = (self.aliases or {}).get(name) or {}
-        return bool(body.get("aliases"))
+        mine = set((body.get("aliases") or {}).keys()) if isinstance(body.get("aliases"), dict) else set()
+        if not mine:
+            return False
+        for other, ob in items(self.aliases or {}):
+            if other == name or not isinstance(ob, dict):
+                continue
+            for alias, ad in items(ob.get("aliases") or {}):
+                if alias in mine and isinstance(ad, dict) and str(ad.get("is_write_index")).lower() == "true":
+                    return True
+        return False
 
     def tier_of(self, node):
         """Tier label of a data node. The role combination is the comparison unit (specs and load are compared only within the same tier)."""
@@ -540,6 +600,12 @@ class Context(object):
         up = node.uptime_ms
         return bool(up) and up < self.t["node_compare_min_uptime_hours"] * 3600000
 
+    def explicitly_set(self, key):
+        """True when the setting is set in cluster settings or in the elasticsearch.yml of any node (not just a default)."""
+        if self.setting_source(key) != "default":
+            return True
+        return any(n.setting(key) is not None for n in self.nodes)
+
     def watermark(self, kind):
         """kind: low|high|flood_stage|flood_stage.frozen -> raw string"""
         key = "cluster.routing.allocation.disk.watermark." + kind
@@ -572,15 +638,20 @@ class Context(object):
                 return None
             need_free = total * (1.0 - ratio)
             hkey = "cluster.routing.allocation.disk.watermark.%s.max_headroom" % kind
-            head = self.setting(hkey)
             wkey = "cluster.routing.allocation.disk.watermark." + kind
-            if kind != "flood_stage.frozen" and self.setting_source(hkey) == "default":
-                # The default headroom (200/150/100GB) exists from 8.5 and applies only while the watermark itself is not
-                # set explicitly (official). A value from the defaults section is ignored in those cases.
-                if (0, 0, 0) < self.version_tuple < (8, 5, 0) or self.setting_source(wkey) != "default":
+            head = self.setting(hkey)
+            yml_head = [n.setting(hkey) for n in self.nodes if n.setting(hkey) is not None]
+            if self.setting_source(hkey) == "default" and yml_head:
+                head = yml_head[0]          # max_headroom set in elasticsearch.yml
+            elif self.setting_source(hkey) == "default":
+                # The default headroom (200/150/100GB, 20GB for frozen flood stage) applies only while the watermark itself is
+                # not set explicitly, in cluster settings or in elasticsearch.yml (official). The non-frozen ones exist from 8.5.
+                # The defaults section of the bundle shows the default headroom even when yml sets the watermark, so it is not trusted then.
+                old = kind != "flood_stage.frozen" and (0, 0, 0) < self.version_tuple < (8, 5, 0)
+                if old or self.explicitly_set(wkey):
                     head = None
-            if head is None and kind == "flood_stage.frozen":
-                head = self.t.get("disk_watermark_flood_frozen_headroom_default")
+                elif head is None and kind == "flood_stage.frozen":
+                    head = self.t.get("disk_watermark_flood_frozen_headroom_default")
             head_b = parse_bytes(head) if head not in (None, "-1", -1) else None
             if head_b is not None and head_b >= 0:
                 need_free = min(need_free, float(head_b))

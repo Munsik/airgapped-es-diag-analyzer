@@ -3,7 +3,7 @@
 """Checks for the fixes from the official documentation audit (0.14.0). No external bundle needed (synthetic data).
 
 Covers JVM-002 (compressed oops flag first, 26/30GB only without the flag), CLU-007 (10 data nodes), DISK-006 (time_series
-included), IDX-013 (cluster.logsdb.enabled), CLU-015 (closed and partially mounted indices), DISK-007 (mapping _source
+skipped from 0.14.3: synthetic _source by default), IDX-013 (cluster.logsdb.enabled), CLU-015 (closed and partially mounted indices), DISK-007 (mapping _source
 disabled), SHD-010 (Warning only past the heap), MAP-006 (nested default by index version), the max_headroom conditions,
 SYS-001/003 in development mode, and the context-dependent settings defaults. Both languages.
 
@@ -146,7 +146,7 @@ def run_lang(lang, tmp):
 
     d6 = f.get("DISK-006")
     names = [r[0] for r in (d6.evidence["rows"] if d6 else [])]
-    check(pre + "DISK-006 includes time_series", "metrics-tsds" in names, names)
+    check(pre + "DISK-006 skips time_series (synthetic _source by default)", "metrics-tsds" not in names, names)
     check(pre + "DISK-006 skips logsdb", "logs-x-default-ldb" not in names, names)
 
     d7 = f.get("DISK-007")

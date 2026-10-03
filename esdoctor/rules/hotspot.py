@@ -133,7 +133,9 @@ def r_workload_hotspot(ctx):
 
 
 def r_desired_balance(ctx):
-    """Desired balance not converged (shards that are not in their desired location)."""
+    """Desired balance not converged. Shards not in their desired location (cat allocation shards.undesired) >= undesired_shards_warn →
+    Warning when nothing is relocating or initializing (stuck), Info while a rebalance is moving them (HOT-003). A balance computation
+    still running (internal desired balance stats computation_active=true) → Info (HOT-004)."""
     rows, undesired = [], 0
     for r in dicts(ctx.cat_allocation):
         if not isinstance(r, dict):
@@ -149,14 +151,17 @@ def r_desired_balance(ctx):
     stats = db.get("stats") or {}
     out = []
     if undesired >= ctx.t["undesired_shards_warn"]:
+        # Undesired shards are normal while a rebalance is moving them; only when nothing is relocating are they stuck.
+        moving = (ctx.health.get("relocating_shards") or 0) + (ctx.health.get("initializing_shards") or 0)
         out.append(Finding(
-            "HOT-003", HOT, Severity.WARNING, T("rules.hotspot.r_desired_balance.01"),
+            "HOT-003", HOT, Severity.INFO if moving else Severity.WARNING, T("rules.hotspot.r_desired_balance.01"),
             observed=T("rules.hotspot.r_desired_balance.02") % undesired,
             impact=T("rules.hotspot.r_desired_balance.03"),
             recommend=T("rules.hotspot.r_desired_balance.04"),
             evidence=table(["node", T("rules.hotspot.r_desired_balance.05"), T("rules.hotspot.r_desired_balance.06"), T("rules.hotspot.r_desired_balance.07"), "disk%"], rows),
             refs=[D_BAL, D_SHARDS], source="allocation.json / internal_desired_balance.json"))
-    if stats.get("computation_converged") is False:
+    # computation_converged is a counter; computation_active tells whether a balance computation is still running
+    if stats.get("computation_active") is True:
         out.append(Finding(
             "HOT-004", HOT, Severity.INFO, T("rules.hotspot.r_desired_balance.08"),
             observed=T("rules.hotspot.r_desired_balance.09"),
@@ -169,20 +174,19 @@ def r_desired_balance(ctx):
 def r_recovery_settings(ctx):
     """Recovery bandwidth limit.
 
-    The default of indices.recovery.max_bytes_per_sec (40mb) is not a problem by itself.
+    The default of indices.recovery.max_bytes_per_sec (40mb) is not a problem by itself, and 0 or less means unlimited.
     It is reported as a possible recovery bottleneck only while a recovery or relocation is actually running.
     """
     rate = ctx.setting("indices.recovery.max_bytes_per_sec")
     src = ctx.setting_source("indices.recovery.max_bytes_per_sec")
     b = parse_bytes(rate)
-    moving = sum(ctx.health.get(k) or 0 for k in
-                 ("initializing_shards", "relocating_shards", "delayed_unassigned_shards"))
+    moving = sum(ctx.health.get(k) or 0 for k in ("initializing_shards", "relocating_shards"))
     active_recoveries = 0
     for _idx, body in items(ctx.recovery):
         for sh in dicts(body.get("shards") if isinstance(body, dict) else None):
             if (sh.get("stage") or "").upper() != "DONE":
                 active_recoveries += 1
-    if b is None or b > ctx.t["recovery_rate_low_bytes"] or not (moving or active_recoveries):
+    if b is None or b <= 0 or b > ctx.t["recovery_rate_low_bytes"] or not (moving or active_recoveries):    # 0 or less = unlimited
         return []
     rows = [["indices.recovery.max_bytes_per_sec", str(rate), src],
             ["cluster.routing.allocation.node_concurrent_recoveries",
@@ -224,7 +228,7 @@ def r_template_conflict(ctx):
         return []
     return [Finding(
         "TPL-001", CAT, Severity.WARNING, T("rules.hotspot.r_template_conflict.01"),
-        observed=T("rules.hotspot.r_template_conflict.02") % len(rows),
+        observed=T("rules.hotspot.r_template_conflict.02") % len(set(r[0] for r in rows)),
         impact=T("rules.hotspot.r_template_conflict.03"),
         recommend=T("rules.hotspot.r_template_conflict.04"),
         evidence=table([T("rules.hotspot.r_template_conflict.05"), T("rules.hotspot.r_template_conflict.06"), T("rules.hotspot.r_template_conflict.07"), T("rules.hotspot.r_template_conflict.06")], rows[: ctx.t["top_n"]]),
@@ -253,6 +257,7 @@ def r_delayed_allocation(ctx):
 
 def r_tier_saturation(ctx):
     """CPU saturation per tier. Warning if every node in a tier has load15/CPU >= load_per_cpu_warn or CPU% >= tier_cpu_pct_warn.
+    As in OS-001, a container node with low CPU use does not count by load alone (the load can be the host's).
 
     This differs from skew between nodes (HOT-001). Even when the load is spread evenly, a tier that is at its limit needs more nodes or less load.
     The cgroup CPU throttling (OS-003) and the rejections of the write, write_coordination and search thread pools (TP-001) of that tier are shown as supporting evidence.
@@ -266,7 +271,7 @@ def r_tier_saturation(ctx):
             thr = num(n.stats, "os", "cgroup", "cpu", "stat", "number_of_times_throttled")
             rej = sum(num(st, "rejected") for pool, st in items(dig(n.stats, "thread_pool"))
                       if pool in ("write", "write_coordination", "search"))
-            busy = (per is not None and per >= ctx.t["load_per_cpu_warn"]) or \
+            busy = ctx.load_high(n) or \
                    (n.cpu_pct is not None and n.cpu_pct >= ctx.t["tier_cpu_pct_warn"])
             hot += 1 if busy else 0
             rows.append([tier, n.name, n.processors, "%s%%" % n.cpu_pct if n.cpu_pct is not None else "-",

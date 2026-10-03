@@ -275,7 +275,7 @@ Every finding labeled Official, every version gate and every settings default wa
 
 ## 12. Which diagnostics bundle files are used
 
-The reference bundles (9.4.4 and 9.5.3, api mode) have the same file layout of 104 files. The tool uses **62 of them** for findings. It does not use the other 42, for the reasons below.
+The reference bundles (9.4.4 and 9.5.3, api mode) have the same file layout of 104 files. The tool uses **63 of them** for findings. It does not use the other 41, for the reasons below.
 When a newer collection tool adds files, use this table to decide again whether to use them.
 Extra files in local and remote mode bundles (server logs, OS command output, and so on) have not been checked yet.
 
@@ -283,7 +283,7 @@ Extra files in local and remote mode bundles (server logs, OS command output, an
 | --- | --- |
 | Text version or subset of a JSON file the tool already reads (duplicate) | `cat/cat_aliases.txt` `cat/cat_count.txt` `cat/cat_fielddata.txt` `cat/cat_health.txt` `cat/cat_master.txt` `cat/cat_nodeattrs.txt` `cat/cat_pending_tasks.txt` `cat/cat_recovery.txt` `cat/cat_repositories.txt` `cat/cat_segments.txt` `cat/cat_templates.txt` `count.json` `master.json` `nodes_short.json` `plugins.json` (plugin use is read from nodes.json) `fielddata_stats.json` (nodes_stats and fielddata.json are used) `segments.json` (segment counts come from indices_stats) `allocation_explain_disk.json` (allocation_explain.json is used) `commercial/ilm_explain_only_errors.json` (ilm_explain.json is used) |
 | Lists of settings and definitions (no state information) | `commercial/enrich_policies.json` `commercial/ccr_autofollow_patterns.json` `commercial/ml_datafeeds.json` `commercial/ml_dataframe.json` `commercial/ml_trained_models.json` `commercial/transform.json` `commercial/logstash_pipeline.json` `commercial/rollup_caps.json` `commercial/rollup_index_caps.json` |
-| Has content only when the feature is in use, and there is no finding criterion yet | `commercial/ccr_follower_info.json` `commercial/enrich_stats.json` `commercial/ml_dataframe_stats.json` `commercial/ml_info.json` `commercial/ml_stats.json` `commercial/profiling_status.json` `commercial/searchable_snapshots_stats.json` `commercial/transform_basic_stats.json` `commercial/transform_node_stats.json` |
+| Has content only when the feature is in use, and there is no finding criterion yet | `commercial/ccr_follower_info.json` `commercial/enrich_stats.json` `commercial/ml_dataframe_stats.json` `commercial/ml_info.json` `commercial/profiling_status.json` `commercial/searchable_snapshots_stats.json` `commercial/transform_basic_stats.json` `commercial/transform_node_stats.json` |
 | Security configuration (outside the scope of findings, sensitive) | `commercial/security_priv.json` `commercial/security_roles.json` `commercial/security_role_mappings.json` `commercial/security_users.json` |
 | API call statistics (operational reference only) | `nodes_usage.json` |
 

@@ -69,7 +69,7 @@ REQUIRES = {
     # ops
     "r_monitoring": [_IDX], "r_license": [["licenses.json"]], "r_snapshots": [["repositories.json", "snapshot.json"]],
     "r_ilm": [["ilm_explain.json", "ilm_status.json"]],
-    "r_ml_transform": [["transform_stats.json", "ml_anomaly_detectors.json"]],
+    "r_ml_transform": [["transform_stats.json", "ml_stats.json", "ml_anomaly_detectors.json"]],
     "r_certificates": [["ssl_certs.json"]], "r_security_enabled": [["xpack.json"]],
     "r_geoip": [["geoip_stats.json"]], "r_ccr": [["ccr_stats.json"]],
     # runtime

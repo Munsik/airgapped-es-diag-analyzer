@@ -65,7 +65,7 @@ def r_license(ctx):
 
 
 def r_snapshots(ctx):
-    """No repository and no snapshot → Critical (SNP-001). FAILED/PARTIAL snapshot present → Warning, and Critical if no later successful snapshot exists (SNP-002). Age of the last SUCCESS snapshot (the SLM policy's last_success time if snapshot.json has no time) >= snapshot_age_hours_crit → Critical, >= warn → Warning, otherwise OK (SNP-003; in-progress, failed and partial snapshots are excluded from the RPO calculation). Time data present but no successful snapshot → Critical. IN_PROGRESS present → Info (SNP-004). Cumulative SLM failures >= snapshot_failed_warn → Warning (SNP-005). SLM operation_mode != RUNNING → Warning (SNP-006). SLM policy whose last failure is more recent than its last success → Critical (SNP-007)."""
+    """No repository and no snapshot → Critical (SNP-001). FAILED/PARTIAL snapshot present → Warning, and Critical if a later successful snapshot is known not to exist (SNP-002; snapshots listed without times stay Warning). Age of the last SUCCESS snapshot (the SLM policy's last_success time if snapshot.json has no time) >= snapshot_age_hours_crit → Critical, >= warn → Warning, otherwise OK (SNP-003; in-progress, failed and partial snapshots are excluded from the RPO calculation). Time data present but no successful snapshot → Critical. IN_PROGRESS present → Info (SNP-004). Cumulative SLM failures >= snapshot_failed_warn → Info (SNP-005, lifetime counter). SLM operation_mode != RUNNING → Warning (SNP-006). SLM policy whose last failure is more recent than its last success → Critical (SNP-007)."""
     out = []
     snaps = (ctx.snapshots or {}).get("snapshots") or []
     repos = ctx.repositories or []
@@ -98,7 +98,9 @@ def r_snapshots(ctx):
                 rpo_source = "slm_policies.json"
     if failed:
         f_last = max([num(s, "end_time_in_millis") or num(s, "start_time_in_millis") for s in failed] or [0])
-        recovered = bool(latest and f_last and latest[0] > f_last)
+        # The diagnostics list snapshots with verbose=false, which carries no times. Without a time it cannot be told whether a
+        # success came later, so the result stays Warning (SNP-007 still reports an SLM policy that is failing now).
+        recovered = bool(latest and f_last and latest[0] > f_last) or not f_last
         out.append(Finding(
             "SNP-002", CAT, Severity.WARNING if recovered else Severity.CRITICAL, T("rules.ops.r_snapshots.05"),
             observed=T("rules.ops.r_snapshots.06") % len(failed),
@@ -165,8 +167,9 @@ def r_snapshots(ctx):
     if st:
         fails = num(st, "total_snapshots_failed")
         if fails >= ctx.t["snapshot_failed_warn"]:
+            # Cumulative over the life of the cluster (kept in cluster metadata), so history alone is Info; SNP-007 covers current failures.
             out.append(Finding(
-                "SNP-005", CAT, Severity.WARNING, T("rules.ops.r_snapshots.32"),
+                "SNP-005", CAT, Severity.INFO, T("rules.ops.r_snapshots.32"),
                 observed=T("rules.ops.r_snapshots.33")
                          % (fmt_num(fails), fmt_num(st.get("total_snapshots_taken"))),
                 impact=T("rules.ops.r_snapshots.34"),
@@ -189,7 +192,7 @@ def r_snapshots(ctx):
 
 
 def r_ilm(ctx):
-    """ILM operation_mode != RUNNING → Warning (ILM-001). ilm_explain with step=ERROR or a failed_step → Critical if a rollover-related step failed, otherwise (delete, shrink or migrate steps, failure to delete a write index, etc.) Warning (ILM-002). User indices without ILM (managed=false) and primary > 10GB → Info (ILM-003)."""
+    """ILM operation_mode != RUNNING → Warning (ILM-001). ilm_explain with step=ERROR or a failed_step → Critical if a rollover-related step failed, otherwise (delete, shrink or migrate steps, failure to delete a write index, etc.) Warning (ILM-002). User indices without ILM (managed=false) and primary > 10GB → Info (ILM-003); indices managed by data stream lifecycle are not counted as unmanaged. A rollover-step error on an index that is no longer written (rolled over) is Warning, not Critical."""
     out = []
     mode = (ctx.ilm_status or {}).get("operation_mode")
     if mode and mode.upper() != "RUNNING":
@@ -211,7 +214,8 @@ def r_ilm(ctx):
         # A stuck rollover step lets the write index keep growing (Critical). A stall in any other step is a lifecycle delay (Warning).
         rollover_steps = ("check-rollover-ready", "attempt-rollover", "update-rollover-lifecycle-date",
                           "wait-for-active-shards", "set-indexing-complete")
-        stuck_rollover = [r for r in errors if str(r[3]) in rollover_steps]
+        # Only an index that is still written can grow: a rollover error on an old index (for example after a manual alias swap) is a delay
+        stuck_rollover = [r for r in errors if str(r[3]) in rollover_steps and not ctx.rolled_over(r[0])]
         write_delete = [r for r in errors if "is the write index" in str(r[4])]
         sev = Severity.CRITICAL if stuck_rollover else Severity.WARNING
         note = []
@@ -232,7 +236,7 @@ def r_ilm(ctx):
     for name, ex in items(ctx.ilm_explain):
         if ctx.is_system_index(name):
             continue
-        if isinstance(ex, dict) and ex.get("managed") is False:
+        if isinstance(ex, dict) and ex.get("managed") is False and not ctx.dlm_managed(name):
             size = num(ctx.indices_stats, name, "primaries", "store", "size_in_bytes")
             if size > 10 * 1024 ** 3:
                 unmanaged.append([name, fmt_bytes(size), size])
@@ -249,7 +253,8 @@ def r_ilm(ctx):
 
 
 def r_ml_transform(ctx):
-    """transform state failed/aborting → Warning (ML-001). Anomaly detection job state=failed → Warning (ML-002)."""
+    """transform state failed/aborting → Warning (ML-001). Anomaly detection job state=failed → Warning (ML-002). The job state is in
+    the job stats (commercial/ml_stats.json, GET _ml/anomaly_detectors/_stats); the job config file has no state."""
     out = []
     tstats = (ctx.transform_stats or {}).get("transforms") or []
     bad_t = [t for t in tstats if (t.get("state") or "").lower() in ("failed", "aborting")]
@@ -264,7 +269,7 @@ def r_ml_transform(ctx):
                             for t in bad_t[: ctx.t["top_n"]]]),
             source="commercial/transform_stats.json"))
     # Anomaly detection jobs
-    jobs = (ctx.ml_anomaly or {}).get("jobs") or []
+    jobs = (ctx.ml_job_stats or {}).get("jobs") or (ctx.ml_anomaly or {}).get("jobs") or []
     bad_j = []
     for j in jobs:
         if isinstance(j, dict) and (j.get("state") or "").lower() in ("failed",):
@@ -275,7 +280,7 @@ def r_ml_transform(ctx):
             observed=T("rules.ops.r_ml_transform.06") % len(bad_j),
             impact=T("rules.ops.r_ml_transform.07"),
             recommend=T("rules.ops.r_ml_transform.08"),
-            evidence=table(["job_id", "state"], bad_j), source="commercial/ml_anomaly_detectors.json"))
+            evidence=table(["job_id", "state"], bad_j), source="commercial/ml_stats.json"))
     return out
 
 
@@ -319,14 +324,32 @@ def r_certificates(ctx):
                     source="ssl_certs.json")]
 
 
+def _http_host(n):
+    """Where HTTP listens: the bound/publish address reported in nodes info, else http.host, then network.host, then the default
+    (_local_, loopback). http.host overrides network.host for HTTP."""
+    for path in (("http", "bound_address"), ("http", "publish_address")):
+        v = dig(n.info, *path)
+        if v:
+            return ",".join(str(x) for x in v) if isinstance(v, list) else str(v)
+    v = n.setting("http.host") or n.setting("network.host")
+    if isinstance(v, list):
+        v = ",".join(str(x) for x in v)
+    return str(v or "_local_")
+
+
+def _is_loopback(h):
+    parts = [p.strip().strip("[]") for p in str(h).split(",") if p.strip()]
+    return bool(parts) and all(p.startswith(("127.", "localhost", "::1", "_local_")) for p in parts)
+
+
 def r_security_enabled(ctx):
     """xpack security.enabled=false → Critical, otherwise OK."""
     sec = dig(ctx.xpack, "security", default={}) or {}
     if not sec:
         return []
     if sec.get("enabled") is False:
-        hosts = [str(n.setting("network.host") or n.setting("http.host") or "") for n in ctx.nodes]
-        loopback = bool(hosts) and all(h in ("127.0.0.1", "localhost", "::1", "_local_") for h in hosts)
+        hosts = [_http_host(n) for n in ctx.nodes]
+        loopback = bool(hosts) and all(_is_loopback(h) for h in hosts)
         return [Finding("SEC-002", SEC, Severity.WARNING if loopback else Severity.CRITICAL,
                         T("rules.ops.r_security_enabled.01") + (T("rules.ops.r_security_enabled.02") if loopback else ""),
                         observed="xpack.security.enabled = false"
@@ -354,14 +377,16 @@ def r_geoip(ctx):
 
 
 def r_ccr(ctx):
-    """Warning if a CCR follower shard has read_exceptions or failed_read/write_requests."""
+    """CCR follower shards with read_exceptions (current errors) or a fatal_exception → Warning (OPS-002). failed_read/write_requests
+    are cumulative per follower task, so a shard with only those counters is listed at Info (a past remote restart leaves them)."""
     follow = (ctx.ccr_stats or {}).get("follow_stats") or {}
     idxs = follow.get("indices") or []
-    bad = []
+    bad, live = [], False
     for i in idxs:
         for s in dicts(i.get("shards")):
             errs = s.get("read_exceptions") or []
-            if errs or s.get("failed_read_requests") or s.get("failed_write_requests"):
+            live = live or bool(errs) or bool(s.get("fatal_exception"))
+            if errs or s.get("fatal_exception") or s.get("failed_read_requests") or s.get("failed_write_requests"):
                 bad.append([i.get("index"), s.get("shard_id"),
                             fmt_num(s.get("failed_read_requests")),
                             fmt_num(s.get("failed_write_requests")),
@@ -369,7 +394,7 @@ def r_ccr(ctx):
     if not bad:
         return []
     return [Finding(
-        "OPS-002", CAT, Severity.WARNING, T("rules.ops.r_ccr.01"),
+        "OPS-002", CAT, Severity.WARNING if live else Severity.INFO, T("rules.ops.r_ccr.01"),
         observed=T("rules.ops.r_ccr.02") % len(bad),
         impact=T("rules.ops.r_ccr.03"),
         recommend=T("rules.ops.r_ccr.04"),
@@ -382,13 +407,15 @@ def r_monitoring(ctx):
 
     If this cluster holds stack monitoring data (.monitoring-* or *stack_monitoring* data streams), it is monitoring itself
     (production should use a separate monitoring cluster). If there is none, the bundle cannot show whether the data goes to another cluster,
-    so the report asks you to confirm. Legacy internal collection (xpack.monitoring.collection.enabled=true) is reported as well;
-    from 9.5 the note adds that collecting with the monitoring plugin is deprecated and is removed in 10.0 (official deprecations).
+    so the report asks you to confirm. Legacy internal collection (xpack.monitoring.collection.enabled=true, in cluster settings or
+    elasticsearch.yml) is reported as well, with a note that it has been deprecated since 7.16; from 9.5 the note adds that it is
+    removed in 10.0 (official deprecations).
     """
     import re as _re
     names = [n for n in ctx.indices_stats.keys() if _re.search(r"(^|\.)monitoring-|stack_monitoring", n)]
-    legacy = str(ctx.setting("xpack.monitoring.collection.enabled")).lower() == "true"
-    dep = T("rules.ops.r_monitoring.10") if legacy and ctx.version_tuple >= (9, 5, 0) else ""
+    key = "xpack.monitoring.collection.enabled"
+    legacy = str(ctx.setting(key)).lower() == "true" or any(str(n.setting(key)).lower() == "true" for n in ctx.nodes)
+    dep = (T("rules.ops.r_monitoring.10") if ctx.version_tuple >= (9, 5, 0) else T("rules.ops.r_monitoring.11")) if legacy else ""
     if names:
         return [Finding(
             "OPS-007", CAT, Severity.INFO, T("rules.ops.r_monitoring.01"),

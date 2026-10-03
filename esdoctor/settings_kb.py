@@ -557,7 +557,8 @@ def default_for(key, ctx=None, node=None, index=None):
     indices.recovery.max_bytes_per_sec: per node role and memory (see _recovery_default).
     index.codec: best_compression for index modes that default to it (BEST_COMPRESSION_MODES), default otherwise.
     index.merge.policy.*: 9.5 changed segments_per_tier 10 → 8, floor_segment 2mb → 16mb and max_merge_at_once 10 → 16.
-    max_merged_segment is 100gb for time-based indices (with a data stream timestamp field, from 8.11) and 5gb otherwise.
+    max_merged_segment is 100gb for time-based indices (mapping with an indexed @timestamp date field, from 8.11; data stream
+    membership when the mapping is not in the bundle) and 5gb otherwise.
     cluster.routing.allocation.allow_rebalance: always from 8.16 with the desired_balance allocator, indices_all_active before
     8.16 or when a node sets cluster.routing.allocation.type: balanced.
     index.queries.cache.enabled: false for the columnar and logsdb_columnar modes (9.5), true otherwise.
@@ -575,6 +576,8 @@ def default_for(key, ctx=None, node=None, index=None):
                 return "100" if int(str(created)) >= 9050000 else "50"
             return None
         if key == "indices.breaker.total.limit" and ctx is not None:
+            if str(ctx.setting("indices.breaker.total.use_real_memory", "true")).lower() == "false":
+                return "70%"        # dynamic from 8.x (source), so it can be set through the API too
             for n in ctx.nodes:
                 if str(n.setting("indices.breaker.total.use_real_memory", "true")).lower() == "false":
                     return "70%"
@@ -599,7 +602,10 @@ def default_for(key, ctx=None, node=None, index=None):
             if key == "index.merge.policy.max_merge_at_once":
                 return "16" if new else "10"
             if key == "index.merge.policy.max_merged_segment" and index is not None:
-                timed = ctx.version_tuple >= (8, 11, 0) and bool(ctx.data_stream_of(index))
+                # ES picks the time-based merge policy when the mapping has an indexed @timestamp date field
+                summ = (getattr(ctx, "mapping_summary", None) or {}).get(index)
+                has_ts = summ.get("timestamp") if isinstance(summ, dict) and "timestamp" in summ else bool(ctx.data_stream_of(index))
+                timed = ctx.version_tuple >= (8, 11, 0) and has_ts
                 return "100gb" if timed else "5gb"
     except (TypeError, ValueError, AttributeError):
         return None
@@ -632,6 +638,10 @@ def compare(key, value, es_default=None, default=None):
     if cur.lower() == dft.lower():
         return False, None, spec, default, source
     a, b = _num(cur), _num(dft.split("(")[0])
+    if a and b and a[0] == "num" and b[0] in ("time", "bytes") and a[1] in (0.0, -1.0):
+        a = (b[0], a[1])           # a unitless 0 or -1 on a time or byte setting means zero or disabled/unlimited, same kind
+    if dft.split("(")[0].strip().lower() == cur.lower():
+        return False, None, spec, default, source      # "default" vs "default(LZ4)"
     if a and b and a[0] == b[0]:
         if a[1] == b[1]:
             return False, None, spec, default, source

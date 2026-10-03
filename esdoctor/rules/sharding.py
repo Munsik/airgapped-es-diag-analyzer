@@ -19,8 +19,8 @@ D_SHARDS = ("Size your shards",
 
 
 def _write_indices(ctx):
-    """Current write index of each data stream (still being filled, so excluded from size rating)."""
-    out = set()
+    """Current write targets: data stream write indices and alias write indices (still being filled, so excluded from size rating)."""
+    out = set(i for i in ctx.write_targets() if i)
     for ds in ctx.data_streams or []:
         idxs = ds.get("indices") or []
         if idxs:
@@ -41,8 +41,8 @@ def r_index_oversharding(ctx):
     Scope: user indices with primary >= 2 that are not a data stream write index or a searchable snapshot.
     Fully mounted (cold) indices have an accurate size but cannot be shrunk, so only the number of oversharded ones is counted, with guidance on fixing the cause.
     Rating: average size per primary shard < oversharding_floor_shard_gb (official lower bound 10GB) means oversharded.
-    Recommended primary count = max(1, ceil(total primary size / oversharding_target_shard_gb (official upper bound 50GB)))
-    (the smallest count that keeps each shard at or under 50GB). Excess shards = (current - recommended) × (1 + replica).
+    Recommended primary count = the smallest factor of the current count (shrink can only go to a factor) that keeps each shard at or
+    under oversharding_target_shard_gb (official upper bound 50GB). Excess shards = (current - recommended) × (1 + replica).
     Excess shard total >= oversharding_excess_warn or share of all shards >= oversharding_excess_ratio_warn → Warning;
     any other indices in scope → Info.
     """
@@ -67,7 +67,8 @@ def r_index_oversharding(ctx):
         size = num(st, "primaries", "store", "size_in_bytes")
         if size / float(pri) >= floor:
             continue            # At or above the official range (10-50GB) is not oversharded
-        rec = max(1, int(math.ceil(size / float(target))))
+        need = max(1, int(math.ceil(size / float(target))))
+        rec = min(f for f in range(1, pri + 1) if pri % f == 0 and f >= need)
         if pri > rec:
             rep = _replicas(ctx, name)
             excess = (pri - rec) * (1 + rep)
@@ -108,7 +109,10 @@ def r_datastream_small_rollover(ctx):
 
     Excluding the write index and partial (frozen) mounted backing indices (whose size is the cache size), if there are
     ds_min_backing_indices or more backing indices and the median size per primary shard is
-    below ds_small_backing_shard_gb → Warning. This is the typical sign of rollover happening on max_age only.
+    below ds_small_backing_shard_gb, the data stream is listed. When its rollover has no size condition (max_primary_shard_size or
+    max_size in the ILM policy) the cause is rollover on age alone → Warning. When a size condition exists (the built-in
+    logs@lifecycle and metrics@lifecycle policies, and data stream lifecycle, roll over at 50GB per primary shard) the stream simply
+    receives little data → Info, and the advice is a longer max_age or fewer data streams.
     """
     rows = []
     for ds in ctx.data_streams or []:
@@ -129,17 +133,27 @@ def r_datastream_small_rollover(ctx):
         sizes.sort()
         med = sizes[len(sizes) // 2]
         if med < ctx.t["ds_small_backing_shard_gb"] * GB:
-            rows.append([name, len(sizes) + 1, fmt_bytes(med), ds.get("ilm_policy") or "-",
-                         fmt_num(sum(ctx.shard_count(ix) for ix in idxs))])
+            pol = ds.get("ilm_policy")
+            if pol:
+                ro = ctx.rollover_conditions(pol)
+                sized = bool(ro.get("max_primary_shard_size") or ro.get("max_size"))
+            else:
+                sized = True        # data stream lifecycle rolls over at 50GB per primary shard by default
+            rows.append([name, len(sizes) + 1, fmt_bytes(med), pol or "-",
+                         fmt_num(sum(ctx.shard_count(ix) for ix in idxs)),
+                         T("rules.sharding.r_datastream_small_rollover.10") if sized
+                         else T("rules.sharding.r_datastream_small_rollover.11")])
     if not rows:
         return []
+    age_only = [r for r in rows if r[5] == T("rules.sharding.r_datastream_small_rollover.11")]
+    rows.sort(key=lambda r: (r[5] != T("rules.sharding.r_datastream_small_rollover.11"), r[0]))
     return [Finding(
-        "OVS-002", CAT, Severity.WARNING, T("rules.sharding.r_datastream_small_rollover.01"),
+        "OVS-002", CAT, Severity.WARNING if age_only else Severity.INFO, T("rules.sharding.r_datastream_small_rollover.01"),
         observed=T("rules.sharding.r_datastream_small_rollover.02")
-                 % (ctx.t["ds_small_backing_shard_gb"], len(rows)),
+                 % (ctx.t["ds_small_backing_shard_gb"], len(rows)) + T("rules.sharding.r_datastream_small_rollover.12") % len(age_only),
         impact=T("rules.sharding.r_datastream_small_rollover.03"),
         recommend=T("rules.sharding.r_datastream_small_rollover.04"),
-        evidence=table(["data stream", T("rules.sharding.r_datastream_small_rollover.05"), T("rules.sharding.r_datastream_small_rollover.06"), T("rules.sharding.r_datastream_small_rollover.07"), T("rules.sharding.r_datastream_small_rollover.08")],
+        evidence=table(["data stream", T("rules.sharding.r_datastream_small_rollover.05"), T("rules.sharding.r_datastream_small_rollover.06"), T("rules.sharding.r_datastream_small_rollover.07"), T("rules.sharding.r_datastream_small_rollover.08"), T("rules.sharding.r_datastream_small_rollover.09")],
                        rows[: ctx.t["top_n"]]),
         refs=[D_SHARDS], source="data_stream.json / indices_stats.json")]
 

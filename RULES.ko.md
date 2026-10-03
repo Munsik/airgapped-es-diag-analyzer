@@ -8,7 +8,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 도구 버전 | esdoctor 0.14.2 |
+| 도구 버전 | esdoctor 0.14.3 |
 | 판정 기준 Elasticsearch 버전 | 9.5 |
 | 공식 문서 대조 시점 | 2026-10 |
 | 실번들 검증 | 9.4.4 (ECH, 3노드 단일 tier) / 9.5.3 (ECH, 14노드 hot·warm·cold·frozen) — api 모드 |
@@ -29,7 +29,7 @@
 | 9.0 | IDX-013 | logs-*-* data stream 에 logsdb 자동 적용(새 data stream 만) |
 | 9.1 | VEC-002 | 384차원 이상 float 벡터는 bbq_hnsw 가 기본 |
 | 9.2 | VEC-003 | index.mapping.exclude_source_vectors 기본 적용 |
-| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | merge policy 기본값 변경(segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16). columnar·logsdb_columnar 모드는 best_compression 과 synthetic _source 가 기본, vectordb_document 는 index.store.preload 를 스스로 설정, 모니터링 플러그인 수집은 deprecated |
+| 9.5 | SET-006, DISK-006, DISK-007, IDX-013, PERF-008, OPS-007 | merge policy 기본값 변경(segments_per_tier 8, floor_segment 16mb, max_merge_at_once 16). columnar·logsdb_columnar 모드는 best_compression 과 synthetic _source 가 기본, vectordb_document 는 index.store.preload 를 스스로 설정, 모니터링 플러그인 수집은 10.0 제거 예고 |
 
 분석 대상이 기준 버전보다 새로우면 리포트에 `VER-001` 이 표시됩니다.
 
@@ -142,7 +142,9 @@ Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명,
 
 **판정 로직**
 
-마스터 후보(roles 에 master 포함, voting_only 포함) 수. 0대 → 치명, 다중 노드인데 1대 → 치명, 2대 → 주의(1대 이탈 시 정족수 상실. 공식: 마스터 후보 2대 이하는 모두 살아 있어야 함). 짝수(4대 이상)는 ES 가 투표 구성에서 1대를 자동 제외하므로 판정하지 않는다(CLU-006). 전용 마스터가 없고 데이터 노드 >= dedicated_master_data_nodes 대 → 주의(CLU-007). 공식 문서는 노드가 몇 대를 넘으면 전용 마스터가 낫다고만 하며, 대수는 현장 기준이다.
+마스터 후보(roles 에 master 포함, voting_only 포함) 수. 0대 → 치명, 다중 노드인데 1대 → 치명이며,
+나머지가 voting_only 라 선출 가능한 노드가 1대뿐인 경우도 치명(공식: voting-only 노드는 선출 마스터가 되지 않음).
+2대 → 주의(1대 이탈 시 정족수 상실. 공식: 마스터 후보 2대 이하는 모두 살아 있어야 함). 짝수(4대 이상)는 ES 가 투표 구성에서 1대를 자동 제외하므로 판정하지 않는다(CLU-006). 전용 마스터가 없고 데이터 노드 >= dedicated_master_data_nodes 대 → 주의(CLU-007). 공식 문서는 노드가 몇 대를 넘으면 전용 마스터가 낫다고만 하며, 대수는 현장 기준이다.
 
 ### CLU-008, CLU-009, CLU-010 — 노드 버전 불일치
 
@@ -180,7 +182,7 @@ Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명,
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `cluster.r_shard_capacity` |
-| 근거 구분 | 공식 기준 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 치명, 주의 |
 | 임계값 | `max_shards_per_node_crit_pct` = 95 — [도구] cluster.max_shards_per_node 대비 치명이 되는 사용률<br>`max_shards_per_node_headroom_pct_warn` = 80 — [도구] cluster.max_shards_per_node 대비 사용률 |
 | 필요 입력 | (cluster_settings.json) 그리고 (cluster_health.json) 그리고 (nodes.json) |
@@ -245,7 +247,10 @@ dangling 인덱스가 1개 이상이면 주의.
 
 **판정 로직**
 
-데이터 노드의 zone 속성(availability_zone / zone / logical_availability_zone / rack_id)이 2종 이상일 때만 판정. 영역별 노드 수 최대−최소 >= 2 또는 최대 >= 최소 x 2 → 주의(CLU-018). awareness.attributes 미설정 → 주의(CLU-019).
+데이터 노드의 zone 속성(availability_zone / zone / logical_availability_zone / rack_id)이 2종 이상일 때만 판정.
+영역별 노드 수는 data tier 별로 비교한다(tier 마다 영역 수를 다르게 두는 설계가 흔함):
+영역이 2개 이상인 tier 에서 최대−최소 >= 2 또는 최대 >= 최소 x 2 → 주의(CLU-018). awareness.attributes 가 cluster
+settings 에도, 어느 노드의 elasticsearch.yml 에도 없음 → 주의(CLU-019).
 
 ### CLU-020 — 진행 중인 샤드 복구
 
@@ -428,7 +433,7 @@ old 비중 = old collection_time / uptime, 시간당 old GC = old count / uptime
 
 **판정 로직**
 
-load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주의(OS-001, 두 구간의 노드를 모두 표시). 컨테이너 노드(os.cgroup 있음)에서 cpu% 가 load_host_cpu_pct_max 미만이면 판정하지 않는다. 컨테이너 안의 load average 는 호스트 값일 수 있으므로 참고로만 표시한다. swap_total > 0 이고 mlockall 이 true 가 아님 → 주의(OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → 치명, >= warn → 주의(OS-003). open_fd / max_fd >= fd_used_pct_warn → 주의(OS-004). mlockall=false 이고 swap 없음 → 참고(OS-005). uptime < uptime_short_hours → 주의(OS-006). uptime_short_hours 안에 재시작한 노드가 restart_share_warn 이상 → 주의(OS-007): 누적 카운터(GC, rejection, 캐시, 지연 평균)가 짧은 기간만 반영한다.
+load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주의(OS-001, 두 구간의 노드를 모두 표시). 컨테이너 노드(Elastic Cloud / ECE / ECK, 또는 cgroup CPU quota 나 memory limit 이 있음)에서 cpu% 가 load_host_cpu_pct_max 미만이면 판정하지 않는다. 컨테이너 안의 load average 는 호스트 값일 수 있으므로 참고로 표시한다. Linux 의 load average 는 디스크 대기 프로세스도 세므로, CPU 가 낮은데 load 가 높으면 대개 스토리지 문제다. swap_total > 0 이고 mlockall 이 true 가 아님 → 주의(OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → 치명, >= warn → 주의(OS-003). open_fd / max_fd >= fd_used_pct_warn → 주의(OS-004). mlockall=false 이고 swap 없음 → 참고(OS-005). uptime < uptime_short_hours → 주의(OS-006). uptime_short_hours 안에 재시작한 노드가 restart_share_warn 이상 → 주의(OS-007): 누적 카운터(GC, rejection, 캐시, 지연 평균)가 짧은 기간만 반영한다.
 
 ### DISK-001, DISK-002, DISK-003, DISK-004, DISK-005 — 디스크 flood stage 초과
 
@@ -445,7 +450,7 @@ load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주�
 
 **판정 로직**
 
-데이터 노드 사용률 = 1 − available / total. 실효 워터마크(max_headroom 반영, context.watermark_used_pct) 대비 flood 이상 → 치명(DISK-001), high 이상 → 치명(DISK-002), low 이상 → 주의(DISK-003), low − disk_low_margin_pct 이상 → 주의(DISK-004, 앞 세 항목이 없을 때만). 노드 간 사용률 최대−최소 >= disk_imbalance_pct_warn → 주의(DISK-005). 해당 없음 → 정상.
+데이터 노드 사용률 = 1 − available / total. 실효 워터마크(max_headroom 반영, context.watermark_used_pct) 대비 flood 이상 → 치명(DISK-001. 전용 frozen 노드는 flood_stage.frozen 에서 ES 가 경고 로그만 남기고 아무것도 막지 않으므로 별도 주의), high 이상 → 치명(DISK-002), low 이상 → 주의(DISK-003), low − disk_low_margin_pct 이상 → 주의(DISK-004, 앞 세 항목이 없을 때만). 노드 간 사용률 최대−최소 >= disk_imbalance_pct_warn → 주의(DISK-005). 해당 없음 → 정상.
 
 ### TP-001, TP-002 — 스레드풀 rejection 발생
 
@@ -472,15 +477,18 @@ load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주�
 | 판정 항목 | BRK-001 Circuit breaker 발동 이력 / BRK-002 Circuit breaker 사용률 높음 |
 | 근거 구분 | 도구 판단 / 사실 보고 |
 | 가능 심각도 | 치명, 주의 |
-| 임계값 | `breaker_tripped_warn` = 1 — [도구] breaker 발동 횟수(1 = 이력 존재) |
+| 임계값 | `breaker_parent_used_pct_warn` = 90 — 높은 사용으로 보는 parent breaker 추정 크기 / 한도(%). parent 추정치는 실제 heap 사용량이고 한도는 heap 의 95% 라 90 은 heap 약 85%<br>`breaker_tripped_warn` = 1 — [도구] breaker 발동 횟수(1 = 이력 존재)<br>`breaker_used_pct_warn` = 70 — 높은 사용으로 보는 circuit breaker 추정 크기 / 한도(%) (request, fielddata, in_flight_requests 등) |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
 
 **판정 로직**
 
-breaker.tripped >= breaker_tripped_warn → 주의, 수집 시점 사용률도 70% 이상이면 치명(BRK-001, 누적 발동 이력만으로는 치명으로 올리지 않는다). 발동 이력은 없고 estimated / limit >= 70% → 주의(BRK-002).
+breaker.tripped >= breaker_tripped_warn → 주의, 수집 시점 사용률도 사용 기준선 이상이면 치명(BRK-001. 누적 발동 이력만으로는
+치명으로 올리지 않는다). 발동 이력은 없고 estimated / limit 이 사용 기준선 이상 → 주의(BRK-002).
+사용 기준선: breaker_used_pct_warn. 단 parent breaker 는 breaker_parent_used_pct_warn 를 쓴다. parent 추정치는 실제 heap 사용량
+(indices.breaker.total.use_real_memory, 기본 true)이고 한도는 heap 의 95% 라, 70% 는 heap 약 66% 에 불과하기 때문이다.
 
-### IP-001 — Indexing pressure rejection
+### IP-001 — indexing pressure 거부
 
 | 항목 | 내용 |
 | --- | --- |
@@ -493,6 +501,8 @@ breaker.tripped >= breaker_tripped_warn → 주의, 수집 시점 사용률도 7
 **판정 로직**
 
 indexing_pressure.memory.total 의 *_rejections(coordinating/primary/replica) 중 하나라도 > 0 → 주의.
+
+값이 -1 이면 노드가 카운터를 보고하지 못한 것(업그레이드 중 버전 혼재)이므로 무시한다.
 
 ### FD-001, FD-002 — fielddata 가 heap 을 과점
 
@@ -566,7 +576,8 @@ write_node_index_share_min 이상. 시간당 값이라 최근 재시작한 노�
 유지할 수 있기 때문이다. 색인하지 않는 노드의 merge 는 force merge(ILM forcemerge, searchable_snapshot 이 기본으로
 앞 단계에서 하는 force merge, 수동 _forcemerge)이거나 rollover 직후 마무리 merge 다.
 큰 segment 를 합치므로 평균이 긴 것이 스토리지가 느리다는 뜻은 아니다.
-작업 수가 write_latency_min_ops 미만인 항목은 제외한다.
+작업 수가 write_latency_min_ops 미만인 항목은 제외한다. merge 시간은 merge I/O throttling 으로 멈췄거나 중지된 시간까지
+포함한 경과 시간이므로, throttled 와 stopped 시간을 먼저 뺀다.
 평균 >= *_avg_ms_warn → 주의, >= *_avg_ms_info → 참고(PERF-012). 공식 수치가 아닌 현장 기준값이며,
 노드 시작 이후 누적 평균이다. flush·merge 가 느리면 대개 스토리지가 따라가지 못하는 것이므로
 IDX-005(merge throttling), IDX-014(indexing throttle)와 함께 본다.
@@ -611,8 +622,9 @@ frozen 전용 노드는 원래 스냅샷 저장소에서 읽도록 설계되어 
 노드당 샤드 밀도.
 
 'heap 1GB당 샤드 20개' 는 8.3 미만 버전의 공식 기준이다. 8.3 부터 샤드당 heap 오버헤드가 크게 줄었고(Elastic 블로그)
-공식 문서는 8.3.x 중에 이 기준을 '필드 매퍼 heap 산정(SHD-010)' 과 cluster.max_shards_per_node(CLU-015)
-로 바꿨다. 따라서 8.3 이상에서는 판정하지 않고 현황만 표기한다.
+공식 문서는 8.3.x 중에 이 기준을 '필드 매퍼 heap 산정(SHD-010)' 과 cluster.max_shards_per_node(CLU-015) 로 바꿨다.
+따라서 8.3 이상(또는 버전을 알 수 없을 때)에서는 판정하지 않고 현황만 표기한다. 전용 frozen
+노드는 별도 한도(cluster.max_shards_per_node.frozen) 아래 partial 마운트를 두므로 판정하지 않는다.
 
 ### SHD-006 — 같은 tier 노드 간 샤드 수 불균형
 
@@ -620,15 +632,19 @@ frozen 전용 노드는 원래 스냅샷 저장소에서 읽도록 설계되어 
 | --- | --- |
 | 함수 | `shards.r_shard_balance` |
 | 근거 구분 | 도구 판단 |
-| 가능 심각도 | 주의 |
+| 가능 심각도 | 주의, 참고 |
+| 임계값 | `shard_balance_min_diff` = 10 — 같은 tier 노드 간 샤드 수 차이를 보고하는 최소 개수(SHD-006) |
 | 필요 입력 | (indices.json 또는 shards.json 또는 cat_shards.txt) |
 | 근거 파일 | indices.json / nodes.json |
 
 **판정 로직**
 
-같은 tier 안에서 노드 간 샤드 수 편차가 평균의 25% 이상이면 주의.
+같은 tier 안에서 노드 간 샤드 수 편차가 평균의 25% 이상이고 shard_balance_min_diff 개 이상이면
+8.6 미만은 주의, 8.6 부터는 참고.
 
 tier 마다 보관 데이터와 노드 수가 달라 tier 간 샤드 수 차이는 정상이므로 비교하지 않는다.
+8.6 부터 desired balance allocator 는 write load 와 디스크 사용량도 반영하며, 공식 문서는 노드 작업을 고르게 하려고
+샤드 수가 일부러 고르지 않을 수 있다고 하므로, 편차는 표시하되 문제로 판정하지 않는다.
 
 ### IDX-010 — 데이터 스트림 상태 이상
 
@@ -657,7 +673,11 @@ data stream status 가 RED → 치명, YELLOW → 주의.
 
 **판정 로직**
 
-query(=shard request) cache / request cache 효율.
+query cache 와 shard request cache 의 효율.
+
+request cache 만 판정한다(적중률 < 20% 이고 eviction > hit → 주의). query cache eviction 은 merge 후 segment 가 닫히며 버려지는
+항목도 세고, miss 에는 캐싱 정책이 캐시하지 않기로 한 조회도 들어가므로, query cache 적중률이 낮은 것만으로는
+정상이며 표시만 한다.
 
 ### SHD-002, SHD-003 — 초대형 샤드 존재
 
@@ -667,14 +687,16 @@ query(=shard request) cache / request cache 효율.
 | 판정 항목 | SHD-002 초대형 샤드 존재 / SHD-003 대형 샤드 존재 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
 | 가능 심각도 | 치명, 주의 |
-| 임계값 | `shard_size_gb_crit` = 200 — [도구] 복구 시간 기준 상한<br>`shard_size_gb_warn` = 50 — [공식] 샤드 10~50GB<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 임계값 | `docs_rollover_overshoot_pct` = 5 — [도구] 롤오버된 샤드가 2억건을 넘어도 되는 허용치(ILM 은 poll_interval 마다 확인)<br>`shard_size_gb_crit` = 200 — [도구] 복구 시간 기준 상한<br>`shard_size_gb_warn` = 50 — [공식] 샤드 10~50GB<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (indices.json 또는 shards.json 또는 cat_shards.txt) |
 | 근거 파일 | indices.json |
 | 참고 문서 | [샤드 사이징 가이드](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) |
 
 **판정 로직**
 
-primary 샤드 store >= shard_size_gb_crit → 치명(SHD-002), >= shard_size_gb_warn(공식 상한 50GB) → 주의(SHD-003).
+primary 샤드 store >= shard_size_gb_crit → 치명(SHD-002), shard_size_gb_warn(공식 상한 50GB)을
+docs_rollover_overshoot_pct 넘게 초과 → 주의(SHD-003). max_primary_shard_size 50gb 롤오버(기본 제공 정책)는
+indices.lifecycle.poll_interval 마다 확인되므로, 샤드가 50GB 를 조금 넘어 끝나는 것은 설계상 정상이다.
 
 ### SHD-004 — 소형 샤드 과다
 
@@ -698,7 +720,7 @@ store < small_shard_mb 인 primary 중 사용자 인덱스 샤드 수 >= small_s
 | --- | --- |
 | 함수 | `shards.r_replica_zero` |
 | 근거 구분 | 도구 판단 |
-| 가능 심각도 | 주의 |
+| 가능 심각도 | 주의, 참고 |
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (settings.json) 그리고 (indices_stats.json) |
 | 근거 파일 | settings.json / indices_stats.json |
@@ -706,6 +728,8 @@ store < small_shard_mb 인 primary 중 사용자 인덱스 샤드 수 >= small_s
 **판정 로직**
 
 사용자 인덱스 중 number_of_replicas=0 이고 auto_expand_replicas 가 없으며 searchable snapshot 인덱스가 아닌 것 → 주의.
+
+data 노드가 1대면 replica 를 둘 곳이 없어 replica 0 이 green 이 되는 유일한 설정이므로 참고.
 
 ### IDX-002 — replica 수가 데이터 노드 수를 초과
 
@@ -752,20 +776,25 @@ primary store >= 1GB 인 인덱스에서 deleted / (docs + deleted) >= deleted_d
 
 primary 세그먼트 수 / primary 샤드 수 >= segments_per_shard_warn 이고 primary store > 100MB → 주의.
 
-### IDX-005 — merge throttling 관측
+### IDX-005 — merge I/O throttle 관측
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `shards.r_merge_throttle` |
 | 근거 구분 | 도구 판단 |
-| 가능 심각도 | 주의 |
+| 가능 심각도 | 주의, 참고 |
 | 임계값 | `merge_throttle_ratio_warn` = 0.05 — [도구]<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (indices_stats.json) |
 | 근거 파일 | indices_stats.json |
 
 **판정 로직**
 
-merges.total_throttled_time / merges.total_time >= merge_throttle_ratio_warn 이고 throttled 누적 > 60초 → 주의.
+merges.total_throttled_time / merges.total_time >= merge_throttle_ratio_warn 이고 throttled 누적 > 60초 → 표시.
+
+throttled 시간은 merge scheduler 가 merge 디스크 쓰기 속도를 제한해(auto_throttle, merge 가 밀리면 올라가는 적응형 속도)
+merge 가 쉰 시간이다. 비중이 높은 것만으로는 대개 merge 가 적은 동안 고르게 펴진 것이므로
+참고. 같은 인덱스에서 색인 throttle(indexing.throttle_time_in_millis > 0, IDX-014 참고)도 있었을 때만 merge 가
+밀린 것 → 주의.
 
 ### PERF-001, PERF-002 — 검색 평균 지연 높은 인덱스
 
@@ -798,6 +827,8 @@ query_total >= min_query_total_for_latency 인 인덱스의 평균 query 지연 
 
 indexing.index_failed 또는 search.query_failure > 0 인 인덱스. 사용자 인덱스가 포함되면 주의, 시스템 인덱스뿐이면 참고.
 실패 비율 index_failed / (index_failed + index_total) 순으로 정렬해, 쓰기의 큰 비중을 잃는 인덱스를 앞에 둔다.
+8.18 부터 통계가 index_failed_due_to_version_conflict 를 따로 보고한다. version conflict 는 op_type=create 재시도(Elastic Agent,
+Fleet)에서 정상적으로 생기므로, 실패가 version conflict 뿐인 인덱스는 이 항목을 주의로 올리지 않는다.
 
 ### MAP-001, MAP-002 — 매핑 필드 한도 상향 인덱스
 
@@ -872,7 +903,8 @@ ILM 의 readonly·shrink·forcemerge·searchable_snapshot 단계는 롤오버 �
 
 **판정 로직**
 
-인덱스가 요구하는 데이터 tier 가 실제 노드에 존재하는지.
+인덱스가 요구하는 데이터 tier 가 실제 노드에 존재하는지. 범용 data 역할은 frozen 을 포함한
+모든 tier 로 친다(Elasticsearch 소스의 DataTier).
 
 ### SHD-005 — 인덱스/샤드 규모 요약
 
@@ -888,6 +920,8 @@ ILM 의 readonly·shrink·forcemerge·searchable_snapshot 단계는 롤오버 �
 **판정 로직**
 
 샤드당 평균 크기(store / shards) < 200MB 이고 샤드 >= 300 이며 전체 store > 50GB → 주의. 그 외에는 규모 요약만 참고로 표기.
+
+partial 마운트(frozen) 샤드는 store 크기가 0 으로 보고되므로 평균 계산의 샤드 수에서 뺀다.
 
 ### SHD-016 — 쓰기 대상 shard 가 일부 노드에 몰림
 
@@ -908,7 +942,7 @@ tier 별로(frozen 과 노드 2대 미만 tier 제외) (최대 - 최소) / 평�
 최대 - 최소 >= write_shard_skew_min → 주의. SHD-006 은 전체 shard 를 비교하고,
 이 판정은 색인 부하가 실제로 걸리는 쓰기 대상 shard 만 비교한다.
 
-### IDX-014 — merge 지연으로 색인이 throttle 됨
+### IDX-014 — 색인 throttle 발생
 
 | 항목 | 내용 |
 | --- | --- |
@@ -921,9 +955,10 @@ tier 별로(frozen 과 노드 2대 미만 tier 제외) (최대 - 최소) / 평�
 
 **판정 로직**
 
-merge 가 밀려 색인이 throttle 된 상태(IDX-014).
+색인이 throttle 된 상태(IDX-014).
 
-공식: merge 의 I/O throttle 을 모두 풀어도 밀리면, merge 가 따라잡을 때까지 그 shard 의 색인을 throttle 한다.
+공식: merge 의 I/O throttle 을 모두 풀어도 밀리면, merge 가 따라잡을 때까지 그 shard 의 색인을 throttle 한다. indexing
+memory controller 도 indexing buffer 가 1.5 x indices.memory.index_buffer_size 를 넘으면 가장 바쁜 shard 를 throttle 한다(소스).
 indices_stats indexing.is_throttled = true(수집 시점) → 주의. 누적 indexing.throttle_time > 0 만 있으면 → 참고.
 
 ### IDX-015 — 미커밋 translog 가 flush 기준을 넘음
@@ -966,8 +1001,8 @@ shard 복제본당 미커밋 translog 를 index.translog.flush_threshold_size �
 대상: 사용자 인덱스 중 primary >= 2 이고 데이터 스트림 write index·searchable snapshot 이 아닌 것.
 fully mounted(cold) 인덱스는 크기는 정확하지만 shrink 할 수 없으므로 과다 건수만 집계해 원인 조치를 안내한다.
 판정: primary 샤드당 평균 크기 < oversharding_floor_shard_gb(공식 하한 10GB) 이면 과다.
-권장 primary 수 = max(1, ceil(primary 전체 크기 / oversharding_target_shard_gb(공식 상한 50GB)))
-— 샤드당 50GB 를 넘지 않는 최소 개수. 초과 샤드 = (현재 − 권장) × (1 + replica).
+권장 primary 수 = 샤드당 oversharding_target_shard_gb(공식 상한 50GB) 이하를 유지하는 현재 개수의 약수 중 가장 작은 값
+(shrink 는 약수로만 가능). 초과 샤드 = (현재 − 권장) × (1 + replica).
 초과 샤드 합계 >= oversharding_excess_warn 또는 전체 샤드 대비 비중 >= oversharding_excess_ratio_warn → 주의,
 그 외 대상이 있으면 참고.
 
@@ -977,7 +1012,7 @@ fully mounted(cold) 인덱스는 크기는 정확하지만 shrink 할 수 없으
 | --- | --- |
 | 함수 | `sharding.r_datastream_small_rollover` |
 | 근거 구분 | 도구 판단 |
-| 가능 심각도 | 주의 |
+| 가능 심각도 | 주의, 참고 |
 | 임계값 | `ds_min_backing_indices` = 5 — [도구] 데이터 스트림 판정 최소 백킹 수<br>`ds_small_backing_shard_gb` = 1 — [도구] 백킹 샤드 중앙값 기준<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (data_stream.json) 그리고 (indices_stats.json) |
 | 근거 파일 | data_stream.json / indices_stats.json |
@@ -989,7 +1024,10 @@ fully mounted(cold) 인덱스는 크기는 정확하지만 shrink 할 수 없으
 
 write index 와 partial(frozen) 마운트 백킹 인덱스(크기가 캐시 크기)를 제외한 백킹 인덱스가
 ds_min_backing_indices 개 이상이고, 그 primary 샤드당 크기의 중앙값이
-ds_small_backing_shard_gb 미만이면 주의. 롤오버가 max_age 로만 일어나고 있다는 전형적인 신호다.
+ds_small_backing_shard_gb 미만이면 표시한다. 롤오버 조건에 크기 조건(ILM 정책의 max_primary_shard_size 또는
+max_size)이 없으면 원인은 기간만으로 일어나는 롤오버 → 주의. 크기 조건이 있으면(기본 제공 logs@lifecycle,
+metrics@lifecycle 정책과 data stream lifecycle 은 primary 샤드당 50GB 에서 롤오버) 단지 수집량이 적은 것이므로
+→ 참고이며, max_age 를 늘리거나 데이터 스트림 수를 줄이도록 안내한다.
 
 ### OVS-003 — 사용자 샤드 크기 분포
 
@@ -1135,7 +1173,8 @@ Lucene 한계(2,147,483,519)는 삭제 문서를 포함한 maxDoc 기준이다. 
 rollover 는 샤드 문서 수가 2억건에 닿으면 항상 실행되고, ILM 은 poll_interval(기본 10m)마다 조건을 확인하므로
 롤오버가 끝난 인덱스는 보통 2억건을 조금 넘는다. 롤오버된 인덱스는 2억건을 docs_rollover_overshoot_pct 보다 크게
 넘었을 때만 보고한다(SHD-013, rollover 지연). searchable snapshot mount 도 쓰기가 없으므로 같게 판정한다.
-write index 와 rollover 를 쓰지 않는 인덱스는 SHD-008 로 판정한다.
+write index 와 rollover 를 쓰지 않는 인덱스는 SHD-008 로 판정한다. 암묵적 2억건 rollover 는 8.8 부터 있으므로(ILM 소스),
+8.8 미만에서는 롤오버된 인덱스도 SHD-008 로 판정한다.
 
 ### SHD-014, SHD-015 — 도구 권장 범위보다 큰 logsdb shard
 
@@ -1143,7 +1182,7 @@ write index 와 rollover 를 쓰지 않는 인덱스는 SHD-008 로 판정한다
 | --- | --- |
 | 함수 | `guidance.r_logsdb_shard_size` |
 | 판정 항목 | SHD-014 도구 권장 범위보다 큰 logsdb shard / SHD-015 공식 권장 범위보다 작게 롤오버되는 logsdb 인덱스 |
-| 근거 구분 | 공식 기준 / 도구 판단 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 참고 |
 | 임계값 | `ds_min_backing_indices` = 5 — [도구] 데이터 스트림 판정 최소 백킹 수<br>`ilm_implicit_max_shard_docs` = 200,000,000 — [공식] 샤드당 2억건이면 rollover 가 항상 실행됨. 더 큰 값은 효과 없음<br>`logsdb_rows_max` = 100 — [도구] logsdb shard 크기 표에 보여 줄 최대 인덱스 수<br>`logsdb_shard_gb_high` = 30 — [도구] logsdb shard 범위 상한(공식 상한은 50GB)<br>`logsdb_shard_gb_low` = 10 — [공식] 10~50GB 범위의 하한<br>`shard_size_gb_warn` = 50 — [공식] 샤드 10~50GB |
 | 필요 입력 | (indices.json 또는 shards.json 또는 cat_shards.txt) 그리고 (settings.json 또는 data_stream.json) |
@@ -1203,14 +1242,15 @@ false 인 동안은 새 logs-*-* 인덱스도 standard 로 만들어진다. 번�
 
 **판정 로직**
 
-마스터 후보 노드 heap 1GB당 인덱스 3000개 기준.
+마스터 후보 노드 heap 1GB당 인덱스 3000개 기준. voting-only 노드는 뺀다: 선출 마스터가 되지 않으며
+공식 문서는 heap 이 덜 필요할 수 있다고 한다. 용량의 80% 초과 → 주의, 100% 초과 → 치명.
 
 ### SHD-010 — 매핑 메타데이터가 heap 을 과도하게 점유
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `guidance.r_mapping_heap_overhead` |
-| 근거 구분 | 공식 기준 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의, 참고, 정상 |
 | 임계값 | `heap_baseline_bytes` = 512MiB — [공식] 필드 매퍼 산정 시 추가 여유 0.5GB<br>`mapping_heap_pct_warn` = 50 — [도구] 매핑 오버헤드 추정 / heap |
 | 필요 입력 | (nodes_stats.json) 그리고 (cluster_stats.json) |
@@ -1247,7 +1287,7 @@ docs.count=0 인 사용자 인덱스 수 >= empty_index_count_warn → 주의.
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `guidance.r_total_shards_per_node` |
-| 근거 구분 | 공식 기준 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 참고 |
 | 임계값 | `heavy_index_docs` = 10,000,000 — [도구] 대량 색인 인덱스 기준<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (settings.json) 그리고 (indices_stats.json) |
@@ -1258,12 +1298,15 @@ docs.count=0 인 사용자 인덱스 수 >= empty_index_count_warn → 주의.
 
 핫스팟 방지용 index.routing.allocation.total_shards_per_node 설정 여부(대형 색인 인덱스).
 
+현재 write 대상만 표시한다: 롤오버된 인덱스와 searchable snapshot 인덱스는 쓰기가 없어 이 설정이 의미가 없다
+(데이터 스트림은 index template 에 둔다).
+
 ### PERF-004 — 쓰기 대상 샤드당 indexing buffer 부족
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `guidance.r_index_buffer` |
-| 근거 구분 | 공식 기준 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 참고 |
 | 임계값 | `index_buffer_per_shard_warn` = 32MiB — [도구] 쓰기 대상 샤드당(공식 상한은 512MB) |
 | 필요 입력 | (nodes.json) 그리고 (indices.json 또는 shards.json 또는 cat_shards.txt) |
@@ -1277,6 +1320,7 @@ docs.count=0 인 사용자 인덱스 수 >= empty_index_count_warn → 주의.
 indices.memory.index_buffer_size(기본 heap 10%)는 '최근 쓰기가 있는(active) 샤드' 가 나눠 쓴다.
 5분 이상(indices.memory.shard_inactive_time, 소스 기준) 쓰기가 없는 샤드는 inactive 로 버퍼를 반납한다. 번들에서 active 여부를 직접 알 수 없으므로
 쓰기 대상으로 확정 가능한 샤드(데이터 스트림 write index + 수집 순간 색인 중인 인덱스)만 센다.
+recent_write_load(9.x 통계)가 0 인 데이터 스트림 write index 는 최근 쓰기가 없으므로 뺀다.
 
 ### PERF-005 — 열린 search context 과다
 
@@ -1325,12 +1369,15 @@ search.default_search_timeout 이 미설정 또는 -1(무제한)이면 참고.
 
 search-speed 의 권장식: replicas = max(max_failures, ceil(num_nodes/num_primaries) - 1).
 
+num_nodes 는 전체 data 노드가 아니라 인덱스가 있는 tier(primary 샤드의 tier)의 data 노드 수다.
+searchable snapshot 마운트는 건너뛴다(설계상 replica 0).
+
 ### PERF-008 — index.store.preload 사용 인덱스
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `guidance.r_store_preload` |
-| 근거 구분 | 공식 기준 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의, 참고 |
 | 임계값 | `preload_index_count_warn` = 5 — [도구]<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (settings.json) |
@@ -1376,7 +1423,8 @@ primary store >= codec_check_min_bytes 이고 index.codec 를 기본값(미설�
 
 기본 codec 이 best_compression 인 index mode 는 뺀다: logsdb, 그리고 9.5 에 추가된 columnar·logsdb_columnar 모드
 (공식 logsdb 문서와 Elasticsearch 소스의 IndexMode). standard, time_series, vectordb_document 인덱스는 기본이
-LZ4 codec 이다.
+LZ4 codec 이다. searchable snapshot 마운트는 건너뛰고(설정이 snapshot 에서 오며 바꿀 수 없음), 저장된 _source 가 없는
+인덱스(synthetic 또는 time_series. codec 이 영향을 주는 저장 데이터가 적음)도 건너뛴다.
 
 ### DISK-007 — _source 비활성 인덱스
 
@@ -1450,14 +1498,19 @@ system 인덱스는 건너뛴다.
 
 8.14 부터 index_options 가 없는 float dense_vector 는 기본으로 양자화된 HNSW 가 된다(int8_hnsw. 9.1 부터 384 차원 이상은 bbq_hnsw,
 9.4 부터는 라이선스가 허용하면 bbq_disk). byte·bit 벡터는 양자화하지 않으므로 판정하지 않는다.
-그래서 8.14 이상에서 '미지정' 은 문제로 보지 않고, 명시적 비양자화 타입(hnsw/flat)만 판정한다.
+그래서 8.14 이상에서 '미지정' 은 문제로 보지 않고, 명시적 비양자화 타입(hnsw/flat)만 판정한다(VEC-002).
+index: false 인 필드(또는 dense_vector 가 기본으로 색인되지 않던 8.11 미만에서 index 파라미터가 없는 필드)는 HNSW 가 없어
+건너뛰며, 양자화 타입이 없는 8.12 미만에서는 판정하지 않는다.
+VEC-003(참고): 9.2 부터 index.mapping.exclude_source_vectors 가 기본으로 켜져 있으므로 이를 false 로 둔 template 만 표시한다.
+9.2 미만에는 이 설정이 없으므로, mappings._source.excludes 가 벡터 필드를 덮지 않는 template 을 표시하고
+그 방식으로 제외할 때의 trade-off 를 설명한다.
 
 ### VEC-004 — 벡터 인덱스의 세그먼트 수 과다
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `guidance.r_vector_segments` |
-| 근거 구분 | 공식 기준 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의 |
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수<br>`vector_segments_per_shard_warn` = 20 — [도구] |
 | 필요 입력 | (indices_stats.json) 그리고 (indices.json 또는 shards.json 또는 cat_shards.txt) |
@@ -1485,16 +1538,17 @@ system 인덱스는 건너뛴다.
 **판정 로직**
 
 tier 단위 CPU 포화. 한 tier 의 모든 노드가 load15/CPU >= load_per_cpu_warn 또는 CPU% >= tier_cpu_pct_warn 이면 주의.
+OS-001 과 같이, CPU 사용이 낮은 컨테이너 노드는 load 만으로 세지 않는다(load 가 호스트 값일 수 있음).
 
 노드 간 '편중'(HOT-001)과 다르다. 부하가 고르게 분산되어도 tier 전체가 한계에 있으면 노드를 추가하거나 부하를 줄여야 한다.
-그 tier 의 cgroup CPU throttling(OS-003)과 쓰기 스레드풀 rejection(TP-001)을 근거로 함께 제시한다.
+그 tier 의 cgroup CPU throttling(OS-003)과 write, write_coordination, search 스레드풀 rejection(TP-001)을 근거로 함께 제시한다.
 
 ### HOT-001 — 같은 tier 안에서 자원 사용률 편중(hot spotting 의심)
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `hotspot.r_resource_hotspot` |
-| 근거 구분 | 공식 기준 |
+| 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의, 정상 |
 | 임계값 | `disk_imbalance_pct_warn` = 15 — [도구] 노드 간 디스크 사용률 편차(%p)<br>`hotspot_cpu_pct_floor` = 50 — [도구]<br>`hotspot_cpu_pct_gap` = 40 — [도구]<br>`hotspot_disk_pct_floor` = 50 — [도구]<br>`hotspot_heap_pct_floor` = 70 — [도구] 최대값이 이 미만이면 무시<br>`hotspot_heap_pct_gap` = 30 — [도구] 노드 간 heap 편차(%p)<br>`node_compare_min_uptime_hours` = 24 — [도구] uptime 이 이보다 짧은 노드는 노드 간 비교에서 제외 |
 | 필요 입력 | (nodes_stats.json) |
@@ -1547,7 +1601,9 @@ uptime 이 node_compare_min_uptime_hours 미만인 노드는 heap·CPU 비교에
 
 **판정 로직**
 
-desired balance 미수렴(원하는 위치에 있지 않은 샤드).
+desired balance 미수렴. 원하는 위치에 있지 않은 샤드(cat allocation shards.undesired) >= undesired_shards_warn →
+재배치·초기화 중인 샤드가 없으면(정체) 주의, rebalance 가 옮기는 중이면 참고(HOT-003). balance 계산이
+아직 진행 중(내부 desired balance 통계 computation_active=true) → 참고(HOT-004).
 
 ### REC-001 — 복구 진행 중 — 복구 대역 제한 확인
 
@@ -1565,7 +1621,7 @@ desired balance 미수렴(원하는 위치에 있지 않은 샤드).
 
 복구 대역 제한.
 
-indices.recovery.max_bytes_per_sec 의 기본값(40mb)은 그 자체로 문제가 아니다.
+indices.recovery.max_bytes_per_sec 의 기본값(40mb)은 그 자체로 문제가 아니며, 0 이하는 무제한이다.
 복구·재배치가 실제로 진행 중일 때만 복구 시간의 병목 후보로 보고한다.
 
 ### TPL-001 — 레거시 템플릿이 composable 템플릿에 가려짐(추정)
@@ -1688,7 +1744,7 @@ hot 디스크가 감당하는 것보다 늦게 데이터가 옮겨진다는 뜻�
 
 하루 수집량 = 최근 ingest_window_days 안에 만들어진 사용자 인덱스의 store 크기(replica 포함) + 그보다 오래된 write index 중
 구간에 해당하는 부분(크기 × 구간 / 나이)을 구간 일수로 나눈 값(클러스터가 더 젊으면 그 기간). searchable
-snapshot 마운트와 system 인덱스는 뺀다. 수집 대상 tier = write 대상 샤드가 있는 tier(frozen 제외). 그중 hot tier 가
+snapshot 마운트, system 인덱스, shrink·downsample 사본(생성일은 새것이고 데이터는 오래됨)은 뺀다. 수집 대상 tier = write 대상 샤드가 있는 tier(frozen 제외). 그중 hot tier 가
 있으면 hot tier 만 센다. 새 data stream 인덱스는 기본으로 hot 에 만들어지고, 다른 tier 에 있는 write 대상은 대개
 rollover 없이 정책이 옮긴 작은 인덱스이기 때문이다.
 여유 = 그 노드들의 (high watermark 에서 허용하는 바이트 − 사용 바이트) 합. 일수 = 여유 / 하루 수집량.
@@ -1722,7 +1778,7 @@ synthetics), 보안 알림, system, 기타 데이터 스트림, 기타 인덱스
 | 함수 | `cost.r_tier_sizing` |
 | 근거 구분 | 도구 판단 |
 | 가능 심각도 | 참고 |
-| 임계값 | `load_per_cpu_warn` = 1.0 — [도구] load15 / CPU 코어<br>`size_idle_cpu_pct` = 20 — [도구] tier 의 모든 노드 CPU 가 이보다 낮으면 여유 큼 후보<br>`size_idle_disk_pct` = 30 — [도구] ... 그리고 디스크 사용률이 이보다 낮음(frozen 제외)<br>`size_idle_heap_pct` = 50 — [도구] ... 그리고 heap 사용률이 이보다 낮음<br>`size_idle_load_per_cpu` = 0.3 — [도구] ... 그리고 load15/CPU 가 이보다 낮음<br>`tier_cpu_pct_warn` = 75 — [도구] tier 전체 포화 판정 CPU% |
+| 임계값 | `size_idle_cpu_pct` = 20 — [도구] tier 의 모든 노드 CPU 가 이보다 낮으면 여유 큼 후보<br>`size_idle_disk_pct` = 30 — [도구] ... 그리고 디스크 사용률이 이보다 낮음(frozen 제외)<br>`size_idle_heap_pct` = 50 — [도구] ... 그리고 heap 사용률이 이보다 낮음<br>`size_idle_load_per_cpu` = 0.3 — [도구] ... 그리고 load15/CPU 가 이보다 낮음<br>`tier_cpu_pct_warn` = 75 — [도구] tier 전체 포화 판정 CPU% |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
 | 참고 문서 | [데이터 tier](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
@@ -1731,7 +1787,8 @@ synthetics), 보안 알림, system, 기타 데이터 스트림, 기타 인덱스
 
 번들 하나로 본 data tier 별 사이징 신호(COST-006).
 
-부족 신호: 모든 노드가 바쁨(load15/CPU >= load_per_cpu_warn 또는 CPU >= tier_cpu_pct_warn, HOT-005 와 같은 기준), tier 노드의 write·
+부족 신호: 모든 노드가 바쁨(load15/CPU >= load_per_cpu_warn 또는 CPU >= tier_cpu_pct_warn, 컨테이너 예외를 포함한 HOT-005 와 같은
+기준), tier 노드의 write·
 search 거부, indexing pressure 거부, high watermark 이상인 노드(frozen 제외) 중 하나라도 있음. 여유 큼: tier 의 모든 노드가
 node_compare_min_uptime_hours 이상 떠 있었고 CPU < size_idle_cpu_pct, load15/CPU < size_idle_load_per_cpu, heap <
 size_idle_heap_pct, 디스크 < size_idle_disk_pct(frozen 은 디스크 제외)이며 거부가 없음. 나머지는
@@ -1756,8 +1813,9 @@ size_idle_heap_pct, 디스크 < size_idle_disk_pct(frozen 은 디스크 제외)�
 
 이 클러스터 안에 스택 모니터링 데이터(.monitoring-* 또는 *stack_monitoring* 데이터 스트림)가 있으면 자기 자신에게
 수집하는 구성이다(운영 환경은 별도 모니터링 클러스터 권장). 없으면 별도 클러스터로 보내는지 번들만으로 알 수 없으므로
-확인을 안내한다. 레거시 내부 수집(xpack.monitoring.collection.enabled=true)도 함께 표기하고,
-9.5 부터는 모니터링 플러그인 수집이 deprecated 이며 10.0 에서 제거된다는 점을 덧붙인다(공식 deprecations).
+확인을 안내한다. 레거시 내부 수집(cluster settings 또는 elasticsearch.yml 의 xpack.monitoring.collection.enabled=true)도 함께 표기하고
+7.16 부터 deprecated 라는 점을 덧붙인다. 9.5 부터는 10.0 에서
+제거된다는 점도 덧붙인다(공식 deprecations).
 
 ### LIC-001 — 라이선스 정상
 
@@ -1788,7 +1846,7 @@ license.status != active → 치명. 만료까지 <= license_expiry_days_crit �
 
 **판정 로직**
 
-저장소도 스냅샷도 없음 → 치명(SNP-001). FAILED/PARTIAL 스냅샷 존재 → 주의, 그보다 늦은 성공 스냅샷이 없으면 치명(SNP-002). 마지막 '성공(SUCCESS)' 스냅샷 경과(snapshot.json 에 시각이 없으면 SLM 정책의 last_success 시각) >= snapshot_age_hours_crit → 치명, >= warn → 주의, 그 외 정상(SNP-003, 진행 중·실패·부분 스냅샷은 RPO 산정에서 제외). 시각 정보가 있는데 성공 스냅샷이 없으면 치명. IN_PROGRESS 존재 → 참고(SNP-004). SLM 누적 실패 >= snapshot_failed_warn → 주의(SNP-005). SLM operation_mode != RUNNING → 주의(SNP-006). SLM 정책의 마지막 실패가 마지막 성공보다 최근이면 치명(SNP-007).
+저장소도 스냅샷도 없음 → 치명(SNP-001). FAILED/PARTIAL 스냅샷 존재 → 주의, 그보다 늦은 성공 스냅샷이 없음이 확인되면 치명(SNP-002. 시각 없이 나열된 스냅샷은 주의로 둔다). 마지막 '성공(SUCCESS)' 스냅샷 경과(snapshot.json 에 시각이 없으면 SLM 정책의 last_success 시각) >= snapshot_age_hours_crit → 치명, >= warn → 주의, 그 외 정상(SNP-003, 진행 중·실패·부분 스냅샷은 RPO 산정에서 제외). 시각 정보가 있는데 성공 스냅샷이 없으면 치명. IN_PROGRESS 존재 → 참고(SNP-004). SLM 누적 실패 >= snapshot_failed_warn → 참고(SNP-005, 전체 기간 누적값). SLM operation_mode != RUNNING → 주의(SNP-006). SLM 정책의 마지막 실패가 마지막 성공보다 최근이면 치명(SNP-007).
 
 ### ILM-001, ILM-002, ILM-003 — ILM 중지 상태
 
@@ -1804,7 +1862,7 @@ license.status != active → 치명. 만료까지 <= license_expiry_days_crit �
 
 **판정 로직**
 
-ILM operation_mode != RUNNING → 주의(ILM-001). ilm_explain 의 step=ERROR 또는 failed_step 존재 → 롤오버 관련 단계 실패가 있으면 치명, 그 외(삭제·축소·이동 단계, write index 삭제 실패 등)는 주의(ILM-002). ILM 미적용(managed=false) 사용자 인덱스 중 primary > 10GB → 참고(ILM-003).
+ILM operation_mode != RUNNING → 주의(ILM-001). ilm_explain 의 step=ERROR 또는 failed_step 존재 → 롤오버 관련 단계 실패가 있으면 치명, 그 외(삭제·축소·이동 단계, write index 삭제 실패 등)는 주의(ILM-002). ILM 미적용(managed=false) 사용자 인덱스 중 primary > 10GB → 참고(ILM-003). data stream lifecycle 이 관리하는 인덱스는 미적용으로 세지 않는다. 더 이상 쓰지 않는(롤오버된) 인덱스의 롤오버 단계 오류는 치명이 아니라 주의다.
 
 ### ML-001, ML-002 — Transform 실패 상태
 
@@ -1815,12 +1873,13 @@ ILM operation_mode != RUNNING → 주의(ILM-001). ilm_explain 의 step=ERROR �
 | 근거 구분 | 사실 보고 |
 | 가능 심각도 | 주의 |
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
-| 필요 입력 | (transform_stats.json 또는 ml_anomaly_detectors.json) |
-| 근거 파일 | commercial/ml_anomaly_detectors.json / commercial/transform_stats.json |
+| 필요 입력 | (transform_stats.json 또는 ml_stats.json 또는 ml_anomaly_detectors.json) |
+| 근거 파일 | commercial/ml_stats.json / commercial/transform_stats.json |
 
 **판정 로직**
 
-transform state 가 failed/aborting → 주의(ML-001). 이상탐지 job state=failed → 주의(ML-002).
+transform state 가 failed/aborting → 주의(ML-001). 이상탐지 job state=failed → 주의(ML-002). job state 는
+job 통계(commercial/ml_stats.json, GET _ml/anomaly_detectors/_stats)에 있으며 job 설정 파일에는 state 가 없다.
 
 ### SEC-001 — TLS 인증서 만료 여유
 
@@ -1871,13 +1930,14 @@ GeoIP failed_downloads 또는 expired_databases > 0 → 참고(폐쇄망에서�
 | --- | --- |
 | 함수 | `ops.r_ccr` |
 | 근거 구분 | 사실 보고 |
-| 가능 심각도 | 주의 |
+| 가능 심각도 | 주의, 참고 |
 | 필요 입력 | (ccr_stats.json) |
 | 근거 파일 | commercial/ccr_stats.json |
 
 **판정 로직**
 
-CCR follower 샤드에 read_exceptions 또는 failed_read/write_requests 가 있으면 주의.
+CCR follower 샤드에 read_exceptions(현재 오류) 또는 fatal_exception 이 있으면 주의(OPS-002). failed_read/write_requests 는
+follower task 별 누적값이므로, 이 카운터만 있는 샤드는 참고로 표시한다(과거 remote 재시작도 남김).
 
 ## 매핑 · ILM 정책 · 클러스터 조정 · 세부 통계
 
@@ -1937,10 +1997,11 @@ io_time 은 ES 기동 이후 장치가 I/O 를 처리한 누적 시간이다. >=
 
 mapping.json 의 실제 매핑으로 인덱스별 필드 수를 공식 산정 방식(필드·object·multi-field·runtime 각 1개)으로 센다.
 
-필드 수 >= total_fields.limit × mapping_fields_near_limit_pct → 주의(MAP-004, ignore_dynamic_beyond_limit=true 면 참고).
+필드 수 >= total_fields.limit × mapping_fields_near_limit_pct → 주의(MAP-004, 표시된 인덱스가 모두 ignore_dynamic_beyond_limit=true 면 참고).
 ignore_dynamic_beyond_limit 가 없는 인덱스는 색인이 실패할 수 있으므로 표의 앞에 둔다. data stream template 을 누가 관리하는지
 (Fleet package 또는 Elastic)도 함께 보여 준다. integration template 은 대개 ignore 옵션을 켜 두기 때문이다.
-searchable snapshot mount 는 읽기 전용이라 제외한다.
+searchable snapshot mount 와 롤오버된 인덱스는 새 필드가 들어오지 않으므로 MAP-004 에서 제외한다. runtime 필드는
+8.5 부터 한도에 포함된다(소스의 MappingLookup).
 text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_fields.limit × nested_fields_near_limit_pct → 주의(MAP-006). 기본 한도는 9.3 이후 만든 인덱스는 100, 그 전은 50.
 
 ### VEC-005 — 실제 인덱스의 고차원 float 벡터가 비양자화
@@ -1959,7 +2020,10 @@ text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_f
 
 실제 인덱스 매핑에서 비양자화(hnsw·flat)를 명시한 고차원 float dense_vector 를 찾는다(VEC-005, 주의).
 
-8.14 미만에서는 index_options 미지정도 비양자화이므로 포함한다. 템플릿 기준 판정(VEC-002)을 실제 인덱스로 보완한다.
+8.14 미만에 만든 인덱스(index version 8_505_0_00 미만)에서는 index_options 미지정도 비양자화이므로 포함한다.
+index: false 인 필드는 HNSW 그래프가 없어 건너뛰며, dense_vector 가 기본으로 색인되지 않던 8.11 미만에 만든 인덱스
+(index version 8_500_0_00 미만)에서 index 파라미터가 없는 필드도 건너뛴다. 8.12 미만에는 양자화 타입이 없어 판정하지 않는다.
+템플릿 기준 판정(VEC-002)을 실제 인덱스로 보완한다.
 
 ### ILM-004, ILM-005, ILM-007, ILM-006 — 크기 기준 없이 롤오버하는 ILM 정책
 
@@ -1980,8 +2044,9 @@ text 필드의 fielddata=true → 주의(MAP-005). nested 필드 수 >= nested_f
 
 hot 롤오버에 max_primary_shard_size(또는 max_size)가 없으면 주의(ILM-004): 공식 권장은 샤드 크기 기준 롤오버이며,
 max_age 단독이면 수집량에 따라 작은 인덱스가 쌓인다(OVS-002 의 원인). max_primary_shard_size > 50GB 면 주의(ILM-005).
-delete 단계가 없으면 참고(ILM-006, 보존 기간 무제한). Elastic 관리 정책(_meta.managed=true)은 표에 표시만 한다.
-max_primary_shard_docs 가 200,000,000 을 넘으면 참고(ILM-007): rollover 는 샤드당 2억건에서 항상 실행되므로 더 큰 값은 효과가 없다(공식).
+delete 단계가 없으면 참고(ILM-006, 보존 기간 무제한). Elastic 관리 정책(_meta.managed=true)도 똑같이 확인하고 표에 "(Elastic 관리)" 로 표시한다.
+max_primary_shard_docs 가 200,000,000 을 넘으면 참고(ILM-007): 8.8 부터 rollover 는 샤드당 2억건에서 항상 실행되므로 더 큰
+값은 효과가 없다(공식). 8.8 미만에는 이런 암묵 조건이 없으므로 ILM-007 을 내지 않는다.
 
 ### ILM-008, ILM-009 — force merge 여유 디스크 부족
 
@@ -2043,6 +2108,8 @@ cluster_state 의 voting_config_exclusions 가 비어 있지 않으면 주의(CL
 nodes_shutdown_status 의 종료 레코드. STALLED → 치명, IN_PROGRESS → 참고, COMPLETE 인데 노드가 클러스터에 있음 → 주의(SHUT-001).
 
 종료 레코드는 삭제하기 전까지 남는다. 작업 후 남으면 해당 노드로의 샤드 할당이 계속 제한될 수 있다.
+REMOVE, REPLACE, SIGTERM 레코드가 그렇다. RESTART 레코드는 할당을 제한하지 않고(노드가 떠난 뒤 재할당만 늦춤)
+바로 COMPLETE 로 보이므로, 완료된 RESTART 레코드는 참고로 둔다.
 
 ### IDX-012 — 샤드 저장소 예외(손상 의심)
 
@@ -2050,14 +2117,15 @@ nodes_shutdown_status 의 종료 레코드. STALLED → 치명, IN_PROGRESS → 
 | --- | --- |
 | 함수 | `deep.r_shard_store_errors` |
 | 근거 구분 | 사실 보고 |
-| 가능 심각도 | 치명 |
+| 가능 심각도 | 치명, 주의 |
 | 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (shard_stores.json) |
 | 근거 파일 | shard_stores.json |
 
 **판정 로직**
 
-shard_stores 에 store_exception 이 있는 샤드 사본 → 치명(IDX-012, 데이터 손상 의심).
+shard_stores 에 store_exception 이 있는 샤드 사본(IDX-012). 손상 징후(CorruptIndexException, checksum, corrupt) →
+치명. close 중 잡힌 shard lock, 없는 shard 경로 같은 그 외 store exception 은 일시적인 경우가 많아 → 주의.
 
 ### OPS-003 — 원격 클러스터 연결 끊김
 
@@ -2080,14 +2148,16 @@ remote_cluster_info 에서 connected=false 인 원격 클러스터 → 주의(OP
 | 함수 | `deep.r_frozen_cache` |
 | 근거 구분 | 도구 판단 |
 | 가능 심각도 | 주의, 참고 |
+| 임계값 | `frozen_cache_turnover_per_day` = 1.0 — 과도한 교체로 보는 frozen shared cache 일 평균 eviction(캐시 region 수의 배수, FRZ-001) |
 | 필요 입력 | (searchable_snapshots_cache_stats.json) |
 | 근거 파일 | searchable_snapshots_cache_stats.json |
 
 **판정 로직**
 
-frozen shared cache 통계. eviction 이 캐시 region 수를 넘은 노드가 있으면 주의(FRZ-001), 그 외 데이터가 있으면 참고.
-
-eviction > region 수는 캐시 전체가 최소 한 번 이상 교체되었다는 뜻으로, 검색 대상 대비 캐시가 작다는 신호다(도구 판단).
+frozen shared cache 통계(FRZ-001). eviction 은 노드 시작 이후 누적이며, partial 마운트 인덱스가 삭제되거나 옮겨질 때(ILM delete)
+해제되는 region 도 세므로, 노드 uptime 기준 일 평균으로 바꿔 본다.
+일 평균 eviction 이 frozen_cache_turnover_per_day x region 수를 넘으면(캐시 전체가 그만큼 자주 교체됨) → 주의.
+검색 대상 대비 캐시가 작다는 신호다(도구 판단). 그 외 데이터가 있으면 참고.
 
 ### FRZ-002 — frozen shared cache 가 네트워크 파일시스템에 있음
 
@@ -2201,7 +2271,8 @@ trained model 배포의 state 가 started 가 아니거나 할당 상태가 full
 
 **판정 로직**
 
-watcher 가 수동 중지되었는데 watch 가 있으면 주의(OPS-005). 오토스케일링 요구 용량이 현재 용량보다 크면 참고(OPS-004).
+watcher 가 수동 중지되었는데 watch 수가 남아 있으면 주의, 아니면 참고(OPS-005. watcher 를 중지하면 통계의 watch
+수가 비워진다). 오토스케일링 요구 storage 또는 memory 가 현재보다 크면 참고(OPS-004).
 rollup job 이 있으면 참고(OPS-006, rollup 은 downsampling 으로 대체되어 deprecated).
 
 ## 런타임 (hot threads · 로그)
@@ -2242,16 +2313,16 @@ logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는�
 
 ## OS 설정 (local/remote 모드 syscalls/)
 
-### SYS-001, SYS-002, SYS-003, SYS-004 — vm.max_map_count 가 bootstrap check 최소값 미달
+### SYS-001, SYS-002, SYS-003, SYS-004 — mmap 사용 안 함(node.store.allow_mmap: false)
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `syscalls.r_os_config` |
-| 판정 항목 | SYS-001 vm.max_map_count 가 bootstrap check 최소값 미달 / SYS-002 swap 이 있는데 vm.swappiness 가 높음 / SYS-003 Elasticsearch 프로세스 한도가 최소 요건 미달 / SYS-004 커널 OOM killer 기록 |
+| 판정 항목 | SYS-001 mmap 사용 안 함(node.store.allow_mmap: false) / SYS-002 swap 이 있는데 vm.swappiness 가 높음 / SYS-003 Elasticsearch 프로세스 한도가 최소 요건 미달 / SYS-004 커널 OOM killer 기록 |
 | 근거 구분 | 공식 기준 / 사실 보고 |
 | 가능 심각도 | 치명, 주의, 참고, 정상 |
 | 필요 입력 | (syscalls/sysctl.txt 또는 syscalls/proc-limit.txt 또는 syscalls/dmesg.txt) |
-| 근거 파일 | syscalls/dmesg.txt / syscalls/proc-limit.txt / syscalls/sysctl.txt |
+| 근거 파일 | syscalls/dmesg.txt / syscalls/proc-limit.txt / syscalls/sysctl.txt / syscalls/sysctl.txt / nodes.json |
 | 참고 문서 | [vm.max_map_count 설정](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/vm-max-map-count)<br>[Bootstrap checks](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/bootstrap-checks)<br>[Swap 비활성화](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/setup-configuration-memory)<br>[File descriptors 설정](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/file-descriptors)<br>[스레드 수 한도 설정](https://www.elastic.co/docs/deploy-manage/deploy/self-managed/max-number-of-threads) |
 
 **판정 로직**
@@ -2260,6 +2331,7 @@ logs/ 디렉터리가 없으면 참고(LOG-000). local/remote 로 수집했는�
 
 syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) 미만 → 치명, 1048576(공식 권고값, 8.15~8.17 문서부터. 이전은 262144) 미만 → 참고, 이상 → 정상(SYS-001). sysctl 의 vm.swappiness 가 1 초과이고 swap_total > 0 이며 mlockall 이 true 가 아님 → 참고(SYS-002). syscalls/proc-limit.txt 의 Max open files 가 65535 미만 또는 Max processes 가 4096 미만(soft 기준) → 치명(SYS-003), 충족 → 정상. syscalls/dmesg.txt 에 OOM killer 기록이 있고 대상 프로세스가 java/elasticsearch → 치명, 그 외 프로세스 → 주의(SYS-004), 기록 없음 → 정상.
 모든 노드가 개발 모드(transport 가 loopback 이거나 single-node discovery)이면 bootstrap check 가 적용되지 않으므로 SYS-001 과 SYS-003 의 치명은 주의로 낮춘다.
+모든 노드가 node.store.allow_mmap: false 이면 ES 가 max map count 검사를 건너뛰므로 SYS-001 은 참고로만 표시한다.
 
 ## 변화 추세 (--baseline 비교 모드)
 
@@ -2318,6 +2390,7 @@ syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) �
 **판정 로직**
 
 노드·풀별 rejected 증가분. 합계 > 0 → 주의, >= rejected_crit → 치명(DIF-005). 누적값은 0 이 아니지만 증가분이 0 → 참고(DIF-004, 과거 이력).
+구간 중 재시작한 노드(uptime 감소)는 0 부터 센다: 현재 값 전체가 uptime 동안의 증가분이다.
 
 ### DIF-006 — Old GC 발생 추이
 
@@ -2331,7 +2404,8 @@ syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) �
 
 **판정 로직**
 
-old GC 증가분. 시간당 증가 >= old_gc_per_hour_warn 또는 구간 GC 시간 비중 >= old_gc_time_ratio_warn → 주의, 그 외 참고. 카운터가 줄어든(재기동) 노드는 제외.
+old GC 증가분. 시간당 증가 >= old_gc_per_hour_warn 또는 구간 GC 시간 비중 >= old_gc_time_ratio_warn → 주의, 그 외 참고.
+재시작한 노드(uptime 감소)는 uptime 동안 0 부터 센다.
 
 ### DIF-007 — Circuit breaker 발동 진행 중
 
@@ -2344,7 +2418,7 @@ old GC 증가분. 시간당 증가 >= old_gc_per_hour_warn 또는 구간 GC 시�
 
 **판정 로직**
 
-breaker tripped 증가분 > 0 → 치명.
+breaker tripped 증가분 > 0 → 치명. 재시작한 노드(uptime 감소)는 0 부터 센다.
 
 ### DIF-008 — 디스크 증가율 기반 포화 예상
 
@@ -2363,7 +2437,9 @@ breaker tripped 증가분 > 0 → 치명.
 같은 티어 안에서는 ILM 이동과 리밸런싱이 여유 있는 노드로 샤드를 옮기므로, 몇 시간 사이에 한 노드는 빠르게 늘고 다른 노드는
 줄 수 있다. 실제로 차는 것은 티어 전체이므로 일수 = 티어 노드들의 high watermark 까지 남은 바이트 합 / 시간당 증가량 합.
 노드별 값도 그대로 보여 준다. 티어 일수 <= 7 → 심각, <= disk_projection_days_warn
-→ 주의, 그 외 참고. frozen 전용 노드는 shared cache 를 미리 잡아 두므로 제외한다.
+→ 주의, 그 외 참고. frozen 전용 노드는 shared cache 를 미리 잡아 두므로 제외한다. 증가량은 사용 바이트의 변화이므로
+디스크 크기를 바꾼 것은 증가로 세지 않는다. 두 번들 사이에 노드 구성이 바뀐 티어는 표시만 하고
+판정하지 않는다: 샤드가 노드 사이에서 옮겨졌으므로 그 증가는 수집량이 아니다.
 
 ### DIF-009 — 구간 처리량과 노드 간 분포
 
@@ -2372,7 +2448,7 @@ breaker tripped 증가분 > 0 → 치명.
 | 함수 | `diff.r_throughput` |
 | 근거 구분 | 비교 계산 |
 | 가능 심각도 | 주의, 참고 |
-| 임계값 | `workload_skew_ratio_warn` = 1.8 — [도구] 최대 노드 / 평균 |
+| 임계값 | `workload_skew_min_per_sec` = 10 — DIF-009 indexing 편중을 판정하는 tier 노드당 최소 평균 초당 처리량<br>`workload_skew_ratio_warn` = 1.8 — [도구] 최대 노드 / 평균 |
 | 근거 파일 | nodes_stats.json (두 번들 비교) |
 
 **판정 로직**
@@ -2380,7 +2456,7 @@ breaker tripped 증가분 > 0 → 치명.
 구간 동안 노드별 index_total / query_total 증가량을 초당 처리량으로 환산한다(replica 작업 포함).
 
 data 노드만 센다. 편중은 tier 안에서 비교한다: 가장 바쁜 노드 / tier 평균 >= workload_skew_ratio_warn → 주의,
-아니면 참고. 구간 중 재시작한 노드(uptime 감소)는 카운터가 초기화되었으므로 표에는 보이되
+아니면 참고. tier 평균이 초당 workload_skew_min_per_sec 건 미만이면 판정하기에 너무 한산하다. 구간 중 재시작한 노드(uptime 감소)는 카운터가 초기화되었으므로 표에는 보이되
 합계와 편중 계산에서는 뺀다.
 
 ### DIF-010, DIF-011 — 인덱스 증가량 상위
@@ -2431,6 +2507,8 @@ query_total 증가량을 초당 작업 수로 바꾼다(replica 작업 포함). 
 **판정 로직**
 
 이전 번들과 현재 번들의 치명·주의 판정 ID 를 비교해 신규 발생 / 악화 / 해소 목록을 만든다. 다른 판정의 요약이므로 항상 참고(점수·건수 이중 계산 방지).
+
+현재 번들에서 실행되지 않은 규칙(입력 파일 없음, skipped 로 기록)의 판정은 해소로 세지 않는다.
 
 ## 설정 지식 베이스
 
@@ -2497,9 +2575,9 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `index.max_shingle_diff` | 3 | dynamic | index | shingle 필터 min/max 차이 허용치. | ↑ 토큰 수가 급증합니다.<br>↓ 분석기 정의가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.max_terms_count` | 65536 | dynamic | index | terms 쿼리의 최대 항목 수. | ↑ 대형 terms 쿼리가 CPU·heap 을 크게 씁니다.<br>↓ 해당 쿼리가 거부됩니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.merge.policy.floor_segment` | 16mb (9.5 이전 2mb) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 대상을 고를 때 이보다 작은 세그먼트는 이 크기로 간주합니다. | ↑ 작은 세그먼트를 더 빨리 합쳐 세그먼트는 줄지만 merge I/O 가 늘어납니다.<br>↓ 작은 세그먼트가 쌓여 검색이 더 많은 세그먼트를 거칩니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.max_merge_at_once` | 16 (9.5 이전 10) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 한 번에 합치는 최대 세그먼트 수(tiered merge policy). | ↑ merge 횟수는 줄고 한 번의 I/O 는 커집니다.<br>↓ 작은 merge 가 잦아지고 세그먼트 수가 천천히 줄어듭니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.max_merged_segment` | 5gb (8.11 이후 data stream 인덱스는 100gb) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 로 만들어지는 세그먼트의 최대 크기. | ↑ 세그먼트 수가 줄어 검색(특히 kNN)이 빨라지지만 merge 한 번의 I/O 가 커집니다.<br>↓ 세그먼트가 많아져 검색이 느려집니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
-| `index.merge.policy.segments_per_tier` | 8 (9.5 이전 10) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | tier 당 허용 세그먼트 수. | ↑ merge 는 줄지만 세그먼트가 많아집니다.<br>↓ merge 가 잦아져 I/O 가 늘어납니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merge_at_once` | 16 (9.5 이전 10) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 한 번에 합치는 최대 세그먼트 수(tiered merge policy 기준. time-based 인덱스는 사용하지 않음). | ↑ merge 횟수는 줄고 한 번의 I/O 는 커집니다.<br>↓ 작은 merge 가 잦아지고 세그먼트 수가 천천히 줄어듭니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.max_merged_segment` | 5gb (8.11 이후 time-based 인덱스, 즉 매핑에 색인된 @timestamp date 필드가 있으면 100gb) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | merge 로 만들어지는 세그먼트의 최대 크기. | ↑ 세그먼트 수가 줄어 검색(특히 kNN)이 빨라지지만 merge 한 번의 I/O 가 커집니다.<br>↓ 세그먼트가 많아져 검색이 느려집니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
+| `index.merge.policy.segments_per_tier` | 8 (9.5 이전 10) (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | index | tier 당 허용 세그먼트 수(tiered merge policy 기준. time-based 인덱스는 이 값을 쓰지 않는 log byte size policy 를 씀). | ↑ merge 는 줄지만 세그먼트가 많아집니다.<br>↓ merge 가 잦아져 I/O 가 늘어납니다. | INFO / INFO | [Merge settings](https://www.elastic.co/docs/reference/elasticsearch/index-settings/merge) |
 | `index.number_of_replicas` | 1 | dynamic | index | 샤드당 replica 수. | ↑ 가용성·검색 처리량은 늘지만 디스크와 색인 비용이 배수로 늘어납니다.<br>↓ 0 이면 노드 1대 장애로 데이터가 유실될 수 있습니다. | INFO / WARNING | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
 | `index.queries.cache.enabled` | true | static | index | 노드 query(filter) 캐시 사용. | false 면 반복 필터를 매번 다시 계산합니다. | INFO | [Node query cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/node-query-cache-settings) |
 | `index.refresh_interval` | 1s(미지정 시 search idle 적용) | dynamic | index | 새 문서가 검색에 보이기까지의 주기. | ↑ 색인 처리량이 늘고 merge 부담이 줄지만 검색 반영이 늦어집니다. -1 은 refresh 중지.<br>↓ 세그먼트가 잦게 생겨 CPU·merge 부담이 커집니다. 명시하면 search idle 최적화가 꺼집니다. | INFO / INFO | [Index modules (index settings)](https://www.elastic.co/docs/reference/elasticsearch/index-settings/index-modules) |
@@ -2574,7 +2652,11 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `disk_imbalance_pct_warn` | 15 | [도구] 노드 간 디스크 사용률 편차(%p) |
 | `disk_low_margin_pct` | 10 | [도구] 실효 low 워터마크까지 남은 %p |
 | `rejected_crit` | 1,000 | [도구] 누적 rejection 합계 |
+| `frozen_cache_turnover_per_day` | 1.0 | 과도한 교체로 보는 frozen shared cache 일 평균 eviction(캐시 region 수의 배수, FRZ-001) |
+| `shard_balance_min_diff` | 10 | 같은 tier 노드 간 샤드 수 차이를 보고하는 최소 개수(SHD-006) |
 | `breaker_tripped_warn` | 1 | [도구] breaker 발동 횟수(1 = 이력 존재) |
+| `breaker_used_pct_warn` | 70 | 높은 사용으로 보는 circuit breaker 추정 크기 / 한도(%) (request, fielddata, in_flight_requests 등) |
+| `breaker_parent_used_pct_warn` | 90 | 높은 사용으로 보는 parent breaker 추정 크기 / 한도(%). parent 추정치는 실제 heap 사용량이고 한도는 heap 의 95% 라 90 은 heap 약 85% |
 | `shards_per_gb_heap_warn` | 20 | [공식] heap 1GB당 샤드 20개(8.3 미만 전용) |
 | `shards_per_gb_heap_crit` | 30 | [도구] 8.3 미만 전용 |
 | `max_shards_per_node_headroom_pct_warn` | 80 | [도구] cluster.max_shards_per_node 대비 사용률 |
@@ -2647,6 +2729,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `hotspot_disk_pct_floor` | 50 | [도구] |
 | `hotspot_cpu_pct_gap` | 40 | [도구] |
 | `workload_skew_ratio_warn` | 1.8 | [도구] 최대 노드 / 평균 |
+| `workload_skew_min_per_sec` | 10 | DIF-009 indexing 편중을 판정하는 tier 노드당 최소 평균 초당 처리량 |
 | `undesired_shards_warn` | 1 | [도구] |
 | `recovery_rate_low_bytes` | 40MiB | [공식] indices.recovery.max_bytes_per_sec 기본값 40mb 이하 |
 | `oversharding_floor_shard_gb` | 10 | [공식] 샤드 권장 하한 10GB |

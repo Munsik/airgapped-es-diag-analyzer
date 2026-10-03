@@ -182,7 +182,9 @@ def r_node_setting_changes(ctx):
             if not changed:
                 continue
             alloc = num(n.info, "os", "allocated_processors") or n.processors
-            expected = {"node.processors": alloc,
+            avail = num(n.info, "os", "available_processors") or None
+            # allocated_processors is derived from node.processors itself, so node.processors is compared with the CPUs ES sees
+            expected = {"node.processors": avail,
                         "thread_pool.write.size": alloc,
                         "thread_pool.search.size": (int(alloc * 3 / 2) + 1) if alloc else None}
             if k in expected and expected[k]:

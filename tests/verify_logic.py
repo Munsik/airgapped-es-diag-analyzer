@@ -56,6 +56,12 @@ class _FakeCtx(object):
     def setting_source(self, key):
         return "default"           # every value here plays the role of the defaults section
 
+    nodes = []                     # no elasticsearch.yml values
+
+    def explicitly_set(self, key):
+        from esdoctor.context import Context
+        return Context.explicitly_set(self, key)
+
     version_tuple = (9, 4, 0)
 
 

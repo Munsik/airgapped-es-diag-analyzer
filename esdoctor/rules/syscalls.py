@@ -57,6 +57,7 @@ def r_os_config(ctx):
 
     vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation, in the docs since 8.15 to 8.17; 262144 before) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: target process is java/elasticsearch → Critical, any other process → Warning (SYS-004); no entry → OK.
     When every node runs in development mode (loopback transport or single-node discovery), bootstrap checks are not enforced, so the Critical results of SYS-001 and SYS-003 drop to Warning.
+    When every node sets node.store.allow_mmap: false, ES skips the max map count check, so SYS-001 is Info only.
     """
     out = []
     sc = _sysctl(ctx)
@@ -68,7 +69,13 @@ def r_os_config(ctx):
     boot_sev = Severity.WARNING if dev else Severity.CRITICAL
     dev_note = T("rules.syscalls.r_os_config.dev") if dev else ""
     mmc = _int(sc.get("vm.max_map_count"))
-    if mmc is not None:
+    # The max map count bootstrap check runs only when node.store.allow_mmap is true (the default).
+    no_mmap = bool(ctx.nodes) and all(str(n.setting("node.store.allow_mmap", "true")).lower() == "false" for n in ctx.nodes)
+    if mmc is not None and no_mmap:
+        out.append(Finding("SYS-001", CAT, Severity.INFO, T("rules.syscalls.r_os_config.40"),
+                           observed=T("rules.syscalls.r_os_config.41") % mmc,
+                           refs=[REF_MAP, REF_BOOT], source="syscalls/sysctl.txt / nodes.json"))
+    elif mmc is not None:
         if mmc < _MIN_MAP_COUNT:
             out.append(Finding(
                 "SYS-001", CAT, boot_sev, T("rules.syscalls.r_os_config.01"),
@@ -126,7 +133,12 @@ def r_os_config(ctx):
 
     dm = ctx.b.text("syscalls/dmesg.txt")
     if dm is not None:
+        # One kernel OOM event logs several lines (invoked oom-killer, oom-kill:, Killed process); count the victim lines,
+        # and fall back to the other lines only when no victim line is present.
         hits = [(m.group(1) or "") for m in _OOM_RE.finditer(dm)]
+        victims = [h for h in hits if h]
+        if victims:
+            hits = victims
         if hits:
             java = [h for h in hits if re.search(r"java|elasticsearch", h, re.I)]
             out.append(Finding(
