@@ -15,7 +15,7 @@ A zero-base review of every finding's logic. Each rule was read again against th
 - A file holding an API error response (`{"error": ..., "status": N}`) was parsed as data → treated as missing
 - `repositories.json` (`GET _snapshot`, keyed by repository name) was read as a list → converted, so SNP-001 sees the repositories
 - ML-002 read the job state from the job config file, which has none → `commercial/ml_stats.json` (job stats)
-- Failure store indices (`.fs-`) are system indices like `.ds-`
+- Failure store indices (`.fs-`) are judged like `.ds-` (user data unless the data stream name starts with "."). The failure store write index counts as a write target, older ones as rolled over, and all of them as managed by data stream lifecycle (ILM-003, SHD-011)
 - Searchable snapshot detection by name prefix is only a fallback when the index has no settings in the bundle
 - An index counts as rolled over through an alias only when another index is that alias's write index (a plain read alias no longer counts)
 - A RELOCATING shard is counted on its source node

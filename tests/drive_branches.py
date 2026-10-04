@@ -171,6 +171,17 @@ def _set_disk(b, used):
     b.each_node(fn_stats=f)
 
 
+def _drop_awareness(settings):
+    """Remove cluster.routing.allocation.awareness.* from a node's elasticsearch.yml settings (flat or nested keys)."""
+    if not isinstance(settings, dict):
+        return
+    for k in [k for k in settings if k.startswith("cluster.routing.allocation.awareness")]:
+        settings.pop(k)
+    alloc = (((settings.get("cluster") or {}).get("routing") or {}).get("allocation") or {})
+    if isinstance(alloc, dict):
+        alloc.pop("awareness", None)
+
+
 def _roles(b, roles):
     """Roles of the first len(roles) nodes. Any other node loses the master role, so the master count is exact
     on bundles with more nodes."""
@@ -297,7 +308,8 @@ SCENARIOS = [
     ("zone imbalance, no awareness", lambda b: (
         # zones are compared within a tier: four hot nodes, three in zone a and one in zone b
         _roles(b, [["master", "data_hot"], ["data_hot"], ["data_hot"], ["data_hot"]]),
-        b.each_node(fn_info=lambda i, n: n.update(attributes={"availability_zone": "b" if i == 3 else "a"})),
+        b.each_node(fn_info=lambda i, n: (n.update(attributes={"availability_zone": "b" if i == 3 else "a"}),
+                                          _drop_awareness(n.get("settings")))),
         b.edit("cluster_settings.json", lambda c: [c[s].pop("cluster", None) for s in ("persistent", "transient")] and c),
         # awareness can also be set in yml (effective value = defaults section), so remove it there too to make it "unset"
         b.edit("cluster_settings_defaults.json",
@@ -391,7 +403,7 @@ SCENARIOS = [
         b.add_index("no-delay", {"unassigned": {"node_left": {"delayed_timeout": "0"}}})),
      ["IDX-002", "MAP-002", "IDX-007", "IDX-011", "CLU-021", "SHD-012"]),
     ("scale: average shard too small", lambda b: b.edit("cluster_stats.json", lambda c: c["indices"].update(
-        shards={"total": 400}, store={"size_in_bytes": 60 * GB})), ["SHD-005!WARNING"]),
+        shards={"total": 5000}, store={"size_in_bytes": 60 * GB})), ["SHD-005!WARNING"]),   # partial mounts are subtracted
     ("data stream RED, too many rollovers", lambda b: (
         [b.add_index(".ds-logs-tiny-default-2026.01.%02d-%06d" % (k + 1, k), size=10 * 1024 ** 2) for k in range(7)],
         b.edit("data_stream.json", lambda d: d.setdefault("data_streams", []).append(

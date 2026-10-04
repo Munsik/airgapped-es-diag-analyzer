@@ -459,14 +459,15 @@ class Context(object):
         return bool(name) and name not in self.index_settings and name.startswith("partial-")
 
     def write_targets(self):
-        """Current write targets: data stream write index + alias with is_write_index=true (or a single-index alias)."""
+        """Current write targets: data stream write index (and failure store write index) + alias with is_write_index=true
+        (or a single-index alias)."""
         if getattr(self, "_write_targets", None) is not None:
             return self._write_targets
         out = set()
         for ds in dicts(self.data_streams):
-            idxs = dicts(ds.get("indices"))
-            if idxs:
-                out.add(idxs[-1].get("index_name"))
+            for idxs in (dicts(ds.get("indices")), dicts((ds.get("failure_store") or {}).get("indices"))):
+                if idxs:
+                    out.add(idxs[-1].get("index_name"))
         by_alias = {}
         for idx, body in (self.aliases or {}).items():
             for alias, meta in ((body or {}).get("aliases") or {}).items():
@@ -517,7 +518,14 @@ class Context(object):
 
     def dlm_managed(self, name):
         """Whether a backing index is managed by data stream lifecycle (not ILM): the backing index entry says so (8.11+), or the
-        data stream has an enabled lifecycle and no ILM policy."""
+        data stream has an enabled lifecycle and no ILM policy. Failure store indices (.fs-) are managed by data stream lifecycle
+        (their entry under failure_store says so)."""
+        if name.startswith(".fs-"):
+            for ds in dicts(self.data_streams):
+                for i in dicts((ds.get("failure_store") or {}).get("indices")):
+                    if i.get("index_name") == name:
+                        return "ilm" not in str(i.get("managed_by") or "").lower() \
+                            and "index lifecycle" not in str(i.get("managed_by") or "").lower()
         ds = self.data_stream_of(name)
         if not isinstance(ds, dict):
             return False
@@ -541,8 +549,9 @@ class Context(object):
         if str(self.index_setting(name, "index.lifecycle.indexing_complete") or "").lower() == "true":
             return True
         for ds in dicts(self.data_streams):
-            if any(i.get("index_name") == name for i in dicts(ds.get("indices"))[:-1]):
-                return True
+            for idxs in (dicts(ds.get("indices")), dicts((ds.get("failure_store") or {}).get("indices"))):
+                if any(i.get("index_name") == name for i in idxs[:-1]):
+                    return True
         body = (self.aliases or {}).get(name) or {}
         mine = set((body.get("aliases") or {}).keys()) if isinstance(body.get("aliases"), dict) else set()
         if not mine:

@@ -13,7 +13,7 @@
 - API 오류 응답(`{"error": ..., "status": N}`)이 담긴 파일을 데이터로 읽었음 → 없는 파일로 처리
 - `repositories.json`(`GET _snapshot`, 저장소 이름이 키)을 목록으로 읽었음 → 변환해 SNP-001 이 저장소를 인식
 - ML-002 가 state 가 없는 job 설정 파일에서 상태를 읽었음 → `commercial/ml_stats.json`(job 통계)
-- failure store 인덱스(`.fs-`)도 `.ds-` 처럼 시스템 인덱스로 처리
+- failure store 인덱스(`.fs-`)를 `.ds-` 와 같은 기준으로 판단(데이터 스트림 이름이 "." 로 시작할 때만 시스템). failure store write index 는 write 대상, 이전 것은 롤오버된 인덱스, 모두 data stream lifecycle 관리로 봄(ILM-003, SHD-011)
 - 이름 접두어로 searchable snapshot 을 판별하는 것은 번들에 인덱스 설정이 없을 때만 사용
 - alias 로 롤오버를 판단할 때, 다른 인덱스가 그 alias 의 write index 일 때만 롤오버로 봄(단순 읽기 alias 는 제외)
 - RELOCATING 샤드는 출발 노드에 집계

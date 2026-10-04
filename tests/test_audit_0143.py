@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Checks for the fixes from the zero-base logic audit (0.14.3). No external bundle needed (synthetic data).
 
-Covers transient over persistent settings, API error bodies treated as missing, the comparison base (a later baseline is refused),
+Covers transient over persistent settings, failure store write and lifecycle handling, API error bodies treated as missing, the comparison base (a later baseline is refused),
 restart-aware deltas (DIF-005, DIF-006, DIF-007), DIF-013 gating the other trend rules, DIF-001 with an unknown status,
 DIF-008 on used bytes and tier membership, DIF-009 minimum volume, DIF-012 with skipped rules, the time-based merge policy
 by the @timestamp mapping, the gz log tail, rolled JSON logs, the bottleneck scope of a coordinating-only node, OVS-001 shrink
@@ -81,6 +81,24 @@ def settings_and_loader(tmp):
           c.setting_source("cluster.routing.allocation.enable"))
     check("an API error body reads as missing", Loader(root).json("licenses.json") is None)
     check("a normal body is kept", Loader(root).json("version.json") is not None)
+
+
+def failure_store(tmp):
+    root = os.path.join(tmp, "fs")
+    b = Bundle(version="9.4.4")
+    fs_old, fs_new = ".fs-logs-a-default-2026.09.01-000001", ".fs-logs-a-default-2026.09.08-000002"
+    for x in (".ds-logs-a-default-2026.09.01-000001", fs_old, fs_new):
+        b.index(x, GB, M)
+    b.stream("logs-a-default", [".ds-logs-a-default-2026.09.01-000001"])
+    b.data_streams[-1]["failure_store"] = {"enabled": True, "indices": [
+        {"index_name": fs_old, "managed_by": "Data stream lifecycle"},
+        {"index_name": fs_new, "managed_by": "Data stream lifecycle"}]}
+    b.write(root)
+    c = ctx_of(root)
+    check("failure store write index is a write target", fs_new in c.write_targets(), sorted(c.write_targets()))
+    check("older failure store index is rolled over", c.rolled_over(fs_old) and not c.rolled_over(fs_new))
+    check("failure store indices are managed by data stream lifecycle", c.dlm_managed(fs_old) and c.dlm_managed(fs_new))
+    check("failure store indices are user data", not c.is_system_index(fs_new))
 
 
 def mapping_and_merge():
@@ -323,6 +341,7 @@ def main():
     try:
         set_lang("en")
         settings_and_loader(tmp)
+        failure_store(tmp)
         mapping_and_merge()
         logs(tmp)
         bottleneck(tmp)
