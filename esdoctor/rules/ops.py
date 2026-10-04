@@ -215,7 +215,9 @@ def r_ilm(ctx):
         rollover_steps = ("check-rollover-ready", "attempt-rollover", "update-rollover-lifecycle-date",
                           "wait-for-active-shards", "set-indexing-complete")
         # Only an index that is still written can grow: a rollover error on an old index (for example after a manual alias swap) is a delay
-        stuck_rollover = [r for r in errors if str(r[3]) in rollover_steps and not ctx.rolled_over(r[0])]
+        # "rollover alias does not point to index": no writes reach the index through the alias, so it cannot keep growing
+        stuck_rollover = [r for r in errors if str(r[3]) in rollover_steps and not ctx.rolled_over(r[0])
+                          and "does not point to index" not in str(r[4])]
         write_delete = [r for r in errors if "is the write index" in str(r[4])]
         sev = Severity.CRITICAL if stuck_rollover else Severity.WARNING
         note = []
@@ -362,11 +364,16 @@ def r_security_enabled(ctx):
 
 
 def r_geoip(ctx):
-    """GeoIP failed_downloads or expired_databases > 0 → Info (can be normal in an air-gapped network)."""
+    """GeoIP expired_databases > 0, or failed_downloads > 0 with no database downloaded → Info (can be normal in an air-gapped network).
+
+    failed_downloads is cumulative. With databases present, none expired and successful downloads, a past failed download was
+    retried successfully, so nothing is reported. An expired database (not updated for 30 days) is no longer used by the geoip
+    processor, so lookups against it add no location fields.
+    """
     st = dig(ctx.geoip, "stats", default={}) or {}
     failed = num(st, "failed_downloads")
     expired = num(st, "expired_databases")
-    if not failed and not expired:
+    if not expired and (not failed or (num(st, "databases_count") and num(st, "successful_downloads"))):
         return []
     return [Finding(
         "OPS-001", CAT, Severity.INFO, T("rules.ops.r_geoip.01"),

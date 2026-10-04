@@ -280,6 +280,15 @@ KB = {
         "30", "dynamic", "cluster", N_("settings_kb._.109"),
         up=N_("settings_kb._.110"), down=N_("settings_kb._.111"),
         risk=("INFO", "INFO"), doc="ml"),
+    "xpack.ml.use_auto_machine_memory_percent": S(
+        "false", "dynamic", "cluster", N_("settings_kb._.243"),
+        change=N_("settings_kb._.244"), risk=None, doc="ml", basis="source"),
+    "xpack.ml.max_model_memory_limit": S(
+        "0b", "dynamic", "cluster", N_("settings_kb._.245"),
+        change=N_("settings_kb._.246"), risk=None, doc="ml", basis="source"),
+    "xpack.mapping.synthetic_source_fallback_to_stored_source": S(
+        "false", "dynamic", "cluster", N_("settings_kb._.247"),
+        change=N_("settings_kb._.248"), risk=None, doc="misc", basis="source"),
     # ------------------------------------------------------------ node (static, elasticsearch.yml)
     "indices.memory.index_buffer_size": S(
         "10%", "static", "node", N_("settings_kb._.112"),
@@ -602,14 +611,23 @@ def default_for(key, ctx=None, node=None, index=None):
             if key == "index.merge.policy.max_merge_at_once":
                 return "16" if new else "10"
             if key == "index.merge.policy.max_merged_segment" and index is not None:
-                # ES picks the time-based merge policy when the mapping has an indexed @timestamp date field
-                summ = (getattr(ctx, "mapping_summary", None) or {}).get(index)
-                has_ts = summ.get("timestamp") if isinstance(summ, dict) and "timestamp" in summ else bool(ctx.data_stream_of(index))
-                timed = ctx.version_tuple >= (8, 11, 0) and has_ts
+                # ES picks the time-based merge policy from the @timestamp mapping (context.time_based)
+                if hasattr(ctx, "time_based"):
+                    timed = ctx.time_based(index)
+                else:
+                    timed = ctx.version_tuple >= (8, 11, 0) and bool(ctx.data_stream_of(index))
                 return "100gb" if timed else "5gb"
     except (TypeError, ValueError, AttributeError):
         return None
     return None
+
+
+# Byte rate settings where 0 means no limit (RecoverySettings: a rate of 0 or less disables the rate limiter)
+ZERO_UNLIMITED = frozenset([
+    "indices.recovery.max_bytes_per_sec",
+    "max_snapshot_bytes_per_sec",
+    "max_restore_bytes_per_sec",
+])
 
 
 def compare(key, value, es_default=None, default=None):
@@ -639,12 +657,16 @@ def compare(key, value, es_default=None, default=None):
         return False, None, spec, default, source
     a, b = _num(cur), _num(dft.split("(")[0])
     if a and b and a[0] == "num" and b[0] in ("time", "bytes") and a[1] in (0.0, -1.0):
-        a = (b[0], a[1])           # a unitless 0 or -1 on a time or byte setting means zero or disabled/unlimited, same kind
+        a = (b[0], a[1])           # a unitless 0 or -1 on a time or byte setting, compared as the same kind
     if dft.split("(")[0].strip().lower() == cur.lower():
         return False, None, spec, default, source      # "default" vs "default(LZ4)"
     if a and b and a[0] == b[0]:
         if a[1] == b[1]:
             return False, None, spec, default, source
+        # -1 turns the feature off or removes the limit (refresh_interval, timeouts), and 0 does the same for rate limits:
+        # neither is "lower", so the direction is a plain change
+        if a[0] in ("time", "bytes") and (a[1] == -1.0 or (a[1] == 0.0 and key in ZERO_UNLIMITED)):
+            return True, "change", spec, default, source
         return True, ("up" if a[1] > b[1] else "down"), spec, default, source
     return True, "change", spec, default, source
 

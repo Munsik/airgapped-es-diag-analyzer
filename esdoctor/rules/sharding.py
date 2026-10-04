@@ -19,13 +19,9 @@ D_SHARDS = ("Size your shards",
 
 
 def _write_indices(ctx):
-    """Current write targets: data stream write indices and alias write indices (still being filled, so excluded from size rating)."""
-    out = set(i for i in ctx.write_targets() if i)
-    for ds in ctx.data_streams or []:
-        idxs = ds.get("indices") or []
-        if idxs:
-            out.add(idxs[-1].get("index_name"))
-    return out
+    """Indices still being filled, excluded from size rating: data stream write indices and alias members flagged is_write_index
+    (context.explicit_write_targets). An index behind a plain read alias is rated."""
+    return set(ctx.explicit_write_targets())
 
 
 def _replicas(ctx, name):
@@ -41,6 +37,7 @@ def r_index_oversharding(ctx):
     Scope: user indices with primary >= 2 that are not a data stream write index or a searchable snapshot.
     Fully mounted (cold) indices have an accurate size but cannot be shrunk, so only the number of oversharded ones is counted, with guidance on fixing the cause.
     Rating: average size per primary shard < oversharding_floor_shard_gb (official lower bound 10GB) means oversharded.
+    Empty indices are left to SHD-011.
     Recommended primary count = the smallest factor of the current count (shrink can only go to a factor) that keeps each shard at or
     under oversharding_target_shard_gb (official upper bound 50GB). Excess shards = (current - recommended) × (1 + replica).
     Excess shard total >= oversharding_excess_warn or share of all shards >= oversharding_excess_ratio_warn → Warning;
@@ -62,8 +59,8 @@ def r_index_oversharding(ctx):
                 mounted_over += 1
             continue
         pri = ctx.primary_count(name)
-        if pri < 2:
-            continue
+        if pri < 2 or not num(st, "primaries", "docs", "count"):
+            continue            # an empty index is reported by SHD-011 (delete it rather than shrink it)
         size = num(st, "primaries", "store", "size_in_bytes")
         if size / float(pri) >= floor:
             continue            # At or above the official range (10-50GB) is not oversharded
@@ -112,12 +109,13 @@ def r_datastream_small_rollover(ctx):
     below ds_small_backing_shard_gb, the data stream is listed. When its rollover has no size condition (max_primary_shard_size or
     max_size in the ILM policy) the cause is rollover on age alone → Warning. When a size condition exists (the built-in
     logs@lifecycle and metrics@lifecycle policies, and data stream lifecycle, roll over at 50GB per primary shard) the stream simply
-    receives little data → Info, and the advice is a longer max_age or fewer data streams.
+    receives little data → Info, and the advice is a longer max_age or fewer data streams. Data streams Elasticsearch manages for
+    itself (ilm-history-*) are skipped.
     """
     rows = []
     for ds in ctx.data_streams or []:
         name = ds.get("name")
-        if not name or str(name).startswith("."):
+        if not name or str(name).startswith(".") or ctx.es_managed_stream(ds):
             continue
         idxs = [i.get("index_name") for i in dicts(ds.get("indices"))][:-1]   # exclude the write index
         sizes = []
@@ -138,7 +136,10 @@ def r_datastream_small_rollover(ctx):
                 ro = ctx.rollover_conditions(pol)
                 sized = bool(ro.get("max_primary_shard_size") or ro.get("max_size"))
             else:
-                sized = True        # data stream lifecycle rolls over at 50GB per primary shard by default
+                # data stream lifecycle rolls over at 50GB per primary shard by default; a stream with neither ILM nor an enabled
+                # lifecycle never rolls over on its own
+                lc = ds.get("lifecycle")
+                sized = isinstance(lc, dict) and str(lc.get("enabled", True)).lower() != "false"
             rows.append([name, len(sizes) + 1, fmt_bytes(med), pol or "-",
                          fmt_num(sum(ctx.shard_count(ix) for ix in idxs)),
                          T("rules.sharding.r_datastream_small_rollover.10") if sized

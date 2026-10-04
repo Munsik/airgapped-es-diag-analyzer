@@ -73,6 +73,17 @@ class NodeView(object):
         return num(self.stats, "jvm", "mem", "heap_used_percent", default=None)
 
     @property
+    def memory_pressure_pct(self):
+        """JVM memory pressure as Elastic defines it: old generation pool used / max (nodes stats jvm.mem.pools.old).
+        Heap% at one moment also counts young generation garbage that the next young GC frees. Falls back to heap% when the
+        old pool is not reported."""
+        used = num(self.stats, "jvm", "mem", "pools", "old", "used_in_bytes", default=None)
+        mx = num(self.stats, "jvm", "mem", "pools", "old", "max_in_bytes", default=None)
+        if used is not None and mx and mx > 0:
+            return used * 100.0 / mx
+        return self.heap_used_pct
+
+    @property
     def heap_init(self):
         return num(self.info, "jvm", "mem", "heap_init_in_bytes", default=None)
 
@@ -410,6 +421,28 @@ class Context(object):
     def master_nodes(self):
         return [n for n in self.nodes if n.is_master_eligible]
 
+    def time_based(self, index):
+        """Whether ES uses the time-based merge policy (LogByteSizeMergePolicy, from 8.11) for the index.
+
+        ES decides per shard from the mapping: an @timestamp date field that is indexed and has doc values (8.x), or that has points or
+        a doc values skipper (9.x, MappingLookup.getTimestampFieldType; logsdb and time_series use the skipper). index.merge.policy.type
+        overrides it. Without the mapping in the bundle, data stream membership is used (data streams always map @timestamp).
+        """
+        if not self.version_tuple or self.version_tuple < (8, 11, 0):
+            return False
+        typ = str(self.index_setting(index, "index.merge.policy.type") or "").lower()
+        if typ in ("tiered", "time_based"):
+            return typ == "time_based"
+        summ = (getattr(self, "mapping_summary", None) or {}).get(index)
+        if isinstance(summ, dict) and "timestamp" in summ:
+            if not summ.get("timestamp"):
+                return False
+            idx, dv = summ.get("ts_index", True), summ.get("ts_dv", True)
+            if self.version_tuple >= (9, 0, 0):
+                return idx or (dv and self.index_mode(index) in ("logsdb", "time_series", "logsdb_columnar", "columnar"))
+            return idx and dv
+        return bool(self.data_stream_of(index))
+
     def index_setting(self, index, key, default=None):
         d = dig(self.index_settings, index, "settings") or {}
         v = _flat_get(d, key)
@@ -422,7 +455,8 @@ class Context(object):
         """Whether the index is a system (product-internal) index.
 
         An index starting with '.' is still user data if it is a data stream backing index (.ds-<data stream>-...).
-        A backing index counts as system only when the data stream name starts with '.' (e.g. .ds-.kibana-event-log).
+        A backing index counts as system when the data stream name starts with '.' (e.g. .ds-.kibana-event-log), or when the data stream
+        is one Elasticsearch manages for itself (hidden and _meta.managed without a Fleet package, e.g. ilm-history-7).
         Searchable snapshot mount names (restored-/partial-) are judged by the original name.
         """
         if not name:
@@ -433,7 +467,9 @@ class Context(object):
                 n = n[len(prefix):]
                 break
         if n.startswith((".ds-", ".fs-")):        # data stream backing and failure store indices
-            return n[4:].startswith(".")
+            if n[4:].startswith("."):
+                return True
+            return self.es_managed_stream(self.stream_of(name) or self.stream_of(n))
         return n.startswith(".")
 
     def is_searchable_snapshot(self, name):
@@ -458,25 +494,50 @@ class Context(object):
             return True
         return bool(name) and name not in self.index_settings and name.startswith("partial-")
 
-    def write_targets(self):
-        """Current write targets: data stream write index (and failure store write index) + alias with is_write_index=true
-        (or a single-index alias)."""
-        if getattr(self, "_write_targets", None) is not None:
-            return self._write_targets
+    def _alias_members(self):
+        """{alias: [(index, is_write_index flag as bool or None)]}, built once."""
+        if getattr(self, "_alias_map", None) is None:
+            by_alias = {}
+            for idx, body in items(self.aliases or {}):
+                al = (body or {}).get("aliases") if isinstance(body, dict) else None
+                for alias, meta in items(al or {}):
+                    w = (meta or {}).get("is_write_index") if isinstance(meta, dict) else None
+                    flag = None if w is None else str(w).lower() == "true"
+                    by_alias.setdefault(alias, []).append((idx, flag))
+            self._alias_map = by_alias
+        return self._alias_map
+
+    def explicit_write_targets(self):
+        """Indices that are being filled for sure: data stream write indices (and failure store write indices), alias members flagged
+        is_write_index=true, and the only member of an alias without the flag when that index names the alias as its ILM rollover
+        alias (a legacy rollover alias without is_write_index moves to the new index at each rollover). Any other plain alias over one
+        index is left out: it is as often a read alias (products -> products-v3) as a write one."""
+        if getattr(self, "_explicit_wt", None) is not None:
+            return self._explicit_wt
         out = set()
         for ds in dicts(self.data_streams):
             for idxs in (dicts(ds.get("indices")), dicts((ds.get("failure_store") or {}).get("indices"))):
                 if idxs:
                     out.add(idxs[-1].get("index_name"))
-        by_alias = {}
-        for idx, body in (self.aliases or {}).items():
-            for alias, meta in ((body or {}).get("aliases") or {}).items():
-                by_alias.setdefault(alias, []).append((idx, (meta or {}).get("is_write_index")))
-        for alias, members in by_alias.items():
-            flagged = [i for i, w in members if w is True]
-            if flagged:
-                out.update(flagged)
-            elif len(members) == 1:
+        for alias, members in self._alias_members().items():
+            out.update(i for i, w in members if w is True)
+            if len(members) == 1 and members[0][1] is None:
+                i = members[0][0]
+                if str(self.index_setting(i, "index.lifecycle.rollover_alias") or "") == alias and \
+                        str(self.index_setting(i, "index.lifecycle.indexing_complete") or "").lower() != "true":
+                    out.add(i)
+        out.discard(None)
+        self._explicit_wt = out
+        return out
+
+    def write_targets(self):
+        """Indices that can take writes: explicit_write_targets plus the only member of an alias without an is_write_index flag
+        (ES writes through such an alias), unless that member is a searchable snapshot mount, which cannot take writes."""
+        if getattr(self, "_write_targets", None) is not None:
+            return self._write_targets
+        out = set(self.explicit_write_targets())
+        for members in self._alias_members().values():
+            if len(members) == 1 and members[0][1] is None and not self.is_searchable_snapshot(members[0][0]):
                 out.add(members[0][0])
         self._write_targets = out
         return out
@@ -490,6 +551,28 @@ class Context(object):
                     if i.get("index_name"):
                         self._ds_of[i["index_name"]] = ds
         return self._ds_of.get(name)
+
+    def stream_of(self, name):
+        """Data stream dict that holds this index as a backing index or as a failure store index, or None."""
+        ds = self.data_stream_of(name)
+        if ds is not None:
+            return ds
+        if getattr(self, "_fs_of", None) is None:
+            self._fs_of = {}
+            for d in dicts(self.data_streams):
+                for i in dicts((d.get("failure_store") or {}).get("indices")):
+                    if i.get("index_name"):
+                        self._fs_of[i["index_name"]] = d
+        return self._fs_of.get(name)
+
+    @staticmethod
+    def es_managed_stream(ds):
+        """A data stream that Elasticsearch creates and manages for itself (ilm-history-*, for example): hidden, and its template
+        metadata says managed without a Fleet package. Users cannot tune it."""
+        if not isinstance(ds, dict) or str(ds.get("hidden")).lower() != "true":
+            return False
+        meta = ds.get("_meta") if isinstance(ds.get("_meta"), dict) else {}
+        return str(meta.get("managed")).lower() == "true" and not meta.get("package") and meta.get("managed_by") != "fleet"
 
     def index_mode(self, name):
         """index.mode of an index: standard, logsdb, time_series, lookup ...
@@ -552,17 +635,14 @@ class Context(object):
             for idxs in (dicts(ds.get("indices")), dicts((ds.get("failure_store") or {}).get("indices"))):
                 if any(i.get("index_name") == name for i in idxs[:-1]):
                     return True
-        body = (self.aliases or {}).get(name) or {}
-        mine = set((body.get("aliases") or {}).keys()) if isinstance(body.get("aliases"), dict) else set()
-        if not mine:
-            return False
-        for other, ob in items(self.aliases or {}):
-            if other == name or not isinstance(ob, dict):
-                continue
-            for alias, ad in items(ob.get("aliases") or {}):
-                if alias in mine and isinstance(ad, dict) and str(ad.get("is_write_index")).lower() == "true":
-                    return True
-        return False
+        if getattr(self, "_rolled_by_alias", None) is None:
+            rolled = set()
+            for members in self._alias_members().values():
+                writers = set(i for i, w in members if w is True)
+                if writers:
+                    rolled.update(i for i, _w in members if i not in writers)
+            self._rolled_by_alias = rolled
+        return name in self._rolled_by_alias
 
     def tier_of(self, node):
         """Tier label of a data node. The role combination is the comparison unit (specs and load are compared only within the same tier)."""
@@ -613,7 +693,8 @@ class Context(object):
         """True when the setting is set in cluster settings or in the elasticsearch.yml of any node (not just a default)."""
         if self.setting_source(key) != "default":
             return True
-        return any(n.setting(key) is not None for n in self.nodes)
+        # nested yml settings: a dict here is a child key (for example ...flood_stage.frozen), not this setting
+        return any(n.setting(key) is not None and not isinstance(n.setting(key), dict) for n in self.nodes)
 
     def watermark(self, kind):
         """kind: low|high|flood_stage|flood_stage.frozen -> raw string"""

@@ -123,16 +123,21 @@ def r_shard_size(ctx):
 
 
 def r_small_shards(ctx):
-    """Warning if user-index primaries with store < small_shard_mb number at least small_shard_count_warn, and small primaries make up at least small_shard_ratio_warn of all primaries. System indices do not count toward the shard-count condition because users cannot tune them."""
+    """Warning if user-index primaries with store < small_shard_mb number at least small_shard_count_warn, and small primaries make up at least small_shard_ratio_warn of all primaries. System indices do not count toward the shard-count condition because users cannot tune them.
+    Current write indices (data streams, failure stores, rollover aliases) are small because they are still being filled, so they are
+    not counted as small."""
     small, total, user_small = 0, 0, 0
     rows = []
     per_index = collections.defaultdict(lambda: [0, 0])  # count, bytes
+    writing = ctx.explicit_write_targets()
     for s in ctx.shards:
         if (s.get("prirep") or "").lower() != "p" or ctx.is_partial_mount(s.get("index")):
             continue
         b = parse_bytes(s.get("store")) or 0
         total += 1
         idx = s.get("index")
+        if idx in writing:
+            continue
         per_index[idx][0] += 1
         per_index[idx][1] += b
         if b < ctx.t["small_shard_mb"] * 1024 * 1024:
@@ -241,7 +246,16 @@ def r_deleted_docs(ctx):
 
 
 def r_segments(ctx):
-    """Primary segments / primary shards >= segments_per_shard_warn and primary store > 100MB → Warning."""
+    """Primary segments / primary shards >= segments_per_shard_warn and primary store > 100MB → Warning.
+
+    Time-based indices (context.time_based: data streams and other indices with an @timestamp field, from 8.11) use
+    LogByteSizeMergePolicy, which only merges adjacent segments and keeps up to merge_factor - 1 (default 32 - 1) segments on each size
+    level between floor_segment and the shard size (MergePolicyConfig in the source). A 20GB shard can hold about 90 segments by
+    design. For those indices the line is the larger of segments_per_shard_warn and (merge_factor - 1) x number of levels.
+    """
+    import math
+    from ..settings_kb import default_for
+    from ..util import parse_bytes
     rows = []
     for name, st in ctx.indices_stats.items():
         if ctx.is_searchable_snapshot(name):
@@ -250,7 +264,18 @@ def r_segments(ctx):
         shards = ctx.primary_count(name) or 1
         per = seg / float(shards)
         size = num(st, "primaries", "store", "size_in_bytes")
-        if per >= ctx.t["segments_per_shard_warn"] and size > 100 * 1024 * 1024:
+        line = ctx.t["segments_per_shard_warn"]
+        if ctx.time_based(name):
+            try:
+                mf = int(ctx.index_setting(name, "index.merge.policy.merge_factor") or 32)
+            except (TypeError, ValueError):
+                mf = 32
+            floor = parse_bytes(ctx.index_setting(name, "index.merge.policy.floor_segment")
+                                or default_for("index.merge.policy.floor_segment", ctx)) or 2 * 1024 ** 2
+            shard = size / float(shards)
+            levels = (int(math.ceil(math.log(shard / float(floor)) / math.log(mf))) if shard > floor and mf > 1 else 0) + 1
+            line = max(line, (mf - 1) * levels)
+        if per >= line and size > 100 * 1024 * 1024:
             rows.append([name, fmt_num(seg), shards, "%.0f" % per, fmt_bytes(size)])
     if not rows:
         return []
@@ -343,26 +368,37 @@ def r_search_latency(ctx):
 
 
 def r_index_failures(ctx):
-    """Indices with indexing.index_failed or search.query_failure > 0. Warning if user indices are included, Info if only system indices are.
-    Sorted by the failure ratio, index_failed / (index_failed + index_total), so indices that lose a large share of their writes come first.
-    From 8.18 the stats report index_failed_due_to_version_conflict separately. Version conflicts are expected with op_type=create
-    retries (Elastic Agent, Fleet), so an index whose only failures are version conflicts does not make the finding a Warning."""
+    """Indices with indexing.index_failed or search.query_failure > 0.
+
+    index_failed counts operations that failed in the engine on the primary (IndexShard / InternalIndexingStats in the source):
+    version conflicts and engine errors. Document parsing and mapping errors are returned before the engine runs and are not counted
+    here. From 8.18 the stats report index_failed_due_to_version_conflict separately; version conflicts are expected with
+    op_type=create retries (Elastic Agent, Fleet). The ratio uses the primaries' index_total, because index_failed is counted on the
+    primary only while the total index_total includes replica operations.
+    query_failure counts any exception in the query phase, cancelled searches included, so a handful is normal.
+    Warning when a user index has failures other than version conflicts, or query failures of at least query_failure_pct_warn
+    percent of its queries (and at least 10); otherwise Info. Rows are sorted so those come first.
+    """
     rows, user_rows = [], []
     for name, st in ctx.indices_stats.items():
         failed = num(st, "total", "indexing", "index_failed")
         vc = num(st, "total", "indexing", "index_failed_due_to_version_conflict")
         qf = num(st, "total", "search", "query_failure")
         if failed or qf:
-            it = num(st, "total", "indexing", "index_total")
+            it = num(st, "primaries", "indexing", "index_total") or num(st, "total", "indexing", "index_total")
+            qt = num(st, "total", "search", "query_total")
             ratio = failed / float(failed + it) if (failed + it) else 0
+            qratio = qf / float(qt) if qt else (1.0 if qf else 0.0)
+            bad = not ctx.is_system_index(name) and (
+                failed - vc > 0 or (qf >= 10 and qratio * 100 >= ctx.t["query_failure_pct_warn"]))
             row = [name, fmt_num(failed), fmt_num(vc), "%.1f%%" % (ratio * 100) if failed else "-", fmt_num(qf),
-                   fmt_num(it), (ratio, failed + qf)]
+                   ("%.2f%%" % (qratio * 100)) if qf else "-", fmt_num(it), (bad, failed - vc, qratio, ratio)]
             rows.append(row)
-            if not ctx.is_system_index(name) and (failed - vc > 0 or qf):
+            if bad:
                 user_rows.append(row)
     if not rows:
         return []
-    rows.sort(key=lambda r: (-r[6][0], -r[6][1]))
+    rows.sort(key=lambda r: (not r[7][0], -r[7][1], -r[7][2], -r[7][3]))
     return [Finding(
         "IDX-006", CAT,
         Severity.WARNING if user_rows else Severity.INFO,
@@ -371,8 +407,8 @@ def r_index_failures(ctx):
         impact=T("rules.shards.r_index_failures.04"),
         recommend=T("rules.shards.r_index_failures.05"),
         evidence=table(["index", "index_failed", T("rules.shards.r_index_failures.07"), T("rules.shards.r_index_failures.06"),
-                        "query_failure", "index_total"],
-                       [r[:6] for r in rows[: ctx.t["top_n"]]]),
+                        "query_failure", T("rules.shards.r_index_failures.08"), T("rules.shards.r_index_failures.09")],
+                       [r[:7] for r in rows[: ctx.t["top_n"]]]),
         source="indices_stats.json")]
 
 
@@ -547,16 +583,16 @@ def r_index_count(ctx):
     Partially mounted (frozen) shards report a store size of 0, so they are taken out of the shard count for the average.
     """
     n_idx = dig(ctx.cluster_stats, "indices", "count") or len(ctx.indices_stats)
-    shards = dig(ctx.cluster_stats, "indices", "shards", "total") or ctx.health.get("active_shards")
+    total = dig(ctx.cluster_stats, "indices", "shards", "total") or ctx.health.get("active_shards")
     partial = sum(1 for s in ctx.shards if (s.get("state") or "").upper() == "STARTED" and ctx.is_partial_mount(s.get("index")))
-    if shards and partial:
-        shards = max(0, shards - partial)
+    shards = max(0, total - partial) if (total and partial) else total
     store = dig(ctx.cluster_stats, "indices", "store", "size_in_bytes")
     docs = dig(ctx.cluster_stats, "indices", "docs", "count")
     avg = (store / shards) if (store and shards) else None
     ev = table([T("rules.shards.r_index_count.01"), T("rules.shards.r_index_count.02")],
                [[T("rules.shards.r_index_count.03"), fmt_num(n_idx)],
-                [T("rules.shards.r_index_count.04"), fmt_num(shards)],
+                [T("rules.shards.r_index_count.04"), fmt_num(total)]]
+               + ([[T("rules.shards.r_index_count.14"), fmt_num(partial)]] if partial else []) + [
                 [T("rules.shards.r_index_count.05"), fmt_num(docs)],
                 [T("rules.shards.r_index_count.06"), fmt_bytes(store)],
                 [T("rules.shards.r_index_count.07"), fmt_bytes(avg)]])
@@ -569,7 +605,7 @@ def r_index_count(ctx):
             recommend=T("rules.shards.r_index_count.11"),
             evidence=ev, refs=[DOC_SIZE], source="cluster_stats.json")]
     return [Finding("SHD-005", CAT, Severity.INFO, T("rules.shards.r_index_count.12"),
-                    observed=T("rules.shards.r_index_count.13") % (fmt_num(n_idx), fmt_num(shards),
+                    observed=T("rules.shards.r_index_count.13") % (fmt_num(n_idx), fmt_num(total),
                                                           fmt_bytes(store)),
                     evidence=ev, source="cluster_stats.json")]
 

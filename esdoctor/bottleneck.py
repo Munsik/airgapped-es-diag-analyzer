@@ -6,7 +6,9 @@
 
 Each question looks for symptoms first (rejections, queues, throttling, high latency). Only when a symptom exists does it walk the
 cause groups in a fixed order and name the first group that has a finding; the other groups with findings are listed as well.
-For search, a busy search pool with low CPU (PERF-013) moves storage to the front, because it shows threads waiting.
+For search, a busy search pool with low CPU (PERF-013) moves storage to the front, because it shows threads waiting. For ingest,
+when only the write_coordination pool waits (bulk coordination and ingest pipelines run there, not merges or flushes), CPU and the
+ingest pipeline come first.
 When the symptom is tied to nodes (a queue or rejections on some nodes, PERF-013 nodes), the scope is those nodes plus the other
 nodes of their data tiers (a bulk write waits for the replicas on the other nodes of the tier, a search waits for every shard copy it
 hits). A cause finding that names nodes counts only if it names one in scope: high heap on a frozen node does not explain a write
@@ -48,7 +50,8 @@ RESTART = [
 ]
 CAPACITY = [
     ("cpu", ("HOT-005",)),
-    ("disk", ("DISK-001", "DISK-002", "DISK-003", "DIF-008", "COST-004")),
+    ("disk", ("DISK-001", "DISK-002", "DISK-003", "DISK-004", "DIF-008", "COST-004")),
+    ("memory", ("JVM-001", "BRK-001")),
     ("concentration", ("HOT-001", "HOT-002", "SHD-006", "SHD-016", "NODE-001")),
 ]
 
@@ -144,6 +147,8 @@ def _ingest(ctx, findings):
         return _row("ingest", "idle", "idle", [], [], False)
     sym, wide = [], False
     rej, queue, scope = _pool_sums(ctx, ("write", "write_coordination"))
+    wrej, wqueue, _w = _pool_sums(ctx, ("write",))
+    coord_only = bool(rej or queue) and not (wrej or wqueue)
     if rej:
         sym.append(T("btl.s.write_rejected") % fmt_num(rej))
     if queue:
@@ -163,7 +168,12 @@ def _ingest(ctx, findings):
     if not sym:
         return _row("ingest", "clear", "clear", [], [], True)
     known = set(n.name for n in ctx.nodes)
-    return _causal("ingest", findings, INGEST_CAUSES, sym, None if wide else _tier_scope(ctx, scope), known)
+    groups = INGEST_CAUSES
+    if coord_only and not thr and not ip:
+        # Only write_coordination waits: that pool runs bulk coordination and ingest pipelines (CPU work), not merges or flushes
+        first = ("cpu", "pipeline")
+        groups = [g for g in INGEST_CAUSES if g[0] in first] + [g for g in INGEST_CAUSES if g[0] not in first]
+    return _causal("ingest", findings, groups, sym, None if wide else _tier_scope(ctx, scope), known)
 
 
 def _search(ctx, findings):

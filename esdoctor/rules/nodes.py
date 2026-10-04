@@ -17,14 +17,18 @@ DOC_TP = (N_("rules.nodes._.03"),
 
 
 def r_heap_usage(ctx):
-    """Per-node jvm.mem.heap_used_percent (point-in-time at collection). >= heap_used_pct_crit → Critical, >= heap_used_pct_warn → Warning, otherwise OK."""
+    """JVM memory pressure per node: old generation pool used / max (jvm.mem.pools.old), the measure the official docs use.
+    >= heap_used_pct_crit (85, official: act when memory pressure stays above 85%) → Critical, >= heap_used_pct_warn (75, the
+    level at which Elastic Cloud shows memory pressure in red) → Warning, otherwise OK. heap_used_percent at one moment also counts
+    young generation garbage, so it is only shown; it is used for the rating only when the old pool is not reported."""
     rows, warn, crit = [], [], []
     for n in ctx.nodes:
-        used = n.heap_used_pct
+        used = n.memory_pressure_pct
         if used is None:
             continue
-        rows.append([n.name, "%s%%" % used, fmt_bytes(n.heap_used), fmt_bytes(n.heap_max),
-                     fmt_bytes(n.ram_total), ",".join(n.roles)])
+        hp = n.heap_used_pct
+        rows.append([n.name, "%.0f%%" % used, ("%s%%" % hp) if hp is not None else "-", fmt_bytes(n.heap_used),
+                     fmt_bytes(n.heap_max), fmt_bytes(n.ram_total), ",".join(n.roles)])
         if used >= ctx.t["heap_used_pct_crit"]:
             crit.append(n.name)
         elif used >= ctx.t["heap_used_pct_warn"]:
@@ -37,7 +41,7 @@ def r_heap_usage(ctx):
             observed=T("rules.nodes.r_heap_usage.02") % (ctx.t["heap_used_pct_crit"], ", ".join(crit)),
             impact=T("rules.nodes.r_heap_usage.03"),
             recommend=T("rules.nodes.r_heap_usage.04"),
-            evidence=table(["node", "heap%", "used", "max", "RAM", "roles"], rows),
+            evidence=table(["node", T("rules.nodes.r_heap_usage.10"), "heap%", "used", "max", "RAM", "roles"], rows),
             affected=crit, refs=[DOC_HEAP], source="nodes_stats.json")]
     if warn:
         return [Finding(
@@ -45,11 +49,11 @@ def r_heap_usage(ctx):
             observed=T("rules.nodes.r_heap_usage.02") % (ctx.t["heap_used_pct_warn"], ", ".join(warn)),
             impact=T("rules.nodes.r_heap_usage.06"),
             recommend=T("rules.nodes.r_heap_usage.07"),
-            evidence=table(["node", "heap%", "used", "max", "RAM", "roles"], rows),
+            evidence=table(["node", T("rules.nodes.r_heap_usage.10"), "heap%", "used", "max", "RAM", "roles"], rows),
             affected=warn, refs=[DOC_HEAP], source="nodes_stats.json")]
     return [Finding("JVM-001", CAT, Severity.OK, T("rules.nodes.r_heap_usage.08"),
                     observed=T("rules.nodes.r_heap_usage.09") % ctx.t["heap_used_pct_warn"],
-                    evidence=table(["node", "heap%", "used", "max", "RAM", "roles"], rows),
+                    evidence=table(["node", T("rules.nodes.r_heap_usage.10"), "heap%", "used", "max", "RAM", "roles"], rows),
                     source="nodes_stats.json")]
 
 
@@ -237,7 +241,7 @@ def r_os(ctx):
             observed=T("rules.nodes.r_os.16")
                      % ", ".join("%s(%.1f%%)" % (n, r * 100) for n, r, _ in throttle),
             impact=T("rules.nodes.r_os.17"),
-            recommend=T("rules.nodes.r_os.18"),
+            recommend=T("rules.nodes.r_os.42") if ctx.orchestrated else T("rules.nodes.r_os.18"),
             evidence=table(["node", T("rules.nodes.r_os.19"), T("rules.nodes.r_os.20")],
                            [[n, "%.2f%%" % (r * 100), fmt_num(t)] for n, r, t in throttle]),
             affected=[n for n, _r, _t in throttle], source="nodes_stats.json"))
@@ -260,8 +264,10 @@ def r_os(ctx):
             evidence=table(["node", "open", "max", T("rules.nodes.r_os.25")], fd_rows),
             affected=fd_bad, source="nodes_stats.json"))
     # mlockall
+    # With swap off there is nothing to protect against (the official docs list memory_lock as one of three swap remedies), and on
+    # Elastic Cloud / ECE / ECK the platform owns the setting, so it is only reported on self-managed nodes.
     unlocked = [n.name for n in ctx.nodes if n.mlockall is False]
-    if unlocked and not swap_on:
+    if unlocked and not swap_on and not ctx.orchestrated:
         out.append(Finding(
             "OS-005", CAT, Severity.INFO, T("rules.nodes.r_os.26"),
             observed=T("rules.nodes.r_os.27") % ", ".join(unlocked),
@@ -441,7 +447,7 @@ def r_disk(ctx):
 IMPORTANT_POOLS = ("write", "search", "search_worker", "get", "bulk", "index",
                    "management", "refresh", "flush", "force_merge", "snapshot",
                    "warmer", "system_write", "system_read", "esql_worker",
-                   "search_coordination", "write_coordination")
+                   "search_coordination", "write_coordination", "merge")
 
 
 def r_thread_pools(ctx):
@@ -492,25 +498,34 @@ def r_thread_pools(ctx):
 
 
 def r_breakers(ctx):
-    """breaker.tripped >= breaker_tripped_warn → Warning; Critical if usage at collection time is also at the usage line (BRK-001; the
-    cumulative trip history alone never raises it to Critical). No trip history and estimated / limit at the usage line → Warning (BRK-002).
-    Usage line: breaker_used_pct_warn, but breaker_parent_used_pct_warn for the parent breaker, whose estimate is the real heap use
-    (indices.breaker.total.use_real_memory, default true) against a limit of 95% of heap; 70% there would only mean about 66% heap."""
+    """breaker.tripped >= breaker_tripped_warn → Warning; Critical if usage at collection time is also at breaker_used_pct_warn (BRK-001;
+    the cumulative trip history alone never raises it to Critical). No trip history and estimated / limit >= breaker_used_pct_warn →
+    Warning (BRK-002).
+    With indices.breaker.total.use_real_memory (default true) the parent estimate is the real heap use, young generation garbage
+    included, and before it trips ES first forces a young GC (G1OverLimitStrategy in the source). Its usage at one moment is then not
+    rated here; old generation pressure is rated in JVM-001. Its trips (BRK-001) are still reported, and they are Critical only when
+    that node's JVM memory pressure is at heap_used_pct_crit or above."""
     rows, tripped = [], []
     tripped_live = False
+    real = str(ctx.setting("indices.breaker.total.use_real_memory") or "true").lower() != "false"
     for n in ctx.nodes:
         for name, br in items(dig(n.stats, "breakers")):
             t = num(br, "tripped")
             est = num(br, "estimated_size_in_bytes")
             lim = num(br, "limit_size_in_bytes")
             use = pct(est, lim)
-            line = ctx.t["breaker_parent_used_pct_warn"] if name == "parent" else ctx.t["breaker_used_pct_warn"]
+            line = ctx.t["breaker_used_pct_warn"]
             if t >= ctx.t["breaker_tripped_warn"]:
-                if use and use >= line:
+                if name == "parent" and real:
+                    # the momentary parent estimate includes young garbage: live pressure is the old generation (JVM-001)
+                    mp = n.memory_pressure_pct
+                    if mp is not None and mp >= ctx.t["heap_used_pct_crit"]:
+                        tripped_live = True
+                elif use and use >= line:
                     tripped_live = True
                 tripped.append([n.name, name, fmt_num(t), fmt_bytes(est), fmt_bytes(lim),
                                 "%.1f%%" % use if use else "-"])
-            elif use and use >= line:
+            elif use and use >= line and not (name == "parent" and real):
                 rows.append([n.name, name, fmt_num(t), fmt_bytes(est), fmt_bytes(lim), "%.1f%%" % use])
     out = []
     if tripped:
@@ -525,7 +540,7 @@ def r_breakers(ctx):
     if rows:
         out.append(Finding(
             "BRK-002", CAT, Severity.WARNING, T("rules.nodes.r_breakers.06"),
-            observed=T("rules.nodes.r_breakers.07") % (len(rows), ctx.t["breaker_used_pct_warn"], ctx.t["breaker_parent_used_pct_warn"]),
+            observed=T("rules.nodes.r_breakers.07") % (len(rows), ctx.t["breaker_used_pct_warn"]),
             impact=T("rules.nodes.r_breakers.08"),
             recommend=T("rules.nodes.r_breakers.09"),
             evidence=table(["node", "breaker", "tripped", "estimated", "limit", T("rules.nodes.r_breakers.05")], rows),

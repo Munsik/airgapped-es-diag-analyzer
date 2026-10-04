@@ -6,7 +6,9 @@ Covers transient over persistent settings, failure store write and lifecycle han
 restart-aware deltas (DIF-005, DIF-006, DIF-007), DIF-013 gating the other trend rules, DIF-001 with an unknown status,
 DIF-008 on used bytes and tier membership, DIF-009 minimum volume, DIF-012 with skipped rules, the time-based merge policy
 by the @timestamp mapping, the gz log tail, rolled JSON logs, the bottleneck scope of a coordinating-only node, OVS-001 shrink
-factors, MAP-004 on rolled-over indices and container detection for OS-001. Both languages where text is involved.
+factors, MAP-004 on rolled-over indices and container detection for OS-001, and the fixes from the review on a real Elastic Cloud
+bundle (JVM memory pressure, parent breaker, io_ticks wrap, SHD-012, OVS-001 read aliases, IDX-004 time-based indices, IDX-006,
+SET-006 mounts, setting sentinels, frozen flood log line, CLU-001, restart detection, SHD-013, ES-managed data streams). Both languages where text is involved.
 
     python3 tests/test_audit_0143.py
 """
@@ -105,25 +107,41 @@ def mapping_and_merge():
     s = summarize([("a", {"mappings": {"properties": {"@timestamp": {"type": "date"}}}}),
                    ("b", {"mappings": {"properties": {"@timestamp": {"type": "keyword"}}}}),
                    ("c", {"mappings": {"properties": {"x": {"type": "long"}}}}),
-                   ("d", {"mappings": {"properties": {"@timestamp": {"type": "date", "index": False, "doc_values": False}}}})])
-    check("indexed @timestamp date is time-based", s["a"]["timestamp"] is True)
-    check("keyword @timestamp is not time-based", s["b"]["timestamp"] is False)
-    check("no @timestamp is not time-based", s["c"]["timestamp"] is False)
-    check("@timestamp without index or doc values is not time-based", s["d"]["timestamp"] is False)
+                   ("d", {"mappings": {"properties": {"@timestamp": {"type": "date", "index": False, "doc_values": False}}}}),
+                   ("e", {"mappings": {"properties": {"@timestamp": {"type": "date", "index": False}}}})])
 
     class _C(object):
-        version_tuple = (9, 4, 4)
         mapping_summary = s
         nodes = []
+
+        def __init__(self, version, modes=None):
+            self.version_tuple = version
+            self._modes = modes or {}
 
         def data_stream_of(self, name):
             return None
 
         def index_mode(self, name):
-            return None
+            return self._modes.get(name, "standard")
+
+        def index_setting(self, name, key, default=None):
+            return default
+
+        time_based = Context.time_based
+
+    c95 = _C((9, 4, 4), {"e2": "logsdb"})
+    check("indexed @timestamp date is time-based", c95.time_based("a"))
+    check("keyword @timestamp is not time-based", not c95.time_based("b"))
+    check("no @timestamp is not time-based", not c95.time_based("c"))
+    check("@timestamp without index or doc values is not time-based", not c95.time_based("d"))
+    check("9.x: doc values only on a standard index is not time-based", not c95.time_based("e"))
+    s["e2"] = s["e"]
+    check("9.x: doc values skipper (logsdb) counts as time-based", c95.time_based("e2"))
+    check("8.x: index and doc values are both required", not _C((8, 19, 0)).time_based("e"))
+    check("before 8.11 nothing is time-based", not _C((8, 10, 0)).time_based("a"))
     k = "index.merge.policy.max_merged_segment"
-    check("plain index with @timestamp uses the time-based 100gb", default_for(k, _C(), index="a") == "100gb", default_for(k, _C(), index="a"))
-    check("index without @timestamp keeps 5gb", default_for(k, _C(), index="c") == "5gb", default_for(k, _C(), index="c"))
+    check("plain index with @timestamp uses the time-based 100gb", default_for(k, c95, index="a") == "100gb", default_for(k, c95, index="a"))
+    check("index without @timestamp keeps 5gb", default_for(k, c95, index="c") == "5gb", default_for(k, c95, index="c"))
 
 
 def logs(tmp):
@@ -336,6 +354,174 @@ def rules(tmp, lang):
           o is None or o.severity in (Severity.INFO, Severity.OK), o and o.observed)
 
 
+
+def _ns(root):
+    return json.load(open(os.path.join(root, "nodes_stats.json")))
+
+
+def review(tmp, lang):
+    """Fixes from the second review on a real Elastic Cloud bundle."""
+    set_lang(lang)
+    pre = "[%s] " % lang
+    import re
+    from esdoctor.rules.runtime import _LOG_PATTERNS
+    from esdoctor.settings_kb import compare
+    from esdoctor.rules.cluster import r_cluster_status
+    b = Bundle(version="9.5.3")
+    # 6 primaries, 1 replica, plain index that takes writes directly (no alias): SHD-012 must list it
+    b.index("orders", 10 * GB, M, pri=6)
+    b.stats["orders"]["total"]["indexing"] = {"index_total": 50 * M, "recent_write_load": 0.5}
+    # one primary: total_shards_per_node cannot spread it, so not listed
+    b.index("single", 10 * GB, M)
+    b.stats["single"]["total"]["indexing"] = {"index_total": 50 * M}
+    # an index behind a plain read alias is still rated for oversharding
+    b.index("products-v3", 4 * GB, M, pri=8)
+    # a time-based index with 60 segments per shard of 20GB is normal (LogByteSizeMergePolicy), a plain one is not
+    ds = [".ds-logs-a-default-2026.09.01-000001", ".ds-logs-a-default-2026.09.08-000002", ".ds-logs-a-default-2026.09.15-000003"]
+    for x in ds:
+        b.index(x, 20 * GB, M)
+        b.stats[x]["primaries"]["segments"] = {"count": 60}
+    b.stream("logs-a-default", ds)
+    b.index("plain-segs", 20 * GB, M)
+    b.stats["plain-segs"]["primaries"]["segments"] = {"count": 60}
+    # failures: only version conflicts and a few query failures → Info; the ratio uses the primaries' index_total
+    b.index("vc-only", GB, M)
+    b.stats["vc-only"]["primaries"]["indexing"] = {"index_total": 1000, "index_failed": 1000,
+                                                   "index_failed_due_to_version_conflict": 1000}
+    b.stats["vc-only"]["total"]["indexing"] = {"index_total": 2000, "index_failed": 1000,
+                                               "index_failed_due_to_version_conflict": 1000}
+    b.stats["vc-only"]["total"]["search"] = {"query_total": 100000, "query_failure": 3}
+    # a searchable snapshot mount: SET-006 must not list the settings the mount sets
+    b.index("restored-old", GB, M)
+    b.settings["restored-old"]["settings"]["index"].update(
+        {"number_of_replicas": "0", "blocks": {"write": "true"},
+         "store": {"type": "snapshot", "snapshot": {"snapshot_name": "s", "repository_name": "r"}}})
+    root = os.path.join(tmp, "rv-" + lang)
+    b.write(root)
+    w(root, "alias.json", {"products-v3": {"aliases": {"products": {}}}})
+    ns = _ns(root)
+    for i, nid in enumerate(sorted(ns["nodes"])):
+        st = ns["nodes"][nid]
+        # heap 90% at this moment, but the old generation is only 50%: young garbage, not memory pressure
+        st["jvm"]["mem"].update(heap_used_percent=90, pools={"old": {"used_in_bytes": 4 * GB, "max_in_bytes": 8 * GB}})
+        # parent breaker at 92% of its limit with real memory accounting: not BRK-002
+        st["breakers"] = {"parent": {"estimated_size_in_bytes": 92, "limit_size_in_bytes": 100, "tripped": 0}}
+        st["os"] = {"cpu": {"percent": 30}}
+        if i == 0:
+            # io_ticks wrapped once: -2,473,690,620 ms over an uptime of 1,885,745,541 ms is really 96.6%
+            st["jvm"]["uptime_in_millis"] = 1885745541
+            st["fs"]["io_stats"] = {"devices": [{"device_name": "dm-1", "io_time_in_millis": -2473690620}],
+                                    "total": {"io_time_in_millis": -2473690620}}
+    w(root, "nodes_stats.json", ns)
+    res = analyze(root)
+    check(pre + "no rule errors", not res.errors, [e["rule"] for e in res.errors])
+    f = ids(res.findings)
+    j1 = f.get("JVM-001")
+    check(pre + "JVM-001 rates the old generation, not heap% with young garbage", j1 is not None and j1.severity == Severity.OK,
+          j1 and (j1.severity, j1.observed))
+    check(pre + "parent breaker with real memory is not BRK-002", "BRK-002" not in f, f.get("BRK-002") and f["BRK-002"].observed)
+    d8 = f.get("DISK-008")
+    check(pre + "DISK-008 corrects the 32-bit io_ticks wrap", d8 is not None and d8.severity == Severity.WARNING
+          and any(r[2] == "96.6%" for r in d8.evidence["rows"]), d8 and d8.evidence["rows"])
+    s12 = [r[0] for r in ((f.get("SHD-012") or Finding("x", "x", Severity.INFO, "x")).evidence or {}).get("rows", [])]
+    check(pre + "SHD-012 lists a heavily indexed plain index", "orders" in s12, s12)
+    check(pre + "SHD-012 skips a one-primary index", "single" not in s12, s12)
+    o1 = [r[0] for r in ((f.get("OVS-001") or Finding("x", "x", Severity.INFO, "x")).evidence or {}).get("rows", [])]
+    check(pre + "OVS-001 rates an index behind a read alias", "products-v3" in o1, o1)
+    i4 = [r[0] for r in ((f.get("IDX-004") or Finding("x", "x", Severity.INFO, "x")).evidence or {}).get("rows", [])]
+    check(pre + "IDX-004 accepts 60 segments on a 20GB time-based shard", not any(x.startswith(".ds-") for x in i4), i4)
+    check(pre + "IDX-004 still flags 60 segments on a plain index", "plain-segs" in i4, i4)
+    i6 = f.get("IDX-006")
+    check(pre + "IDX-006 is Info for version conflicts and a few query failures", i6 is not None and i6.severity == Severity.INFO,
+          i6 and i6.severity)
+    if i6:
+        row = [r for r in i6.evidence["rows"] if r[0] == "vc-only"]
+        check(pre + "IDX-006 ratio uses the primaries' index_total", row and row[0][3] == "50.0%", row)
+    s6 = [r for r in ((f.get("SET-006") or Finding("x", "x", Severity.INFO, "x")).evidence or {}).get("rows", [])]
+    check(pre + "SET-006 skips searchable snapshot mounts", not any("restored-old" in str(r[5]) for r in s6), s6)
+
+    if lang != "en":
+        return
+    # units: 0 and -1 on byte/time settings
+    check("recovery rate 0 is not 'lowered'", compare("indices.recovery.max_bytes_per_sec", "0")[1] == "change")
+    check("refresh_interval -1 is not 'lowered'", compare("index.refresh_interval", "-1")[1] == "change")
+    check("delayed_timeout 0 is lowered", compare("index.unassigned.node_left.delayed_timeout", "0")[1] == "down")
+    # log patterns
+    sev = lambda t: [str(p[1]) for p in _LOG_PATTERNS if re.search(p[0], t)]
+    check("flood stage with read-only block is Critical",
+          sev("flood stage disk watermark [95%] exceeded on [n], all indices on this node will be marked read-only") == ["CRITICAL"])
+    check("frozen flood stage is Warning", sev("flood stage disk watermark [95%] exceeded on [n]") == ["WARNING"])
+    # CLU-001 without shard data
+    class _H(object):
+        health = {"status": "red"}
+        shards = []
+        t = merge({})
+    c1 = r_cluster_status(_H())[0]
+    check("CLU-001 red without a shard list does not claim primaries are only initializing",
+          "initializing" not in c1.observed, c1.observed)
+    # restart detection by the interval
+    class _N(object):
+        def __init__(self, up):
+            self.uptime_ms = up
+    check("uptime that grew less than the interval is a restart", D._restarted(_N(3600000), _N(48 * 3600000), 7 * 24.0))
+    check("uptime that grew by the interval is not a restart", not D._restarted(_N(3600000), _N(3600000 + 168 * 3600000), 168.0))
+
+
+def latest_late(tmp):
+    """SHD-013 is a Warning when the latest finished generation ended late."""
+    set_lang("en")
+    b = Bundle(version="9.5.3")
+    ds = [".ds-logs-l-default-2026.09.01-000001", ".ds-logs-l-default-2026.09.08-000002", ".ds-logs-l-default-2026.09.15-000003"]
+    b.index(ds[0], GB, 201 * M)
+    b.index(ds[1], GB, 260 * M)
+    b.index(ds[2], GB, M)
+    b.stream("logs-l-default", ds)
+    root = os.path.join(tmp, "late")
+    b.write(root)
+    s13 = ids(analyze(root).findings).get("SHD-013")
+    check("SHD-013 Warning when the latest finished generation is late", s13 is not None and s13.severity == Severity.WARNING,
+          s13 and (s13.severity, s13.observed))
+
+
+def system_streams(tmp):
+    root = os.path.join(tmp, "sys")
+    b = Bundle(version="9.5.3")
+    x = ".ds-ilm-history-7-2026.09.01-000001"
+    b.index(x, GB, M)
+    b.stream("ilm-history-7", [x])
+    b.data_streams[-1].update(hidden=True, _meta={"managed": True, "description": "index template for ILM history indices"})
+    b.write(root)
+    check("an ES-managed hidden data stream is system", ctx_of(root).is_system_index(x))
+
+
+def review2(tmp):
+    """Fixes from the independent review of the second round."""
+    set_lang("en")
+    b = Bundle(version="9.5.3")
+    b.index("logs-000005", 2 * GB, M, pri=4)
+    b.settings["logs-000005"]["settings"]["index"]["lifecycle"] = {"name": "p", "rollover_alias": "logs"}
+    b.index("daily-2026.09.01", 10 * GB, M, pri=6)
+    b.stats["daily-2026.09.01"]["total"]["indexing"] = {"index_total": 50 * M, "recent_write_load": 0.0}
+    root = os.path.join(tmp, "rv2")
+    b.write(root)
+    w(root, "alias.json", {"logs-000005": {"aliases": {"logs": {}}}})
+    ns = _ns(root)
+    for nid, st in ns["nodes"].items():
+        st["jvm"]["mem"]["pools"] = {"old": {"used_in_bytes": 4 * GB, "max_in_bytes": 8 * GB}}
+        st["breakers"] = {"parent": {"estimated_size_in_bytes": 78, "limit_size_in_bytes": 100, "tripped": 3}}
+    w(root, "nodes_stats.json", ns)
+    c = ctx_of(root)
+    check("legacy rollover alias without is_write_index: its index is being filled", "logs-000005" in c.explicit_write_targets(),
+          sorted(c.explicit_write_targets()))
+    f = ids(analyze(root).findings)
+    b1 = f.get("BRK-001")
+    check("parent trips with low old generation pressure are not Critical", b1 is not None and b1.severity == Severity.WARNING,
+          b1 and b1.severity)
+    s12 = [r[0] for r in ((f.get("SHD-012") or Finding("x", "x", Severity.INFO, "x")).evidence or {}).get("rows", [])]
+    check("SHD-012 skips an index without recent writes", "daily-2026.09.01" not in s12, s12)
+    o1 = [r[0] for r in ((f.get("OVS-001") or Finding("x", "x", Severity.INFO, "x")).evidence or {}).get("rows", [])]
+    check("OVS-001 skips the legacy rollover write index", "logs-000005" not in o1, o1)
+
 def main():
     tmp = tempfile.mkdtemp()
     try:
@@ -351,6 +537,10 @@ def main():
         engine_base(tmp)
         for lang in ("ko", "en"):
             rules(tmp, lang)
+            review(tmp, lang)
+        latest_late(tmp)
+        review2(tmp)
+        system_streams(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         set_lang("ko")

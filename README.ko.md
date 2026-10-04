@@ -44,7 +44,7 @@ Elastic [support-diagnostics](https://github.com/elastic/support-diagnostics) �
 - **스토리지 비용** — 롤오버 후에도 hot 에 남은 데이터, 검색되지 않는 replica, tier 간 디스크 사용 차이, 수집 대상 tier 가 며칠치 수집량을 더 받을 수 있는지
 - **원인 단위 조치 우선순위** — 같은 원인에서 나온 판정(예: yellow·미할당 샤드·allocation explain·replica 초과)은 대표 1건으로 묶고 나머지는 관련 판정으로 표시
 - **판정 근거 구분** — 모든 판정에 공식 기준 / 사실 보고 / 도구 판단 / 비교 계산 표기
-- **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 96종 지식 베이스)
+- **설정 변경 분석** — 기본값과 다른 클러스터·노드·인덱스 설정을 원래 기본값, dynamic/static, 의미, 올렸을 때·내렸을 때의 영향과 함께 보고(설정 99종 지식 베이스)
 - **과다 샤딩 분석** — 인덱스별로 줄일 수 있는 샤드 수, 데이터 스트림 롤오버 과다, 샤드 크기 분포
 - **tier 인식** — hot/warm/cold/frozen 을 구분해 같은 역할끼리만 비교
 - **비교 모드** — 이전 번들과 비교해 누적 카운터를 "지금도 증가 중인가" 로 판정하고, 노드별 이전/지금 표를 보여 줌. 번들이 3개 이상이면 사이징용 구간별 처리량(peak/off-peak)도 계산
@@ -219,9 +219,9 @@ bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, 빌드 전용 가�
 
 | 구분 | 의미 | 판정 ID 수 |
 | --- | --- | --- |
-| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 59 |
+| 공식 기준 | 판정 기준이 Elastic 공식 문서에 명시(예: heap ≤ RAM 50%, 샤드 10~50GB·2억건, 워터마크, 설정 기본값) | 60 |
 | 사실 보고 | ES 가 보고한 상태·오류·설정을 그대로 전달, 임계값 없음(예: red, ILM 오류) | 57 |
-| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: heap 사용률 75%, 평균 검색 지연 200ms) | 68 |
+| 도구 판단 | 공식 수치가 없어 도구가 정한 임계값(예: CPU 당 load15 1.0, 평균 검색 지연 200ms) | 67 |
 | 비교 계산 | 두 번들 간 증가분·증가율·선형 외삽 | DIF-001~013 |
 
 고객에게 전달할 때 "공식 기준·사실 보고" 는 근거로, "도구 판단" 은 권고로 제시하십시오.
@@ -456,7 +456,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | 검사 | 내용 | 현재 결과 |
 | --- | --- | --- |
-| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 999개, 문제 0 |
+| `tests/lint_format.py` | `%` 포맷 문자열 정적 검사 — 실행되지 않는 분기의 포맷 오류까지 | 1010개, 문제 0 |
 | `tests/verify_logic.py` | 계산 로직 단정문 — 워터마크, GC 로그, 설정 지식 베이스 교차 검증, 다중 tier·마운트 인덱스·쓰기 차단 재현. 한국어·영어 두 언어로 실행 | 110개 통과 |
 | `tests/drive_branches.py` | 시나리오 63개로 모든 판정 분기를 강제 실행하고 심각도까지 확인 | 63개 통과, 미실행 판정 분기 0 |
 | `tests/fuzz_rules.py` | 필드 누락·null·문자열 숫자 변형(`--harsh` 는 임의 타입) | 실패 0 |
@@ -466,7 +466,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_write_path.py` | 쓰기 경로·운영 판정(PERF-012, OS-007, SHD-016, IDX-014·015, CLU-017, MAP-004, DIF-013)의 분기를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_doc_audit.py` | 공식 문서 재대조로 고친 부분(JVM-002 oops 플래그, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom 조건, 개발 모드, 상황에 따라 달라지는 설정 기본값)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_es95.py` | 버전별 기본값: merge policy 기본값, 8.16 부터의 allow_rebalance, columnar·logsdb_columnar·vectordb_document index mode(DISK-006, DISK-007, IDX-013, PERF-008, SET-006), 모니터링 플러그인 deprecation(OPS-007)을 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
-| `tests/test_audit_0143.py` | 0.14.3 로직 점검 수정 사항: transient 우선 설정, failure store 인덱스, API 오류 응답을 없는 파일로 처리, 비교 기준 번들 선택, 재시작을 반영한 증가분(DIF-005/006/007), DIF-013 우선 판정, 사용 바이트와 tier 구성 기준 DIF-008, DIF-009 최소 처리량, skipped 규칙의 DIF-012, time-based merge policy, gz 로그 tail, OVS-001 shrink 약수, 롤오버된 인덱스의 MAP-004, 컨테이너 판별(OS-001)을 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |
+| `tests/test_audit_0143.py` | 0.14.3 로직 점검 수정 사항: transient 우선 설정, failure store 인덱스, API 오류 응답을 없는 파일로 처리, 비교 기준 번들 선택, 재시작을 반영한 증가분(DIF-005/006/007), DIF-013 우선 판정, 사용 바이트와 tier 구성 기준 DIF-008, DIF-009 최소 처리량, skipped 규칙의 DIF-012, time-based merge policy, gz 로그 tail, OVS-001 shrink 약수, 롤오버된 인덱스의 MAP-004, 컨테이너 판별(OS-001), 실제 Elastic Cloud 번들 점검 수정 사항(JVM memory pressure, io_ticks 보정, time-based 세그먼트 등)을 합성 데이터로 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_bottleneck_cost.py` | 병목 요약, 최근 재시작 노드의 비교 제외(HOT-001·002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001~006, 증상 tier 로 좁힌 병목 원인, tier 단위 DIF-008, DIF-014 구간 검사, tier 단위 SET-005 를 합성 데이터로 두 언어 모두 검증. 외부 번들 불필요 | 실패 0 |
 | `tests/test_handoff.py` | Support 팀 요약: 카나리 식별자(클러스터·노드·호스트·IP·경로·인증서·라이선스·저장소·인덱스·로그·스택)가 단계별로 남지 않는지, 매핑 왕복, 마스킹 실패 시 요약 미생성, CLI 옵션. 외부 번들 불필요 | 실패 0 |
 | `tests/check_docs.py` | README·RULES·COVERAGE·CHANGELOG 의 수치·목록·링크가 코드와 일치하는지, 판정 ID 와 근거 구분 표 대조 | 불일치 0 |

@@ -113,7 +113,8 @@ def r_cluster_setting_changes(ctx):
         out.append(Finding(
             "SET-001", CAT, _worst(sevs), T("rules.settings.r_cluster_setting_changes.05"),
             observed=T("rules.settings.r_cluster_setting_changes.06")
-                     % len(rows) + orch + T("rules.settings.r_cluster_setting_changes.07"),
+                     % len(rows) + orch + (T("rules.settings.r_cluster_setting_changes.07")
+                                           if any(_dedicated_note(r[0]) for r in rows) else ""),
             impact=T("rules.settings.r_cluster_setting_changes.08"),
             recommend=T("rules.settings.r_cluster_setting_changes.09"),
             evidence=table([T("rules.settings.r_cluster_setting_changes.10"), T("rules.settings.r_cluster_setting_changes.11"), T("rules.settings.r_cluster_setting_changes.12"), T("rules.settings.r_cluster_setting_changes.13"), T("rules.settings.r_cluster_setting_changes.14"), T("rules.settings.r_cluster_setting_changes.15"), T("rules.settings.r_cluster_setting_changes.16")], rows),
@@ -125,7 +126,8 @@ def r_cluster_setting_changes(ctx):
     if same:
         out.append(Finding(
             "SET-002", CAT, Severity.INFO, T("rules.settings.r_cluster_setting_changes.19"),
-            observed=T("rules.settings.r_cluster_setting_changes.20") % len(same),
+            observed=T("rules.settings.r_cluster_setting_changes.20") % len(same)
+                     + ((T("rules.settings.r_cluster_setting_changes.04") % ctx.deployment) if ctx.orchestrated else ""),
             impact=T("rules.settings.r_cluster_setting_changes.21"),
             recommend=T("rules.settings.r_cluster_setting_changes.22"),
             evidence=table([T("rules.settings.r_cluster_setting_changes.11"), T("rules.settings.r_cluster_setting_changes.10"), T("rules.settings.r_cluster_setting_changes.23")], same), refs=_refs("put"), source="cluster_settings.json"))
@@ -266,18 +268,26 @@ def r_index_setting_changes(ctx):
     """Counts, per setting and value, the explicitly set settings of user indices that have a registered official default and differ from it.
 
     Identity information added automatically at index creation (uuid, creation_date, version, provided_name, number_of_shards,
-    tier preference, etc.) has no registered default, so it is naturally excluded. System indices are excluded.
+    tier preference, etc.) has no registered default, so it is naturally excluded. System indices are excluded, and so are searchable
+    snapshot mounts: ES sets their write block, 0 replicas and other settings when it mounts them, and they cannot be changed. The
+    merge settings that data stream lifecycle writes on the indices it manages (floor_segment, merge_factor) are left out too.
     Severity is the highest risk among the change directions (Warning at most, settings with a dedicated rule excluded).
     """
     agg = collections.OrderedDict()
     for name, body in items(ctx.index_settings):
-        if ctx.is_system_index(name):
+        if ctx.is_system_index(name) or ctx.is_searchable_snapshot(name):
             continue
         flat = _flat((body or {}).get("settings") or {})
+        dlm = None
         for k, v in flat.items():
             spec = lookup(k)
             if not spec or spec["scope"] != "index":
                 continue
+            if k in ("index.merge.policy.floor_segment", "index.merge.policy.merge_factor"):
+                if dlm is None:
+                    dlm = ctx.dlm_managed(name)
+                if dlm:
+                    continue        # set by data stream lifecycle (DataStreamLifecycleService target merge settings)
             changed, direction, spec, default, _src = compare(k, v, default=default_for(k, ctx, index=name))
             if not changed:
                 continue

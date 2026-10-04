@@ -327,11 +327,14 @@ SCENARIOS = [
      ["SET-003"]),
     ("heap, GC, restart, breaker, fielddata", lambda b: (
         b.each_node(fn_stats=lambda i, s: (
-            s["jvm"]["mem"].update(heap_used_percent=80),
+            s["jvm"]["mem"].update(heap_used_percent=80,          # JVM-001 rates the old generation (memory pressure)
+                                   pools=dict(s["jvm"]["mem"].get("pools") or {},
+                                              old={"used_in_bytes": 80, "max_in_bytes": 100})),
             s["os"]["mem"].update(adjusted_total_in_bytes=int(s["jvm"]["mem"]["heap_max_in_bytes"] * 1.5)),
             s["jvm"].update(uptime_in_millis=3600000),
             s["jvm"]["gc"]["collectors"]["old"].update(collection_count=3, collection_time_in_millis=108000),
-            s["breakers"]["parent"].update(limit_size_in_bytes=1000, estimated_size_in_bytes=950, tripped=0))),
+            # the parent breaker is not rated on its momentary use with real memory, so a child breaker is used
+            s["breakers"]["request"].update(limit_size_in_bytes=1000, estimated_size_in_bytes=950, tripped=0))),
         b.put("fielddata.json", [{"node": "n1", "field": "message", "size": "200mb"}])),
      ["JVM-001!WARNING", "JVM-003!WARNING", "JVM-005!WARNING", "OS-006!WARNING", "BRK-002!WARNING", "FD-002!INFO"]),
     # A 1.6TB disk has an effective low of 87.65% and high of 90.74% because of max_headroom. Use 89%: above low, below high.
@@ -398,7 +401,8 @@ SCENARIOS = [
     ("index: excess replicas, total fields, explicit refresh, lone block, delayed allocation", lambda b: (
         b.add_index("over-replica", {"number_of_replicas": "500"}),
         b.edit("cluster_stats.json", lambda c: c["indices"].setdefault("mappings", {}).update(total_field_count=200000)),
-        b.add_index("heavy-refresh", {"refresh_interval": "1s"}, extra_stats={"total.indexing.index_total": 20000000}),
+        b.add_index("heavy-refresh", {"refresh_interval": "1s"}, pri=2,
+                    extra_stats={"total.indexing.index_total": 20000000, "total.indexing.recent_write_load": 1.0}),
         b.add_index("archive-blocked", {"blocks": {"write": "true"}}),
         b.add_index("no-delay", {"unassigned": {"node_left": {"delayed_timeout": "0"}}})),
      ["IDX-002", "MAP-002", "IDX-007", "IDX-011", "CLU-021", "SHD-012"]),
@@ -589,7 +593,12 @@ def main():
     ns["nodes"].pop(drop)
     B(d2).put("nodes.json", ni)
     B(d2).put("nodes_stats.json", ns)
-    B(d2).edit("manifest.json", lambda m: m.update(collectionDate="2026-08-15T04:51:34.007Z"))
+    # one hour after the earlier bundle, so the nodes that kept running grew their uptime by the interval
+    import datetime as _dt
+    t1 = str((B(d1).get("manifest.json") or {}).get("collectionDate") or "2026-08-15T03:51:34.007Z")
+    t2 = (_dt.datetime.strptime(t1[:19], "%Y-%m-%dT%H:%M:%S") + _dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S") + ".007Z"
+    B(d1).edit("manifest.json", lambda m: m.update(collectionDate=t1))
+    B(d2).edit("manifest.json", lambda m: m.update(collectionDate=t2))
     r = analyze(d2, baseline=d1)
     ids = set(f.id for f in r.findings)
     miss = [x for x in ("DIF-002", "DIF-003", "DIF-004") if x not in ids]

@@ -61,6 +61,7 @@ def summarize(pairs):
         out[name] = {"total": total + rt, "nested": nested, "fielddata": fd, "vectors": vec, "runtime": rt,
                      "source_disabled": str(src.get("enabled")).lower() == "false" or mode == "disabled",
                      "source_mode": mode,
-                     "timestamp": isinstance(ts, dict) and ts.get("type") in ("date", "date_nanos")
-                     and (str(ts.get("index", True)).lower() != "false" or str(ts.get("doc_values", True)).lower() != "false")}
+                     "timestamp": isinstance(ts, dict) and ts.get("type") in ("date", "date_nanos"),
+                     "ts_index": isinstance(ts, dict) and str(ts.get("index", True)).lower() != "false",
+                     "ts_dv": isinstance(ts, dict) and str(ts.get("doc_values", True)).lower() != "false"}
     return out

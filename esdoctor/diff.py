@@ -47,14 +47,25 @@ def _breaker_tripped(node):
     return out
 
 
-def _restarted(b, n):
-    """True when the node's uptime went down between the two bundles: its cumulative counters started again from 0."""
-    return bool(b.uptime_ms and n.uptime_ms and n.uptime_ms < b.uptime_ms)
+def _restarted(b, n, hours=None):
+    """True when the node restarted between the two bundles, so its cumulative counters started again from 0.
+
+    Its uptime went down, or, when the interval is known, it grew less than the interval: a node that ran the whole time has
+    uptime = earlier uptime + interval (slack of 10 minutes or 5% of the interval for clock and collection differences).
+    """
+    if not (b.uptime_ms and n.uptime_ms):
+        return False
+    if n.uptime_ms < b.uptime_ms:
+        return True
+    if hours:
+        elapsed = hours * 3600000.0
+        return n.uptime_ms + max(600000.0, elapsed * 0.05) < b.uptime_ms + elapsed
+    return False
 
 
 def _span_hours(b, n, hours):
     """Hours the delta covers: the interval, or the uptime since the restart when the node restarted."""
-    if _restarted(b, n):
+    if _restarted(b, n, hours):
         return n.uptime_ms / 3600000.0
     return hours
 
@@ -147,7 +158,7 @@ def node_changes(base, cur, hours, t):
         if b is None:
             rows.append([n.name, tier, T("diff.node.new")] + ["-"] * 9)
             continue
-        reset = bool(b.uptime_ms and n.uptime_ms and n.uptime_ms < b.uptime_ms)
+        reset = _restarted(b, n, hours)
         sec = hours * 3600.0 if hours else None
 
         def rate(path):
@@ -234,7 +245,7 @@ def r_status_change(base, cur, hours, t):
 
 
 def r_node_restart(base, cur, hours, t):
-    """Node with the same name has a smaller uptime than before -> critical (DIF-002, restart). Node left -> warning, only new -> info (DIF-003)."""
+    """Node with the same name restarted: its uptime went down, or grew less than the interval -> critical (DIF-002, restart). Node left -> warning, only new -> info (DIF-003)."""
     bm, cm = _node_map(base), _node_map(cur)
     restarted, left, joined = [], [], []
     for name, n in cm.items():
@@ -242,7 +253,7 @@ def r_node_restart(base, cur, hours, t):
             joined.append(name)
             continue
         bu, cu = bm[name].uptime_ms, n.uptime_ms
-        if bu and cu and cu < bu:
+        if _restarted(bm[name], n, hours):
             restarted.append([name, fmt_ms(bu), fmt_ms(cu)])
     for name in bm:
         if name not in cm:
@@ -276,7 +287,7 @@ def r_rejections_delta(base, cur, hours, t):
     for name, n in cm.items():
         if name not in bm:
             continue
-        reset = _restarted(bm[name], n)
+        reset = _restarted(bm[name], n, hours)
         b, c = (collections.Counter() if reset else _tp_rejected(bm[name])), _tp_rejected(n)
         for pool in set(list(b.keys()) + list(c.keys())):
             d = c[pool] - b[pool]
@@ -314,7 +325,7 @@ def r_gc_delta(base, cur, hours, t):
     for name, n in cm.items():
         if name not in bm:
             continue
-        reset = _restarted(bm[name], n)
+        reset = _restarted(bm[name], n, hours)
         bc, bt = (0, 0) if reset else bm[name].gc("old")
         cc, ct = n.gc("old")
         if cc < bc:          # counter went down without an uptime drop: no usable delta
@@ -351,7 +362,7 @@ def r_breaker_delta(base, cur, hours, t):
     for name, n in cm.items():
         if name not in bm:
             continue
-        b = collections.Counter() if _restarted(bm[name], n) else _breaker_tripped(bm[name])
+        b = collections.Counter() if _restarted(bm[name], n, hours) else _breaker_tripped(bm[name])
         c = _breaker_tripped(n)
         for k in set(list(b.keys()) + list(c.keys())):
             d = c[k] - b[k]
@@ -461,8 +472,7 @@ def r_throughput(base, cur, hours, t):
         name = n.name
         if name not in bm:
             continue
-        bu, cu = bm[name].uptime_ms, n.uptime_ms
-        reset = bool(bu and cu and cu < bu)
+        reset = _restarted(bm[name], n, hours)
         bi = num(bm[name].stats, "indices", "indexing", "index_total")
         ci = num(n.stats, "indices", "indexing", "index_total")
         bq = num(bm[name].stats, "indices", "search", "query_total")
@@ -572,7 +582,7 @@ def r_interval_rates(series, t):
             p = am.get(n.name)
             if p is None:
                 continue
-            if p.uptime_ms and n.uptime_ms and n.uptime_ms < p.uptime_ms:
+            if _restarted(p, n, hours):
                 skipped += 1
                 continue
             di += max(0, num(n.stats, "indices", "indexing", "index_total") - num(p.stats, "indices", "indexing", "index_total"))

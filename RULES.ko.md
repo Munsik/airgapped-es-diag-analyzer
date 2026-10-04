@@ -175,7 +175,8 @@ Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명,
 
 **판정 로직**
 
-기본값이 아닌(persistent/transient 에 명시된) 클러스터 설정만 판정. allocation.enable != all → 치명, rebalance.enable != all → 주의, disk.threshold_enabled=false → 치명, cluster.blocks.read_only(_allow_delete)=true → 치명, destructive_requires_name=false → 주의(CLU-011). allocation.exclude._name/_ip/_host 값 존재 → 주의(CLU-012). transient 설정 존재 → 참고(CLU-013, 7.16 부터 권장하지 않음). use_adaptive_replica_selection=false → 주의(CLU-014, 기본 true).
+기본값과 다른 설정을 판정한다: persistent/transient 에 명시된 값, 없으면 노드 elasticsearch.yml 의 값(그때의 실효값).
+allocation.enable != all → 치명, rebalance.enable != all → 주의, disk.threshold_enabled=false → 치명, cluster.blocks.read_only(_allow_delete)=true → 치명, destructive_requires_name=false → 주의(CLU-011). allocation.exclude._name/_ip/_host 값 존재 → 주의(CLU-012). transient 설정 존재 → 참고(CLU-013, 7.16 부터 권장하지 않음. Elastic Cloud / ECE 플랫폼의 빈 placeholder 값은 무시). use_adaptive_replica_selection=false → 주의(CLU-014, 기본 true).
 
 ### CLU-015 — 클러스터 샤드 한도 임박
 
@@ -360,26 +361,31 @@ tier 사이에서 다른 것이 정상이다. 일부 노드에만 있는 설정�
 사용자 인덱스의 명시 설정 중 공식 기본값이 등록된 설정이 기본값과 다른 것을 설정·값 단위로 집계한다.
 
 인덱스 생성 시 자동으로 들어가는 식별 정보(uuid, creation_date, version, provided_name, number_of_shards,
-tier preference 등)는 등록 대상이 아니므로 자연히 제외된다. 시스템 인덱스는 제외.
+tier preference 등)는 등록 대상이 아니므로 자연히 제외된다. 시스템 인덱스와 searchable snapshot
+마운트는 제외한다: 마운트 시 ES 가 write block, replica 0 등을 설정하며 바꿀 수 없다. data stream lifecycle 이
+관리 인덱스에 기록하는 merge 설정(floor_segment, merge_factor)도 뺀다.
 심각도는 변경 방향별 위험도 중 최고값(최대 주의, 전용 룰 설정 제외).
 
 ## 노드 (JVM · OS · 디스크 · 스레드풀)
 
-### JVM-001 — Heap 사용률 정상
+### JVM-001 — JVM memory pressure 정상
 
 | 항목 | 내용 |
 | --- | --- |
 | 함수 | `nodes.r_heap_usage` |
-| 근거 구분 | 도구 판단 |
+| 근거 구분 | 공식 기준 |
 | 가능 심각도 | 치명, 주의, 정상 |
-| 임계값 | `heap_used_pct_crit` = 85 — [도구] 수집 순간 heap 사용률<br>`heap_used_pct_warn` = 75 — [도구] 수집 순간 heap 사용률 |
+| 임계값 | `heap_used_pct_crit` = 85 — [공식] 조치가 필요한 JVM memory pressure(high JVM memory pressure 가이드)<br>`heap_used_pct_warn` = 75 — [공식] Elastic Cloud 가 빨간색으로 표시하는 JVM memory pressure(old gen 사용량 / 최대) |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
 | 참고 문서 | [JVM 설정(heap 크기)](https://www.elastic.co/docs/reference/elasticsearch/jvm-settings) |
 
 **판정 로직**
 
-노드별 jvm.mem.heap_used_percent(수집 순간값). >= heap_used_pct_crit → 치명, >= heap_used_pct_warn → 주의, 그 외 정상.
+노드별 JVM memory pressure: old generation pool 사용량 / 최대(jvm.mem.pools.old). 공식 문서가 쓰는 기준이다.
+>= heap_used_pct_crit(85, 공식: memory pressure 가 85% 를 계속 넘으면 조치) → 치명, >= heap_used_pct_warn(75, Elastic Cloud 가
+memory pressure 를 빨간색으로 표시하는 수준) → 주의, 그 외 정상. 순간 heap_used_percent 는 young generation garbage 도
+포함하므로 표시만 하며, old pool 이 보고되지 않을 때만 판정에 쓴다.
 
 ### JVM-002, JVM-003, JVM-004 — heap 이 compressed oops 경계를 넘음
 
@@ -427,7 +433,7 @@ old 비중 = old collection_time / uptime, 시간당 old GC = old count / uptime
 | 판정 항목 | OS-001 CPU load 높음 / OS-002 Swap 활성화 / OS-003 컨테이너 CPU throttling 발생 / OS-004 파일 디스크립터 사용률 높음 / OS-005 bootstrap.memory_lock 미적용 / OS-006 최근 재기동된 노드 존재 / OS-007 대부분의 노드가 최근 재시작함 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
 | 가능 심각도 | 치명, 주의, 참고 |
-| 임계값 | `cgroup_throttle_ratio_crit` = 0.05 — [도구] throttled / elapsed periods<br>`cgroup_throttle_ratio_warn` = 0.01 — [도구] throttled / elapsed periods<br>`fd_used_pct_warn` = 70 — [도구] 열린 파일 / 최대(공식 최소 한도는 65,535)<br>`load_host_cpu_pct_max` = 20 — [도구] 이 cpu% 미만인 컨테이너 노드는 load average 로 판정하지 않음<br>`load_per_cpu_crit` = 1.5 — [도구] load15 / CPU 코어<br>`load_per_cpu_warn` = 1.0 — [도구] load15 / CPU 코어<br>`restart_share_warn` = 0.5 — [도구] uptime_short_hours 안에 재시작한 노드 비율<br>`uptime_short_hours` = 6 — [도구] 최근 재기동 판단 |
+| 임계값 | `cgroup_throttle_ratio_crit` = 0.05 — [도구] throttled / elapsed periods<br>`cgroup_throttle_ratio_warn` = 0.01 — [도구] throttled / elapsed periods<br>`fd_used_pct_warn` = 70 — [도구] 열린 파일 / 최대(공식 최소 한도는 65,535)<br>`load_host_cpu_pct_max` = 50 — [도구] 이 CPU% 미만인 컨테이너 노드는 load average 로 판정하지 않음(호스트 값이므로)<br>`load_per_cpu_crit` = 1.5 — [도구] load15 / CPU 코어<br>`load_per_cpu_warn` = 1.0 — [도구] load15 / CPU 코어<br>`restart_share_warn` = 0.5 — [도구] uptime_short_hours 안에 재시작한 노드 비율<br>`uptime_short_hours` = 6 — [도구] 최근 재기동 판단 |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes.json / nodes_stats.json |
 
@@ -477,16 +483,19 @@ load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주�
 | 판정 항목 | BRK-001 Circuit breaker 발동 이력 / BRK-002 Circuit breaker 사용률 높음 |
 | 근거 구분 | 도구 판단 / 사실 보고 |
 | 가능 심각도 | 치명, 주의 |
-| 임계값 | `breaker_parent_used_pct_warn` = 90 — 높은 사용으로 보는 parent breaker 추정 크기 / 한도(%). parent 추정치는 실제 heap 사용량이고 한도는 heap 의 95% 라 90 은 heap 약 85%<br>`breaker_tripped_warn` = 1 — [도구] breaker 발동 횟수(1 = 이력 존재)<br>`breaker_used_pct_warn` = 70 — 높은 사용으로 보는 circuit breaker 추정 크기 / 한도(%) (request, fielddata, in_flight_requests 등) |
+| 임계값 | `breaker_tripped_warn` = 1 — [도구] breaker 발동 횟수(1 = 이력 존재)<br>`breaker_used_pct_warn` = 70 — 높은 사용으로 보는 circuit breaker 추정 크기 / 한도(%) (request, fielddata, in_flight_requests 등)<br>`heap_used_pct_crit` = 85 — [공식] 조치가 필요한 JVM memory pressure(high JVM memory pressure 가이드) |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
 
 **판정 로직**
 
-breaker.tripped >= breaker_tripped_warn → 주의, 수집 시점 사용률도 사용 기준선 이상이면 치명(BRK-001. 누적 발동 이력만으로는
-치명으로 올리지 않는다). 발동 이력은 없고 estimated / limit 이 사용 기준선 이상 → 주의(BRK-002).
-사용 기준선: breaker_used_pct_warn. 단 parent breaker 는 breaker_parent_used_pct_warn 를 쓴다. parent 추정치는 실제 heap 사용량
-(indices.breaker.total.use_real_memory, 기본 true)이고 한도는 heap 의 95% 라, 70% 는 heap 약 66% 에 불과하기 때문이다.
+breaker.tripped >= breaker_tripped_warn → 주의, 수집 시점 사용률도 breaker_used_pct_warn 이상이면 치명(BRK-001.
+누적 발동 이력만으로는 치명으로 올리지 않는다). 발동 이력은 없고 estimated / limit >= breaker_used_pct_warn →
+주의(BRK-002).
+indices.breaker.total.use_real_memory(기본 true)이면 parent 추정치는 young generation garbage 를 포함한 실제 heap 사용량이고,
+발동 전에 ES 가 먼저 young GC 를 강제한다(소스의 G1OverLimitStrategy). 그래서 그 순간 사용률은 여기서
+판정하지 않고, old generation 압박은 JVM-001 에서 판정한다. parent 발동(BRK-001)은 그대로 보고하며, 그 노드의
+JVM memory pressure 가 heap_used_pct_crit 이상일 때만 치명이다.
 
 ### IP-001 — indexing pressure 거부
 
@@ -713,6 +722,8 @@ indices.lifecycle.poll_interval 마다 확인되므로, 샤드가 50GB 를 조�
 **판정 로직**
 
 store < small_shard_mb 인 primary 중 사용자 인덱스 샤드 수 >= small_shard_count_warn 이고, 전체 primary 중 소형 비율 >= small_shard_ratio_warn → 주의. 시스템 인덱스는 사용자가 조정할 수 없어 판정 기준에서 제외.
+현재 write index(데이터 스트림, failure store, rollover alias)는 아직 채워지는 중이라 작은 것이므로
+소형으로 세지 않는다.
 
 ### IDX-001 — replica 0 인덱스 존재
 
@@ -776,6 +787,11 @@ primary store >= 1GB 인 인덱스에서 deleted / (docs + deleted) >= deleted_d
 
 primary 세그먼트 수 / primary 샤드 수 >= segments_per_shard_warn 이고 primary store > 100MB → 주의.
 
+time-based 인덱스(context.time_based: 데이터 스트림과 @timestamp 필드가 있는 인덱스, 8.11 부터)는
+LogByteSizeMergePolicy 를 쓴다. 이 정책은 인접 세그먼트만 합치고 floor_segment 부터 샤드 크기까지의 크기 단계마다 최대
+merge_factor - 1(기본 32 - 1)개의 세그먼트를 둔다(소스의 MergePolicyConfig). 20GB 샤드는 설계상 약 90개 세그먼트를 가질 수 있다.
+그런 인덱스의 기준은 segments_per_shard_warn 과 (merge_factor - 1) x 단계 수 중 큰 값이다.
+
 ### IDX-005 — merge I/O throttle 관측
 
 | 항목 | 내용 |
@@ -819,16 +835,22 @@ query_total >= min_query_total_for_latency 인 인덱스의 평균 query 지연 
 | 함수 | `shards.r_index_failures` |
 | 근거 구분 | 사실 보고 |
 | 가능 심각도 | 주의, 참고 |
-| 임계값 | `top_n` = 15 — [도구] 근거 표 최대 행 수 |
+| 임계값 | `query_failure_pct_warn` = 1 — [도구] 문제로 보는 사용자 인덱스의 query 실패 / query 수(%)(IDX-006)<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (indices_stats.json) |
 | 근거 파일 | indices_stats.json |
 
 **판정 로직**
 
-indexing.index_failed 또는 search.query_failure > 0 인 인덱스. 사용자 인덱스가 포함되면 주의, 시스템 인덱스뿐이면 참고.
-실패 비율 index_failed / (index_failed + index_total) 순으로 정렬해, 쓰기의 큰 비중을 잃는 인덱스를 앞에 둔다.
-8.18 부터 통계가 index_failed_due_to_version_conflict 를 따로 보고한다. version conflict 는 op_type=create 재시도(Elastic Agent,
-Fleet)에서 정상적으로 생기므로, 실패가 version conflict 뿐인 인덱스는 이 항목을 주의로 올리지 않는다.
+indexing.index_failed 또는 search.query_failure > 0 인 인덱스.
+
+index_failed 는 primary 의 엔진 단계에서 실패한 작업을 센다(소스의 IndexShard / InternalIndexingStats):
+version conflict 와 엔진 오류. 문서 파싱·매핑 오류는 엔진 실행 전에 반환되므로
+여기서 세지 않는다. 8.18 부터 통계가 index_failed_due_to_version_conflict 를 따로 보고하며, version conflict 는
+op_type=create 재시도(Elastic Agent, Fleet)에서 정상적으로 생긴다. 비율은 primary 의 index_total 을 쓴다. index_failed 는
+primary 에서만 세지만 total 의 index_total 은 replica 작업도 포함하기 때문이다.
+query_failure 는 query 단계의 모든 예외를 세며 취소된 검색도 포함하므로 몇 건은 정상이다.
+사용자 인덱스에 version conflict 외의 실패가 있거나, query 실패가 query 의 query_failure_pct_warn 퍼센트 이상(그리고 10건 이상)이면
+주의, 아니면 참고. 표는 그런 인덱스가 앞에 오도록 정렬한다.
 
 ### MAP-001, MAP-002 — 매핑 필드 한도 상향 인덱스
 
@@ -1001,6 +1023,7 @@ shard 복제본당 미커밋 translog 를 index.translog.flush_threshold_size �
 대상: 사용자 인덱스 중 primary >= 2 이고 데이터 스트림 write index·searchable snapshot 이 아닌 것.
 fully mounted(cold) 인덱스는 크기는 정확하지만 shrink 할 수 없으므로 과다 건수만 집계해 원인 조치를 안내한다.
 판정: primary 샤드당 평균 크기 < oversharding_floor_shard_gb(공식 하한 10GB) 이면 과다.
+빈 인덱스는 SHD-011 에서 다룬다.
 권장 primary 수 = 샤드당 oversharding_target_shard_gb(공식 상한 50GB) 이하를 유지하는 현재 개수의 약수 중 가장 작은 값
 (shrink 는 약수로만 가능). 초과 샤드 = (현재 − 권장) × (1 + replica).
 초과 샤드 합계 >= oversharding_excess_warn 또는 전체 샤드 대비 비중 >= oversharding_excess_ratio_warn → 주의,
@@ -1027,7 +1050,8 @@ ds_min_backing_indices 개 이상이고, 그 primary 샤드당 크기의 중앙�
 ds_small_backing_shard_gb 미만이면 표시한다. 롤오버 조건에 크기 조건(ILM 정책의 max_primary_shard_size 또는
 max_size)이 없으면 원인은 기간만으로 일어나는 롤오버 → 주의. 크기 조건이 있으면(기본 제공 logs@lifecycle,
 metrics@lifecycle 정책과 data stream lifecycle 은 primary 샤드당 50GB 에서 롤오버) 단지 수집량이 적은 것이므로
-→ 참고이며, max_age 를 늘리거나 데이터 스트림 수를 줄이도록 안내한다.
+→ 참고이며, max_age 를 늘리거나 데이터 스트림 수를 줄이도록 안내한다. Elasticsearch 가 스스로 관리하는 데이터 스트림
+(ilm-history-*)은 건너뛴다.
 
 ### OVS-003 — 사용자 샤드 크기 분포
 
@@ -1158,7 +1182,7 @@ jvm.input_arguments 기준. HeapDumpOnOutOfMemoryError 없음 → 주의(CFG-007
 | 함수 | `guidance.r_docs_per_shard` |
 | 판정 항목 | SHD-007 샤드 문서 수가 Lucene 한계에 근접 / SHD-008 샤드당 문서 수 권장치 초과 / SHD-013 늦게 롤오버된 샤드 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
-| 가능 심각도 | 치명, 주의 |
+| 가능 심각도 | 치명, 주의, 참고 |
 | 임계값 | `docs_per_shard_crit` = 1,500,000,000 — [도구] Lucene 한계(2,147,483,519) 접근 경보<br>`docs_per_shard_warn` = 200,000,000 — [공식] 샤드당 2억건 미만 권장<br>`docs_rollover_overshoot_pct` = 5 — [도구] 롤오버된 샤드가 2억건을 넘어도 되는 허용치(ILM 은 poll_interval 마다 확인)<br>`top_n` = 15 — [도구] 근거 표 최대 행 수 |
 | 필요 입력 | (indices.json 또는 shards.json 또는 cat_shards.txt) 그리고 (indices_stats.json) |
 | 근거 파일 | indices.json / indices.json / commercial/ilm_explain.json |
@@ -1172,7 +1196,9 @@ Lucene 한계(2,147,483,519)는 삭제 문서를 포함한 maxDoc 기준이다. 
 인덱스 삭제 수를 primary 수로 나눈 값을 더한다(추정치임을 표기).
 rollover 는 샤드 문서 수가 2억건에 닿으면 항상 실행되고, ILM 은 poll_interval(기본 10m)마다 조건을 확인하므로
 롤오버가 끝난 인덱스는 보통 2억건을 조금 넘는다. 롤오버된 인덱스는 2억건을 docs_rollover_overshoot_pct 보다 크게
-넘었을 때만 보고한다(SHD-013, rollover 지연). searchable snapshot mount 도 쓰기가 없으므로 같게 판정한다.
+넘었을 때만 보고한다(SHD-013, rollover 지연): 데이터 스트림의 가장 최근 완료 세대(또는 데이터 스트림 밖 인덱스)가 늦게 끝났으면
+주의, 이전 세대만 늦었으면 참고. searchable snapshot mount 도 쓰기가 없으므로
+같게 판정한다.
 write index 와 rollover 를 쓰지 않는 인덱스는 SHD-008 로 판정한다. 암묵적 2억건 rollover 는 8.8 부터 있으므로(ILM 소스),
 8.8 미만에서는 롤오버된 인덱스도 SHD-008 로 판정한다.
 
@@ -1200,7 +1226,9 @@ logsdb 인덱스의 primary shard 크기를 10~30GB 범위와 비교한다(도�
 SHD-003(50GB 이상)은 그대로 적용한다.
 
 partial mount(frozen) 인덱스는 크기가 캐시 크기라 제외한다. 인덱스마다 가장 큰 primary shard 로 판정한다.
-logsdb_shard_gb_high <= 최대 primary < shard_size_gb_warn → SHD-014(참고, 인덱스별 표).
+logsdb_shard_gb_high <= 최대 primary < shard_size_gb_warn → SHD-014(참고, 인덱스별 표). 단
+searchable snapshot mount(바꿀 수 없음)와 현재 정책이 이미 max_primary_shard_size 를
+logsdb_shard_gb_high 이하로 둔 인덱스는 제외한다. logsdb_shard_gb_low 이상의 max_primary_shard_size 로 끝난 인덱스는 작지 않은 것으로 본다.
 SHD-015(참고)는 data stream 단위로 판정한다: 끝난 backing index(롤오버 또는 mount) 중 최대 primary 가
 logsdb_shard_gb_low 미만이고 문서가 1건 이상 2억건 미만인 인덱스가 ds_min_backing_indices 개 이상인 data stream. 이 인덱스들은
 문서 수 한도가 아니라 max_age 나 작은 크기 조건으로 끝났다. 빈 인덱스는 SHD-011 에서 다룬다.
@@ -1298,8 +1326,10 @@ docs.count=0 인 사용자 인덱스 수 >= empty_index_count_warn → 주의.
 
 핫스팟 방지용 index.routing.allocation.total_shards_per_node 설정 여부(대형 색인 인덱스).
 
-현재 write 대상만 표시한다: 롤오버된 인덱스와 searchable snapshot 인덱스는 쓰기가 없어 이 설정이 의미가 없다
-(데이터 스트림은 index template 에 둔다).
+롤오버된 인덱스와 searchable snapshot 인덱스는 쓰기가 없어 이 설정이 의미가 없다(데이터 스트림은
+index template 에 둔다). primary 가 1개인 인덱스는 건너뛴다: 같은 샤드의 두 사본은 한 노드에 놓이지 않으므로
+(SameShardAllocationDecider) 이 제한으로 더 분산할 수 없다. index_total 은 누적값이므로 지금 쓰기를 받는 인덱스만
+표시한다: recent_write_load 가 1e-6 초과(9.x 통계), 아니면 write 대상이거나 수집 순간 색인 중인 인덱스.
 
 ### PERF-004 — 쓰기 대상 샤드당 indexing buffer 부족
 
@@ -1320,7 +1350,10 @@ docs.count=0 인 사용자 인덱스 수 >= empty_index_count_warn → 주의.
 indices.memory.index_buffer_size(기본 heap 10%)는 '최근 쓰기가 있는(active) 샤드' 가 나눠 쓴다.
 5분 이상(indices.memory.shard_inactive_time, 소스 기준) 쓰기가 없는 샤드는 inactive 로 버퍼를 반납한다. 번들에서 active 여부를 직접 알 수 없으므로
 쓰기 대상으로 확정 가능한 샤드(데이터 스트림 write index + 수집 순간 색인 중인 인덱스)만 센다.
-recent_write_load(9.x 통계)가 0 인 데이터 스트림 write index 는 최근 쓰기가 없으므로 뺀다.
+recent_write_load(9.x 통계, 반감기 5분으로 줄어듦)가 1e-6 미만인 데이터 스트림 write index 는 오랫동안 쓰기가 없었으므로
+뺀다.
+ES 는 nodes info 의 두 버퍼 필드를 반대로 기록하므로(total_indexing_buffer 에 바이트,
+total_indexing_buffer_in_bytes 에 읽기용 값) 숫자인 쪽을 쓴다.
 
 ### PERF-005 — 열린 search context 과다
 
@@ -1445,7 +1478,10 @@ _source 비활성 → 주의, synthetic _source → 참고(DISK-007).
 비활성은 두 가지로 찾는다: mapping.json 의 매핑 파라미터 "_source": {"enabled": false}(문서에 나온 방법)와 settings.json 의
 index.mapping.source.mode=disabled. index.mapping.source.mode=synthetic 과 columnar_stored(9.5 columnar
 모드)는 참고로 나열한다: 돌려받는 _source 는 원본이 아니라 다시 만든 것이다. stored 는 기본값이라 나열하지 않는다.
-system 인덱스는 건너뛴다.
+설정이 없으면 index mode 가 정한다(8.17 부터, 소스의 IndexMode.defaultSourceMode): logsdb, time_series,
+9.5 columnar 모드는 기본이 synthetic 이다. 라이선스가 synthetic source 를 허용하지 않으면 ES 가 mode: stored 를
+인덱스 설정에 기록하므로, 이 모드에서 설정이 없으면 synthetic 이다. 예전 매핑 형식 "_source": {"mode": "synthetic"} 도
+센다. system 인덱스는 건너뛴다.
 
 ### MAP-003 — 동적 매핑 통제가 없는 인덱스 템플릿
 
@@ -1462,6 +1498,9 @@ system 인덱스는 건너뛴다.
 **판정 로직**
 
 컴포넌트까지 병합한 결과 기준으로 동적 매핑 통제 여부를 본다.
+
+Elasticsearch 가 스스로 설치·관리하는 template(Fleet package 없이 _meta.managed: true)은 사용자가 고치지 않으므로
+건너뛴다. 현재 어떤 인덱스나 데이터 스트림과도 맞지 않는 template 도 아직 영향이 없으므로 건너뛴다.
 
 ### VEC-001 — 벡터 데이터 사용 현황
 
@@ -1500,10 +1539,11 @@ system 인덱스는 건너뛴다.
 9.4 부터는 라이선스가 허용하면 bbq_disk). byte·bit 벡터는 양자화하지 않으므로 판정하지 않는다.
 그래서 8.14 이상에서 '미지정' 은 문제로 보지 않고, 명시적 비양자화 타입(hnsw/flat)만 판정한다(VEC-002).
 index: false 인 필드(또는 dense_vector 가 기본으로 색인되지 않던 8.11 미만에서 index 파라미터가 없는 필드)는 HNSW 가 없어
-건너뛰며, 양자화 타입이 없는 8.12 미만에서는 판정하지 않는다.
+건너뛰며, 양자화 타입이 없는 8.12 미만에서는 VEC-002 를 판정하지 않는다.
 VEC-003(참고): 9.2 부터 index.mapping.exclude_source_vectors 가 기본으로 켜져 있으므로 이를 false 로 둔 template 만 표시한다.
 9.2 미만에는 이 설정이 없으므로, mappings._source.excludes 가 벡터 필드를 덮지 않는 template 을 표시하고
-그 방식으로 제외할 때의 trade-off 를 설명한다.
+그 방식으로 제외할 때의 trade-off 를 설명한다. _source 가 비활성이거나 synthetic 인 template(logsdb,
+time_series 포함)은 건너뛴다: 그곳에서는 벡터가 _source 에 저장되지 않는다.
 
 ### VEC-004 — 벡터 인덱스의 세그먼트 수 과다
 
@@ -1743,8 +1783,13 @@ hot 디스크가 감당하는 것보다 늦게 데이터가 옮겨진다는 뜻�
 번들 하나로 수집 대상 tier 가 high watermark 까지 며칠치 수집량을 더 받을 수 있는지 계산한다(COST-004).
 
 하루 수집량 = 최근 ingest_window_days 안에 만들어진 사용자 인덱스의 store 크기(replica 포함) + 그보다 오래된 write index 중
-구간에 해당하는 부분(크기 × 구간 / 나이)을 구간 일수로 나눈 값(클러스터가 더 젊으면 그 기간). searchable
-snapshot 마운트, system 인덱스, shrink·downsample 사본(생성일은 새것이고 데이터는 오래됨)은 뺀다. 수집 대상 tier = write 대상 샤드가 있는 tier(frozen 제외). 그중 hot tier 가
+구간에 해당하는 부분(크기 × 구간 / 나이) + 구간 안에서 rollover 한 오래된 인덱스 중 구간 시작부터 rollover 까지
+쓰인 부분(ilm_explain lifecycle_date)을 구간 일수로 나눈 값(클러스터가 더 젊으면
+그 기간). system 인덱스와
+shrink·downsample 사본(생성일은 새것이고 데이터는 오래됨)은 뺀다. searchable snapshot 마운트는 마운트할 때 생성일이 새로
+매겨지므로 데이터 기준으로 둔다: 백킹 인덱스 이름의 날짜부터 rollover 시점(ilm_explain lifecycle_date)까지 쓰였고,
+크기는 snapshot 데이터 크기(total_data_set_size) × (1 + 데이터 스트림 write index 의 replica 수)이며,
+그 기간 중 구간에 들어간 부분만 센다. failure store 인덱스는 해당 데이터 스트림으로 센다. 수집 대상 tier = write 대상 샤드가 있는 tier(frozen 제외). 그중 hot tier 가
 있으면 hot tier 만 센다. 새 data stream 인덱스는 기본으로 hot 에 만들어지고, 다른 tier 에 있는 write 대상은 대개
 rollover 없이 정책이 옮긴 작은 인덱스이기 때문이다.
 여유 = 그 노드들의 (high watermark 에서 허용하는 바이트 − 사용 바이트) 합. 일수 = 여유 / 하루 수집량.
@@ -1767,9 +1812,10 @@ phase 가 없으면(이동도 삭제도 없음) → 주의, 아니면 참고. �
 데이터 종류와 tier 별 저장량(COST-005), 보고된 값 그대로.
 
 인덱스마다 공식 데이터 스트림 이름 규칙(<type>-<dataset>-<namespace>: logs, metrics, traces,
-synthetics), 보안 알림, system, 기타 데이터 스트림, 기타 인덱스 중 하나로 나눈다. partial 마운트
-(frozen) 인덱스는 store 크기가 로컬 캐시 크기일 뿐이라 따로 보여 준다. tier 는 primary 샤드가 있는 곳이다.
-행마다 인덱스 수, 문서 수, primary 와 전체 store, 전체 store 대비 비중을 보여 준다. 참고로만 보고한다.
+synthetics), 보안 알림, system, 기타 데이터 스트림, 기타 인덱스 중 하나로 나눈다(failure store 인덱스는 해당
+데이터 스트림으로). partial 마운트(frozen) 인덱스는 따로 보여 준다: 로컬 store 를 0 으로 보고하며, snapshot repository 에 있는
+데이터 크기(total_data_set_size)는 본문에 따로 적는다. tier 는 primary 샤드가
+있는 곳이다. 행마다 인덱스 수, 문서 수, primary 와 전체 store, 전체 store 대비 비중을 보여 준다. 참고로만 보고한다.
 
 ### COST-006 — tier 별 사이징 신호
 
@@ -1778,7 +1824,7 @@ synthetics), 보안 알림, system, 기타 데이터 스트림, 기타 인덱스
 | 함수 | `cost.r_tier_sizing` |
 | 근거 구분 | 도구 판단 |
 | 가능 심각도 | 참고 |
-| 임계값 | `size_idle_cpu_pct` = 20 — [도구] tier 의 모든 노드 CPU 가 이보다 낮으면 여유 큼 후보<br>`size_idle_disk_pct` = 30 — [도구] ... 그리고 디스크 사용률이 이보다 낮음(frozen 제외)<br>`size_idle_heap_pct` = 50 — [도구] ... 그리고 heap 사용률이 이보다 낮음<br>`size_idle_load_per_cpu` = 0.3 — [도구] ... 그리고 load15/CPU 가 이보다 낮음<br>`tier_cpu_pct_warn` = 75 — [도구] tier 전체 포화 판정 CPU% |
+| 임계값 | `heap_used_pct_crit` = 85 — [공식] 조치가 필요한 JVM memory pressure(high JVM memory pressure 가이드)<br>`size_idle_cpu_pct` = 20 — [도구] tier 의 모든 노드 CPU 가 이보다 낮으면 여유 큼 후보<br>`size_idle_disk_pct` = 30 — [도구] ... 그리고 디스크 사용률이 이보다 낮음(frozen 제외)<br>`size_idle_heap_pct` = 50 — [도구] ... 그리고 heap 사용률이 이보다 낮음<br>`size_idle_load_per_cpu` = 0.3 — [도구] ... 그리고 load15/CPU 가 이보다 낮음<br>`tier_cpu_pct_warn` = 75 — [도구] tier 전체 포화 판정 CPU% |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
 | 참고 문서 | [데이터 tier](https://www.elastic.co/docs/manage-data/lifecycle/data-tiers) |
@@ -1789,7 +1835,8 @@ synthetics), 보안 알림, system, 기타 데이터 스트림, 기타 인덱스
 
 부족 신호: 모든 노드가 바쁨(load15/CPU >= load_per_cpu_warn 또는 CPU >= tier_cpu_pct_warn, 컨테이너 예외를 포함한 HOT-005 와 같은
 기준), tier 노드의 write·
-search 거부, indexing pressure 거부, high watermark 이상인 노드(frozen 제외) 중 하나라도 있음. 여유 큼: tier 의 모든 노드가
+search 거부, indexing pressure 거부, high watermark 이상인 노드(frozen 제외), 또는
+JVM memory pressure(JVM-001 과 같은 old generation 기준)가 heap_used_pct_crit 이상인 노드 중 하나라도 있음. 여유 큼: tier 의 모든 노드가
 node_compare_min_uptime_hours 이상 떠 있었고 CPU < size_idle_cpu_pct, load15/CPU < size_idle_load_per_cpu, heap <
 size_idle_heap_pct, 디스크 < size_idle_disk_pct(frozen 은 디스크 제외)이며 거부가 없음. 나머지는
 "뚜렷한 신호 없음". 번들은 한 순간이므로 여유 큼은 "지금 줄여라" 가 아니라 "모니터링으로 확인해 볼 만함" 이다. 참고로만 보고한다.
@@ -1922,7 +1969,11 @@ xpack security.enabled=false → 치명, 그 외 정상.
 
 **판정 로직**
 
-GeoIP failed_downloads 또는 expired_databases > 0 → 참고(폐쇄망에서는 정상일 수 있음).
+GeoIP expired_databases > 0, 또는 데이터베이스를 하나도 받지 못한 채 failed_downloads > 0 → 참고(폐쇄망에서는 정상일 수 있음).
+
+failed_downloads 는 누적값이다. 데이터베이스가 있고 만료된 것이 없으며 성공한 다운로드가 있으면 과거 실패는
+재시도로 해결된 것이므로 보고하지 않는다. 만료된 데이터베이스(30일 동안 갱신 안 됨)는 geoip
+processor 가 더 이상 쓰지 않으므로 그 조회는 위치 필드를 추가하지 않는다.
 
 ### OPS-002 — CCR 복제 오류
 
@@ -1977,8 +2028,12 @@ runtime_mappings·script_fields)의 사용 비중이 search_expensive_share_warn
 
 io_time 은 ES 기동 이후 장치가 I/O 를 처리한 누적 시간이다. >= disk_io_busy_pct_warn → 주의(DISK-008), 그 외 참고.
 여러 장치를 쓰면 합계라 100% 를 넘을 수 있어 장치 수로 나눈 값을 쓴다. 누적 평균이므로 순간 포화는 가려질 수 있다.
-0% 미만이나 100% 초과는 장치 카운터가 JVM uptime 과 맞지 않는 경우다(예: 호스팅 인스턴스의 카운터 초기화).
-이런 노드는 "확인 불가"로 표시하고 판정하지 않는다.
+Linux 는 장치의 io_ticks 를 부호 없는 32-bit 밀리초 카운터로 출력하므로(/proc/diskstats) 약 49.7일마다 한 바퀴 돌고,
+노드 시작 시점 값을 빼는 ES 는 그때 음수 증가분을 보고한다. uptime 이 한 바퀴(2^32 ms)보다 짧으면
+음수 장치 증가분에 2^32 를 더한 값이 실제 값이다. 그래도 0% 미만이나 100% 초과면 JVM uptime 과 맞지 않으므로
+"확인 불가"로 표시하고 판정하지 않는다.
+Elastic Cloud / ECE / ECK 에서는 같은 호스트의 다른 컨테이너가 장치를 함께 쓸 수 있어 이 값은 이 노드만이 아니라
+장치 전체의 값이며, 본문에 그렇게 적는다.
 
 ### MAP-004, MAP-005, MAP-006 — 필드 수가 매핑 한도에 근접한 인덱스
 
@@ -2043,7 +2098,9 @@ index: false 인 필드는 HNSW 그래프가 없어 건너뛰며, dense_vector �
 사용자 인덱스가 쓰는 ILM 정책의 롤오버·삭제 구성.
 
 hot 롤오버에 max_primary_shard_size(또는 max_size)가 없으면 주의(ILM-004): 공식 권장은 샤드 크기 기준 롤오버이며,
-max_age 단독이면 수집량에 따라 작은 인덱스가 쌓인다(OVS-002 의 원인). max_primary_shard_size > 50GB 면 주의(ILM-005).
+max_age 단독이면 수집량에 따라 작은 인덱스가 쌓인다(OVS-002 의 원인). 데이터 스트림이 쓰는 정책에 rollover 자체가
+없으면 ILM-004 에 함께 표시한다: 그 데이터 스트림은 rollover 하지 않아 write index 가 끝없이 커지고
+delete 단계가 실패한다(write index 는 삭제할 수 없음). max_primary_shard_size > 50GB 면 주의(ILM-005).
 delete 단계가 없으면 참고(ILM-006, 보존 기간 무제한). Elastic 관리 정책(_meta.managed=true)도 똑같이 확인하고 표에 "(Elastic 관리)" 로 표시한다.
 max_primary_shard_docs 가 200,000,000 을 넘으면 참고(ILM-007): 8.8 부터 rollover 는 샤드당 2억건에서 항상 실행되므로 더 큰
 값은 효과가 없다(공식). 8.8 미만에는 이런 암묵 조건이 없으므로 ILM-007 을 내지 않는다.
@@ -2374,7 +2431,7 @@ syscalls/sysctl.txt 의 vm.max_map_count 가 262144(bootstrap check 최소값) �
 
 **판정 로직**
 
-같은 이름 노드의 uptime 이 이전보다 작음 → 치명(DIF-002, 재기동). 노드 이탈 → 주의, 신규만 → 참고(DIF-003).
+같은 이름 노드가 재시작함: uptime 이 줄었거나 구간 길이보다 적게 늘었음 → 치명(DIF-002, 재기동). 노드 이탈 → 주의, 신규만 → 참고(DIF-003).
 
 ### DIF-005, DIF-004 — 스레드풀 rejection 진행 중
 
@@ -2612,7 +2669,10 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `thread_pool.write.queue_size` | 10000(9.2부터 max(10000, 할당 프로세서 수 x 750)) | static | node | write 스레드풀 대기열 크기. | ↑ rejection 은 줄지만 요청이 큐에서 오래 대기해 지연과 heap 사용이 늘어납니다. 원인(과부하)이 가려집니다.<br>↓ rejection(429)이 더 빨리 발생합니다. | WARNING / INFO | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
 | `thread_pool.write.size` | CPU 코어 수(자동) | static | node | write 스레드 수. | 코어 수보다 크게 잡으면 컨텍스트 스위칭만 늘고 처리량은 늘지 않습니다. | WARNING | [Thread pool settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/thread-pool-settings) |
 | `transport.compress` | indexing_data | static | node | 노드 간 전송 압축 대상. | true 는 모든 전송을 압축해 CPU 를 더 쓰고, false 는 색인 데이터도 압축하지 않아 네트워크 사용이 늘어납니다. | INFO | [Networking settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/networking-settings) |
+| `xpack.mapping.synthetic_source_fallback_to_stored_source` | false (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | cluster | 라이선스상 synthetic _source 를 쓸 수 없는 새 인덱스를 stored _source 로 바꿀지 여부(operator 설정). | true: synthetic _source 를 쓸 인덱스를 stored _source 로 만듭니다. | - | [Miscellaneous cluster settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/miscellaneous-cluster-settings) |
 | `xpack.ml.max_machine_memory_percent` | 30 | dynamic | cluster | ML 작업이 쓸 수 있는 노드 메모리 비율. | ↑ ML 프로세스가 파일시스템 캐시·다른 프로세스 몫을 잠식합니다.<br>↓ ML job 이 할당되지 못할 수 있습니다. | INFO / INFO | [Machine learning settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/machine-learning-settings) |
+| `xpack.ml.max_model_memory_limit` | 0b (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | cluster | 이상 탐지 job 의 model_memory_limit 상한(0 = 제한 없음). | 이보다 많은 메모리를 요구하는 job 은 생성하거나 열 수 없습니다. | - | [Machine learning settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/machine-learning-settings) |
+| `xpack.ml.use_auto_machine_memory_percent` | false (공식 문서에 없음, Elasticsearch 소스 기준) | dynamic | cluster | ML 메모리를 노드 메모리에서 자동으로 정할지 여부(Elastic Cloud 에서는 operator 설정). | true: ML 메모리가 xpack.ml.max_machine_memory_percent 대신 노드 크기를 따릅니다. | - | [Machine learning settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/machine-learning-settings) |
 | `xpack.monitoring.collection.enabled` | false | dynamic | cluster | 레거시 내부 모니터링 수집. deprecated 이며 모니터링 플러그인은 10.0 에서 제거됩니다. | true 면 클러스터 자신에 모니터링 데이터를 색인해 부하가 늘어납니다. 운영 모니터링은 별도 클러스터를 권장합니다. | INFO | [Monitoring settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/monitoring-settings) |
 | `cluster.routing.allocation.exclude.*` | (없음) | dynamic | cluster | 지정한 노드(이름·IP·호스트·속성)에서 샤드를 빼냄. | 해당 노드에 샤드가 배치되지 않습니다. 유지보수 후 제거하지 않으면 용량이 남아도 샤드가 다른 노드로 몰립니다. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
 | `cluster.routing.allocation.include.*` | (없음) | dynamic | cluster | 지정한 노드에만 샤드 배치를 허용. | 조건에 맞지 않는 노드에는 샤드가 배치되지 않아 편중·미할당이 생길 수 있습니다. | WARNING | [Cluster-level shard allocation and routing](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/cluster-level-shard-allocation-routing-settings) |
@@ -2625,8 +2685,8 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 
 | 키 | 기본값 | 설명 |
 | --- | --- | --- |
-| `heap_used_pct_warn` | 75 | [도구] 수집 순간 heap 사용률 |
-| `heap_used_pct_crit` | 85 | [도구] 수집 순간 heap 사용률 |
+| `heap_used_pct_warn` | 75 | [공식] Elastic Cloud 가 빨간색으로 표시하는 JVM memory pressure(old gen 사용량 / 최대) |
+| `heap_used_pct_crit` | 85 | [공식] 조치가 필요한 JVM memory pressure(high JVM memory pressure 가이드) |
 | `heap_max_bytes_crit` | 30GiB | [공식] compressed oops 경계는 약 30GB 까지 가능(JVM 플래그가 없을 때만 사용) |
 | `heap_oops_safe_bytes` | 26GiB | [공식] 대부분의 시스템에서 26GB 는 안전(JVM 플래그가 없을 때만 사용) |
 | `heap_vs_ram_pct_warn` | 50 | [공식] heap <= 전체 메모리의 50% |
@@ -2656,7 +2716,6 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `shard_balance_min_diff` | 10 | 같은 tier 노드 간 샤드 수 차이를 보고하는 최소 개수(SHD-006) |
 | `breaker_tripped_warn` | 1 | [도구] breaker 발동 횟수(1 = 이력 존재) |
 | `breaker_used_pct_warn` | 70 | 높은 사용으로 보는 circuit breaker 추정 크기 / 한도(%) (request, fielddata, in_flight_requests 등) |
-| `breaker_parent_used_pct_warn` | 90 | 높은 사용으로 보는 parent breaker 추정 크기 / 한도(%). parent 추정치는 실제 heap 사용량이고 한도는 heap 의 95% 라 90 은 heap 약 85% |
 | `shards_per_gb_heap_warn` | 20 | [공식] heap 1GB당 샤드 20개(8.3 미만 전용) |
 | `shards_per_gb_heap_crit` | 30 | [도구] 8.3 미만 전용 |
 | `max_shards_per_node_headroom_pct_warn` | 80 | [도구] cluster.max_shards_per_node 대비 사용률 |
@@ -2697,7 +2756,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `merge_avg_ms_info` | 20,000 | [도구] 현장 기준: merge 1회 평균 시간 |
 | `merge_avg_ms_warn` | 40,000 | [도구] 현장 기준 |
 | `write_latency_min_ops` | 100 | [도구] 노드 평균을 판정하기 위한 최소 flush/refresh/merge 횟수 |
-| `load_host_cpu_pct_max` | 20 | [도구] 이 cpu% 미만인 컨테이너 노드는 load average 로 판정하지 않음 |
+| `load_host_cpu_pct_max` | 50 | [도구] 이 CPU% 미만인 컨테이너 노드는 load average 로 판정하지 않음(호스트 값이므로) |
 | `write_node_index_share_min` | 0.1 | [도구] 노드의 index_total 이 가장 많이 색인한 노드 대비 이 비율 이상이면 색인 노드로 봄 |
 | `write_shard_skew_warn` | 0.5 | [도구] tier 안 노드별 쓰기 대상 shard 의 (최대 - 최소) / 평균 |
 | `write_shard_skew_min` | 3 | [도구] 보고할 최소 쓰기 대상 shard 차이 |
@@ -2729,6 +2788,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `hotspot_disk_pct_floor` | 50 | [도구] |
 | `hotspot_cpu_pct_gap` | 40 | [도구] |
 | `workload_skew_ratio_warn` | 1.8 | [도구] 최대 노드 / 평균 |
+| `query_failure_pct_warn` | 1 | [도구] 문제로 보는 사용자 인덱스의 query 실패 / query 수(%)(IDX-006) |
 | `workload_skew_min_per_sec` | 10 | DIF-009 indexing 편중을 판정하는 tier 노드당 최소 평균 초당 처리량 |
 | `undesired_shards_warn` | 1 | [도구] |
 | `recovery_rate_low_bytes` | 40MiB | [공식] indices.recovery.max_bytes_per_sec 기본값 40mb 이하 |

@@ -28,6 +28,8 @@ _CONTEXT = [
     ("GlobalOrdinalsBuilder", N_("rules.runtime._.11"), N_("rules.runtime._.12")),
     ("OrdinalMap.build", N_("rules.runtime._.11"), N_("rules.runtime._.12")),
     ("RegExp", N_("rules.runtime._.13"), N_("rules.runtime._.14")),
+    # ingest processors (json, set, rename, ...): the JSON parsing frames above them are the processor's work, not request I/O
+    ("org.elasticsearch.ingest.common.", "ingest pipeline", N_("rules.runtime._.15")),
 ]
 
 # General signatures: used when no context signature matches; compared starting from the top (running) frames.
@@ -51,7 +53,7 @@ def _classify(stack, tname):
     for sig, label, hint in _CONTEXT:
         if any(sig in frame for frame in stack):
             return tr(label), tr(hint)
-    search_thread = "[search]" in tname
+    search_thread = any(p in tname for p in ("[search]", "[search_worker]", "[search_throttled]"))
     for frame in stack:
         for sig, label, hint in _SIGNATURES:
             if search_thread and sig == "org.apache.lucene.index":
@@ -176,9 +178,13 @@ _LOG_PATTERNS = [
      Severity.WARNING, N_("rules.runtime._.47"),
      N_("rules.runtime._.48")),
     (r"failed to flush", Severity.INFO, N_("rules.runtime._.49"), ""),
-    (r"high disk watermark \[[^\]]*\] exceeded|flood stage disk watermark \[[^\]]*\] exceeded",
+    (r"high disk watermark \[[^\]]*\] exceeded|flood stage disk watermark \[[^\]]*\] exceeded on .*marked read-only",
      Severity.CRITICAL, N_("rules.runtime._.50"),
      N_("rules.runtime._.51")),
+    # a dedicated frozen node only logs the flood stage and blocks nothing (DiskThresholdMonitor)
+    (r"flood stage disk watermark \[[^\]]*\] exceeded on (?!.*marked read-only)",
+     Severity.WARNING, N_("rules.runtime._.58"),
+     N_("rules.runtime._.59")),
     (r"low disk watermark \[[^\]]*\] exceeded",
      Severity.WARNING, N_("rules.runtime._.56"),
      N_("rules.runtime._.57")),
@@ -234,7 +240,7 @@ def r_logs(ctx):
             observed=T("rules.runtime.r_logs.06")
                      % (ctx.diag_type or "api"),
             impact=T("rules.runtime.r_logs.07"),
-            recommend=T("rules.runtime.r_logs.08"),
+            recommend=T("rules.runtime.r_logs.18") if ctx.orchestrated else T("rules.runtime.r_logs.08"),
             source="manifest.json")]
     counts = collections.Counter()
     samples = {}

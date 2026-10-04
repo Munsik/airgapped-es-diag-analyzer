@@ -198,7 +198,8 @@ def run_variants(tmp):
     w(root, "mapping.json", m)
     d7 = findings(analyze(root)).get("DISK-007")
     check("DISK-007 Info for synthetic _source", d7 is not None and d7.severity == Severity.INFO
-          and [r[0] for r in d7.evidence["rows"]] == ["synth"], d7 and (d7.severity, d7.evidence["rows"]))
+          and sorted(r[0] for r in d7.evidence["rows"]) == ["logs-x-default-ldb", "metrics-tsds", "synth"],
+          d7 and (d7.severity, d7.evidence["rows"]))     # logsdb and time_series default to synthetic (0.14.3)
 
     # SHD-010: between 50% and 100% of the heap → Info, past the heap → Warning
     for over, sev in ((4 * GB, Severity.INFO), (9 * GB, Severity.WARNING)):

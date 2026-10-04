@@ -178,13 +178,16 @@ def r_ilm_policies(ctx):
     """Rollover and delete configuration of the ILM policies used by user indices.
 
     No max_primary_shard_size (or max_size) in the hot rollover → Warning (ILM-004): the official recommendation is rollover by shard size,
-    and max_age alone leaves small indices piling up depending on the ingest rate (a cause of OVS-002). max_primary_shard_size > 50GB → Warning (ILM-005).
+    and max_age alone leaves small indices piling up depending on the ingest rate (a cause of OVS-002). A policy used by a data stream
+    with no rollover action at all is listed in ILM-004 too: that data stream never rolls over, its write index grows without limit and
+    the delete phase fails on it (a write index cannot be deleted). max_primary_shard_size > 50GB → Warning (ILM-005).
     No delete phase → Info (ILM-006, unlimited retention). Elastic-managed policies (_meta.managed=true) are checked like the others and marked "(Elastic managed)" in the table.
     max_primary_shard_docs above 200,000,000 → Info (ILM-007): from 8.8 rollover always runs at 200M documents per shard, so a higher
     value has no effect (official). Before 8.8 there is no such implicit condition, so ILM-007 is not raised.
     """
     implicit = not ((0, 0, 0) < ctx.version_tuple < (8, 8, 0))
     no_size, too_big, no_delete, docs_noop = [], [], [], []
+    no_rollover = False
     for pname, body in items(ctx.ilm_policies):
         if not isinstance(body, dict):
             continue
@@ -198,6 +201,10 @@ def r_ilm_policies(ctx):
             continue
         ro = dig(phases, "hot", "actions", "rollover")
         label = pname + (T("rules.deep.r_ilm_policies.01") if managed else "")
+        ds_users = [d for d in strs(dig(body, "in_use_by", "data_streams")) if not d.startswith(".")]
+        if not isinstance(ro, dict) and ds_users:
+            no_size.append([label, T("rules.deep.r_ilm_policies.23"), len(users)])
+            no_rollover = True
         if isinstance(ro, dict):
             size = ro.get("max_primary_shard_size") or ro.get("max_size")
             if not size:
@@ -216,8 +223,8 @@ def r_ilm_policies(ctx):
         out.append(Finding(
             "ILM-004", OPS, Severity.WARNING, T("rules.deep.r_ilm_policies.02"),
             observed=T("rules.deep.r_ilm_policies.03") % len(no_size),
-            impact=T("rules.deep.r_ilm_policies.04"),
-            recommend=T("rules.deep.r_ilm_policies.05"),
+            impact=T("rules.deep.r_ilm_policies.04") + (T("rules.deep.r_ilm_policies.24") if no_rollover else ""),
+            recommend=T("rules.deep.r_ilm_policies.05") + (T("rules.deep.r_ilm_policies.25") if no_rollover else ""),
             evidence=table([T("rules.deep.r_ilm_policies.06"), T("rules.deep.r_ilm_policies.07"), T("rules.deep.r_ilm_policies.08")], no_size[: ctx.t["top_n"]]),
             refs=[D_ILM, D_SHARDS], source="ilm_policies.json"))
     if too_big:
@@ -363,8 +370,8 @@ def r_frozen_cache(ctx):
         T("rules.deep.r_frozen_cache.01") if hot else T("rules.deep.r_frozen_cache.02"),
         observed=(T("rules.deep.r_frozen_cache.03") % hot) if hot else
                  T("rules.deep.r_frozen_cache.04") % len(rows),
-        impact=T("rules.deep.r_frozen_cache.05"),
-        recommend=T("rules.deep.r_frozen_cache.06"),
+        impact=T("rules.deep.r_frozen_cache.05") if hot else T("rules.deep.r_frozen_cache.10"),
+        recommend=T("rules.deep.r_frozen_cache.06") if hot else "",
         evidence=table(["node", T("rules.deep.r_frozen_cache.07"), "region", "reads", T("rules.deep.r_frozen_cache.08"), "evictions",
                         T("rules.deep.r_frozen_cache.09")], rows),
         source="searchable_snapshots_cache_stats.json")]
@@ -401,17 +408,27 @@ def _cache_file_reads(ctx):
 
 
 def _direct_buffer_oom(ctx, names):
-    """Lines with 'Direct buffer memory' in the server logs (local/remote mode only) that belong to one of the given nodes:
-    the node name appears on that line or on one of the 3 lines before it (ES log lines and thread names carry the node name)."""
+    """Lines with 'Direct buffer memory' in the server logs (local/remote mode only) that belong to one of the given nodes.
+
+    The node is taken from the log event the line belongs to: the line itself, or the nearest event header above it (a plain log line
+    starts with "[20..", the timestamp; a stack trace line does not), up to 200 lines back. JSON log lines carry the node name in
+    "elasticsearch.node.name" (or "node.name")."""
     from .runtime import _es_log_files
     hits = 0
     for rel in _es_log_files(ctx.b.log_files())[:40]:
         lines = (ctx.b.read_log(rel, ctx.t["log_scan_bytes"]) or "").splitlines()
         for i, ln in enumerate(lines):
-            if "Direct buffer memory" in ln:
-                near = " ".join(lines[max(0, i - 3):i + 1])
-                if any(("[%s]" % nm) in near for nm in names):
-                    hits += 1
+            if "Direct buffer memory" not in ln:
+                continue
+            head = ln
+            if not (ln.startswith("[20") or ln.lstrip().startswith("{")):
+                for j in range(i - 1, max(-1, i - 200), -1):
+                    if lines[j].startswith("[20") or lines[j].lstrip().startswith("{"):
+                        head = lines[j] + " " + ln
+                        break
+            if any(("[%s]" % nm) in head or ('"elasticsearch.node.name":"%s"' % nm) in head.replace(" ", "")
+                   or ('"node.name":"%s"' % nm) in head.replace(" ", "") for nm in names):
+                hits += 1
     return hits
 
 
@@ -644,15 +661,33 @@ def r_disk_io_utilization(ctx):
 
     io_time is the cumulative time the devices spent handling I/O since ES started. >= disk_io_busy_pct_warn → Warning (DISK-008), otherwise Info.
     With several devices the values add up and can exceed 100%, so the result is divided by the device count. This is a cumulative average, so short saturation spikes can be hidden.
-    A result below 0% or above 100% means the device counter does not line up with the JVM uptime (for example a counter reset
-    on a hosted instance). Such a node is shown as "cannot be determined" and is not rated.
+    Linux prints a device's io_ticks as an unsigned 32-bit millisecond counter (/proc/diskstats), so it wraps about every 49.7 days and
+    ES, which subtracts the value seen at node start, then reports a negative delta. When the uptime is shorter than one wrap
+    (2^32 ms), adding 2^32 to a negative device delta gives the real value. A result still below 0 or above 100 percent does not line up
+    with the JVM uptime and is shown as "cannot be determined", not rated.
+    On Elastic Cloud / ECE / ECK the device can be shared by other containers on the same host, so the value is the device's, not
+    only this node's; the text says so.
     """
     rows, busy = [], []
+    wrap = 2 ** 32
     for n in ctx.data_nodes:
         io = dig(n.stats, "fs", "io_stats", default={}) or {}
-        t = num(io, "total", "io_time_in_millis")
         up = n.uptime_ms or 0
-        devs = max(1, len(dicts(io.get("devices"))))
+        devices = dicts(io.get("devices"))
+        devs = max(1, len(devices))
+        if devices and all(d.get("io_time_in_millis") is not None for d in devices):
+            t = 0
+            for d in devices:
+                v = num(d, "io_time_in_millis")
+                if v == -1:
+                    continue           # ES reports -1 for a device without a value at node start (left out of its own total)
+                if v < 0 and 0 < up < wrap and 0 <= v + wrap <= up:
+                    v += wrap          # 32-bit io_ticks wrapped once since the node started
+                t += v
+        else:
+            t = num(io, "total", "io_time_in_millis")
+            if t < 0 and devs == 1 and 0 < up < wrap and 0 <= t + wrap <= up:
+                t += wrap
         if not t or not up:
             continue
         util = t / float(up) / devs * 100.0
@@ -668,7 +703,7 @@ def r_disk_io_utilization(ctx):
         T("rules.deep.r_disk_io_utilization.01") if busy else T("rules.deep.r_disk_io_utilization.02"),
         observed=(T("rules.deep.r_disk_io_utilization.03") % (ctx.t["disk_io_busy_pct_warn"], ", ".join(busy))) if busy
                  else T("rules.deep.r_disk_io_utilization.04") % len(rows),
-        impact=T("rules.deep.r_disk_io_utilization.05"),
+        impact=T("rules.deep.r_disk_io_utilization.05") + (T("rules.deep.r_disk_io_utilization.12") if ctx.orchestrated else ""),
         recommend=T("rules.deep.r_disk_io_utilization.06"),
         evidence=table(["node", "tier", T("rules.deep.r_disk_io_utilization.07"), T("rules.deep.r_disk_io_utilization.08"), T("rules.deep.r_disk_io_utilization.09"), T("rules.deep.r_disk_io_utilization.10")], rows),
         affected=busy, source="nodes_stats.json (fs.io_stats)")]

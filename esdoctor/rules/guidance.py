@@ -241,7 +241,9 @@ def r_docs_per_shard(ctx):
     so the index deleted count divided by the number of primaries is added (shown as an estimate).
     Rollover always runs once a shard reaches 200M documents, and ILM checks the condition every poll_interval (10m by default),
     so a rolled-over index normally ends a little above 200M. Rolled-over indices are reported only when they exceed 200M by more
-    than docs_rollover_overshoot_pct (SHD-013, rollover ran late). Searchable snapshot mounts take no writes and are rated the same way.
+    than docs_rollover_overshoot_pct (SHD-013, rollover ran late): Warning when the latest finished generation of a data stream (or an
+    index outside data streams) ended late, Info when only older generations did. Searchable snapshot mounts take no writes and are
+    rated the same way.
     The write index and indices without rollover keep SHD-008. The implicit 200M rollover exists from 8.8 (ILM source), so before 8.8
     rolled-over indices also keep SHD-008.
     """
@@ -292,9 +294,19 @@ def r_docs_per_shard(ctx):
             evidence=table(cols, warn[: ctx.t["top_n"]]), refs=[D_SHARDS, D_ROLLOVER], source="indices.json"))
     if late:
         late.sort(key=lambda r: -int(r[2].replace(",", "")))
+        # Warning only when the latest finished generation of a data stream (or an index outside data streams) ended late: that is
+        # the current behavior. Older generations alone are history (the following rollovers ended on time).
+        current = False
+        for r in late:
+            ds = ctx.data_stream_of(r[0])
+            idxs = [i.get("index_name") for i in dicts((ds or {}).get("indices"))]
+            if not ds or (len(idxs) >= 2 and idxs[-2] == r[0]):
+                current = True
+                break
         out.append(Finding(
-            "SHD-013", SIZ, Severity.WARNING, T("rules.guidance.r_docs_per_shard.11"),
-            observed=T("rules.guidance.r_docs_per_shard.12") % (len(late), fmt_num(limit), ctx.t["docs_rollover_overshoot_pct"]),
+            "SHD-013", SIZ, Severity.WARNING if current else Severity.INFO, T("rules.guidance.r_docs_per_shard.11"),
+            observed=T("rules.guidance.r_docs_per_shard.12") % (len(late), fmt_num(limit), ctx.t["docs_rollover_overshoot_pct"])
+                     + ("" if current else T("rules.guidance.r_docs_per_shard.16")),
             impact=T("rules.guidance.r_docs_per_shard.13"),
             recommend=T("rules.guidance.r_docs_per_shard.14"),
             evidence=table(["index", "shard", T("rules.guidance.r_docs_per_shard.01"), T("rules.guidance.r_docs_per_shard.15"),
@@ -304,7 +316,9 @@ def r_docs_per_shard(ctx):
 
 
 def _rollover_trigger(ctx, idx, docs, shard_bytes, is_write):
-    """Best guess of the rollover condition that ended this index. The bundle does not record it."""
+    """Best guess of the rollover condition that ended this index. The bundle does not record it.
+    A size condition is named only when the shard is between 90% and 120% of its limit: a shard well above the limit was ended under
+    another (older) policy."""
     if is_write:
         return T("rules.guidance.r_logsdb_shard_size.20")
     ro = ctx.rollover_conditions(ctx.ilm_policy_of(idx))
@@ -315,7 +329,8 @@ def _rollover_trigger(ctx, idx, docs, shard_bytes, is_write):
         return "max_primary_shard_docs"
     for key in ("max_primary_shard_size", "max_size"):
         lim = parse_bytes(ro.get(key))
-        if lim and shard_bytes >= lim * 0.9 / (1 if key == "max_primary_shard_size" else max(ctx.primary_count(idx), 1)):
+        per = lim / float(1 if key == "max_primary_shard_size" else max(ctx.primary_count(idx), 1)) if lim else 0
+        if per and per * 0.9 <= shard_bytes <= per * 1.2:
             return key
     if ro.get("max_age"):
         return T("rules.guidance.r_logsdb_shard_size.22") % ro.get("max_age")
@@ -332,7 +347,9 @@ def r_logsdb_shard_size(ctx):
     internal discussion that 10-30GB suits logsdb and TSDB. The official 10-50GB range and SHD-003 (50GB and above) still apply.
 
     Partially mounted (frozen) indices are skipped because their size is the cache size. Per index, the largest primary
-    shard is rated. logsdb_shard_gb_high <= largest primary < shard_size_gb_warn → SHD-014 (Info, listed per index).
+    shard is rated. logsdb_shard_gb_high <= largest primary < shard_size_gb_warn → SHD-014 (Info, listed per index), except
+    searchable snapshot mounts (they cannot change) and indices whose current policy already caps max_primary_shard_size at
+    logsdb_shard_gb_high or below. Indices ended by a max_primary_shard_size of at least logsdb_shard_gb_low are not small.
     SHD-015 (Info) is rated per data stream: a data stream with ds_min_backing_indices or more finished backing indices
     (rolled over or mounted) whose largest primary is below logsdb_shard_gb_low with 1 to 200M documents. Those indices were
     ended by max_age or a small size condition, not by the document limit. Empty indices are left to SHD-011.
@@ -371,10 +388,16 @@ def r_logsdb_shard_size(ctx):
         finished = not is_write and (ctx.rolled_over(idx) or ctx.is_searchable_snapshot(idx))
         if ds_name and finished:
             done_by_ds[ds_name] += 1
+        ro = ctx.rollover_conditions(ctx.ilm_policy_of(idx))
+        cap = parse_bytes(ro.get("max_primary_shard_size"))
         if hi <= b < top:
-            big.append((b, idx, docs, is_write))
+            # a mounted index cannot be changed, and when the current policy already caps shards at the upper end the size is history
+            if not ctx.is_searchable_snapshot(idx) and not (cap and cap <= hi):
+                big.append((b, idx, docs, is_write))
         elif ds_name and finished and b < lo and docs and docs < ctx.t["ilm_implicit_max_shard_docs"]:
-            small_by_ds[ds_name].append((b, idx, docs))
+            # ended by a size condition at or above the official lower bound: the shard is in range by design
+            if not (cap and cap >= lo and _rollover_trigger(ctx, idx, docs, b, False) == "max_primary_shard_size"):
+                small_by_ds[ds_name].append((b, idx, docs))
     small = []
     for name, lst in small_by_ds.items():
         if len(lst) < ctx.t["ds_min_backing_indices"]:
@@ -570,12 +593,23 @@ def r_empty_indices(ctx):
 def r_total_shards_per_node(ctx):
     """Whether index.routing.allocation.total_shards_per_node is set to prevent hot spots (heavily indexed indices).
 
-    Only current write targets are listed: rolled-over and searchable snapshot indices take no writes, so the setting does nothing there
-    (for data streams it belongs in the index template)."""
+    Rolled-over and searchable snapshot indices take no writes, so the setting does nothing there (for data streams it belongs in the
+    index template). An index with one primary is skipped: two copies of the same shard never share a node
+    (SameShardAllocationDecider), so the limit cannot spread it further. index_total is cumulative, so an index is listed only when it
+    takes writes now: recent_write_load above 1e-6 (9.x stats), or else a write target or indexing at collection time.
+    """
     rows = []
-    writes = set(i for i in ctx.write_targets() if i)
     for name, st in ctx.indices_stats.items():
-        if ctx.is_system_index(name) or name not in writes or ctx.is_searchable_snapshot(name):
+        if ctx.is_system_index(name) or ctx.rolled_over(name) or ctx.is_searchable_snapshot(name):
+            continue
+        if ctx.primary_count(name) == 1:
+            continue
+        # index_total is cumulative since the shard started: list only indices that take writes now
+        rwl = dig(st, "total", "indexing", "recent_write_load")
+        if rwl is not None:
+            if num(rwl) <= 1e-6:
+                continue
+        elif name not in ctx.write_targets() and not num(st, "total", "indexing", "index_current"):
             continue
         it = num(st, "total", "indexing", "index_total")
         if it < ctx.t["heavy_index_docs"]:
@@ -605,7 +639,10 @@ def r_index_buffer(ctx):
     indices.memory.index_buffer_size (default 10% of heap) is shared by the 'recently written (active)' shards.
     A shard with no writes for 5 minutes or more (indices.memory.shard_inactive_time, from the source) becomes inactive and gives its buffer back. The bundle cannot show directly which shards are active,
     so only shards that are confirmed write targets (data stream write indices plus indices that were indexing at collection time) are counted.
-    A data stream write index whose recent_write_load (9.x stats) is 0 has had no recent writes and is left out.
+    A data stream write index whose recent_write_load (9.x stats, decays with a 5 minute half-life) is below 1e-6 has had no writes
+    for a long time and is left out.
+    ES writes the two buffer fields of nodes info the other way round (total_indexing_buffer holds the bytes and
+    total_indexing_buffer_in_bytes the readable value), so the numeric one is used.
     """
     write_idx = set()
     for ds in ctx.data_streams or []:
@@ -613,7 +650,7 @@ def r_index_buffer(ctx):
         if idxs:
             w = idxs[-1].get("index_name")
             rwl = dig(ctx.indices_stats, w, "total", "indexing", "recent_write_load")
-            if rwl is None or num(rwl) > 0:
+            if rwl is None or num(rwl) > 1e-6:
                 write_idx.add(w)
     for name, st in ctx.indices_stats.items():
         if (num(st, "total", "indexing", "index_current")) > 0:
@@ -626,8 +663,9 @@ def r_index_buffer(ctx):
             active[s["node"]] += 1
     rows = []
     for n in ctx.nodes:
-        buf = parse_bytes(dig(n.info, "total_indexing_buffer_in_bytes")
-                          or dig(n.info, "total_indexing_buffer"))
+        raw = [dig(n.info, "total_indexing_buffer"), dig(n.info, "total_indexing_buffer_in_bytes")]
+        exact = [v for v in raw if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        buf = exact[0] if exact else parse_bytes(raw[1] or raw[0])
         shards = active.get(n.name, 0)
         if not buf or not shards:
             continue
@@ -821,7 +859,10 @@ def r_source_mode(ctx):
     Disabled is found two ways: the mapping parameter "_source": {"enabled": false} in mapping.json (the documented way), and
     index.mapping.source.mode=disabled in settings.json. index.mapping.source.mode=synthetic, and columnar_stored (9.5 columnar
     modes), are listed as Info: the returned _source is rebuilt, not the original. stored is the default and is not listed.
-    System indices are skipped.
+    When the setting is absent the index mode decides (from 8.17, IndexMode.defaultSourceMode in the source): logsdb, time_series and
+    the 9.5 columnar modes default to synthetic. Without a license that allows synthetic source, ES writes mode: stored into the
+    index settings, so an absent setting on those modes means synthetic. The older mapping form "_source": {"mode": "synthetic"} is
+    counted too. System indices are skipped.
     """
     disabled, synthetic = [], []
     seen = set()
@@ -831,14 +872,20 @@ def r_source_mode(ctx):
         if summ.get("source_disabled"):
             disabled.append([name, "_source.enabled: false"])
             seen.add(name)
+    mode_default = ctx.version_tuple >= (8, 17, 0) or ctx.version_tuple == (0, 0, 0)
     for name in ctx.index_settings.keys():
-        if ctx.is_system_index(name):
+        if ctx.is_system_index(name) or name in seen:
             continue
         mode = str(ctx.index_setting(name, "index.mapping.source.mode") or "").lower()
-        if mode == "disabled" and name not in seen:
+        msumm = ctx.mapping_summary.get(name) if isinstance(ctx.mapping_summary, dict) else None
+        if mode == "disabled":
             disabled.append([name, "index.mapping.source.mode: disabled"])
         elif mode in ("synthetic", "columnar_stored"):
             synthetic.append([name, "index.mapping.source.mode: " + mode])
+        elif not mode and isinstance(msumm, dict) and msumm.get("source_mode") == "synthetic":
+            synthetic.append([name, "_source.mode: synthetic"])
+        elif not mode and mode_default and ctx.index_mode(name) in ("logsdb", "time_series", "columnar", "logsdb_columnar"):
+            synthetic.append([name, "index.mode: %s (%s)" % (ctx.index_mode(name), T("rules.guidance.r_source_mode.10"))])
     if disabled:
         disabled.sort()
         return [Finding(
@@ -861,12 +908,25 @@ def r_source_mode(ctx):
 
 
 def r_dynamic_mapping(ctx):
-    """Checks whether dynamic mapping is controlled, based on the result merged with the components."""
+    """Checks whether dynamic mapping is controlled, based on the result merged with the components.
+
+    Templates that Elasticsearch installs and manages itself (_meta.managed: true without a Fleet package) are skipped: users do not
+    edit them. Templates whose patterns match no current index or data stream are skipped too, since they shape nothing yet.
+    """
+    import fnmatch
+    meta = dict((it.get("name"), (it.get("index_template") or {}).get("_meta") or {})
+                for it in (ctx.index_templates or {}).get("index_templates") or [] if isinstance(it, dict))
+    names = list(ctx.index_settings.keys()) + [str(d.get("name")) for d in (ctx.data_streams or []) if isinstance(d, dict)]
     rows = []
     for name, mappings, _settings, patterns in _composed_templates(ctx):
         if str(name).startswith(".") or not patterns:
             continue
         if all(str(p).startswith(".") for p in patterns):
+            continue
+        m = meta.get(name) if isinstance(meta.get(name), dict) else {}
+        if str(m.get("managed")).lower() == "true" and not m.get("package"):
+            continue
+        if names and not any(fnmatch.fnmatchcase(n, str(p)) for p in patterns for n in names):
             continue
         dyn = mappings.get("dynamic")
         has_dyn_tpl = bool(mappings.get("dynamic_templates"))
@@ -985,13 +1045,14 @@ def r_vector_quantization(ctx):
     or more from 9.1; bbq_disk from 9.4 when the license allows it). byte and bit vectors are not quantized and are not rated.
     So 'not set' is not treated as a problem on 8.14 or later; only an explicit non-quantized type (hnsw/flat) is rated (VEC-002).
     Fields with index: false (or no index parameter before 8.11, when dense_vector was not indexed by default) have no HNSW and are
-    skipped, and nothing is rated below 8.12 where no quantized type exists.
+    skipped, and VEC-002 is not rated below 8.12 where no quantized type exists.
     VEC-003 (Info): from 9.2, index.mapping.exclude_source_vectors is on by default, so only templates that set it to false are listed.
     Before 9.2 the setting does not exist; templates whose mappings._source.excludes does not cover the vector fields are listed,
-    and the text explains the trade-off of excluding them that way.
+    and the text explains the trade-off of excluding them that way. Templates whose _source is disabled or synthetic (logsdb and
+    time_series included) are skipped: the vectors are not stored in _source there.
     """
-    if (0, 0, 0) < ctx.version_tuple < (8, 12, 0):
-        return []
+    import fnmatch
+    rate_dim = not ((0, 0, 0) < ctx.version_tuple < (8, 12, 0))
     quant_default = ctx.version_tuple >= (8, 14, 0)
     indexed_default = ctx.version_tuple >= (8, 11, 0)
     rows_dim, rows_src = [], []
@@ -1016,7 +1077,7 @@ def r_vector_quantization(ctx):
                     dims_i = int(dims) if dims else 0
                 except (TypeError, ValueError):
                     dims_i = 0
-                if etype == "float" and dims_i >= ctx.t["vector_dim_quantize_warn"] and not quantized:
+                if rate_dim and etype == "float" and dims_i >= ctx.t["vector_dim_quantize_warn"] and not quantized:
                     if unquantized_explicit or (missing and not quant_default):
                         rows_dim.append([tname, full, dims_i, itype or T("rules.guidance.r_vector_quantization.walk.01")])
             if f.get("properties"):
@@ -1034,8 +1095,15 @@ def r_vector_quantization(ctx):
             if str(excl).lower() == "false":
                 rows_src.append([tname, ", ".join(found)])
         else:
-            srcx = [str(x) for x in (dig(mappings, "_source", "excludes") or [])]
-            uncovered = [p for p in found if not any(p == x or (x.endswith("*") and p.startswith(x[:-1])) for x in srcx)]
+            src = mappings.get("_source") if isinstance(mappings.get("_source"), dict) else {}
+            smode = str(dig(settings, "index", "mapping", "source", "mode") or settings.get("index.mapping.source.mode")
+                        or src.get("mode") or "").lower()
+            imode = str(dig(settings, "index", "mode") or settings.get("index.mode") or "").lower()
+            if str(src.get("enabled")).lower() == "false" or smode in ("synthetic", "disabled") \
+                    or imode in ("logsdb", "time_series"):
+                continue        # vectors are not stored in _source there
+            srcx = [str(x) for x in (src.get("excludes") or [])]
+            uncovered = [p for p in found if not any(fnmatch.fnmatchcase(p, x) for x in srcx)]
             if uncovered:
                 rows_src.append([tname, ", ".join(uncovered)])
     out = []

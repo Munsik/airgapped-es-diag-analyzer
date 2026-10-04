@@ -10,7 +10,7 @@ import collections
 
 from ..i18n import T, N_
 from ..model import Finding, Severity, table
-from ..util import dig, fmt_bytes, fmt_num, items, num
+from ..util import dicts, dig, fmt_bytes, fmt_num, items, num
 
 CAT = "cost"
 DAY_MS = 86400000.0
@@ -232,11 +232,12 @@ def r_tier_usage(ctx):
 
 def _drains(ctx, name):
     """True when the index has an ILM policy with a phase after hot (moves to another tier or is deleted), or is managed by data stream
-    lifecycle with a retention (data is deleted) or a frozen_after (data moves)."""
+    lifecycle with a retention (data is deleted) or a frozen_after (data moves). A failure store index reads the failure store lifecycle."""
     pol = ctx.index_setting(name, "index.lifecycle.name")
     if not pol:
         if ctx.dlm_managed(name):
-            lc = (ctx.data_stream_of(name) or {}).get("lifecycle") or {}
+            ds = ctx.stream_of(name) or {}
+            lc = ((ds.get("failure_store") or {}).get("lifecycle") if name.startswith(".fs-") else ds.get("lifecycle")) or {}
             return bool(lc.get("data_retention") or lc.get("effective_retention") or lc.get("frozen_after"))
         return False
     ph = _phases(ctx, pol)
@@ -247,8 +248,13 @@ def r_ingest_headroom(ctx):
     """How many days of ingest the landing tier can still take before the high watermark (COST-004), from one bundle.
 
     Daily ingest = store size (replicas included) of user indices created in the last ingest_window_days, plus the part of older write
-    indices that falls in the window (size x window / age), divided by the window (shorter if the cluster is younger). Searchable
-    snapshot mounts, system indices and shrink or downsample copies (new creation date, old data) are left out. Landing tier = tiers holding shards of write targets (frozen excluded); when
+    indices that falls in the window (size x window / age) and of older indices that rolled over inside the window (the share written
+    between the window start and the rollover, ilm_explain lifecycle_date), divided by the window (shorter if the cluster is
+    younger). System indices
+    and shrink or downsample copies (new creation date, old data) are left out. A searchable snapshot mount gets a new creation date
+    when it is mounted, so it is placed by its data instead: written from the date in its backing index name until its rollover
+    (ilm_explain lifecycle_date), with the size of the snapshot data (total_data_set_size) times (1 + the replicas of its data
+    stream's write index); only the part of that span inside the window counts. Failure store indices count under their data stream. Landing tier = tiers holding shards of write targets (frozen excluded); when
     one of them is a hot tier, only the hot tiers count, because new data stream indices go to hot by default and a write target
     elsewhere is usually a small index whose policy moves it without rollover.
     Headroom = sum over those nodes of (bytes allowed at the high watermark - bytes used). Days = headroom / daily ingest.
@@ -258,11 +264,24 @@ def r_ingest_headroom(ctx):
     now = _now_ms(ctx)
     if not now:
         return []
+    import re
+    import datetime as _dt
     win = ctx.t["ingest_window_days"] * DAY_MS
     writes = set(i for i in ctx.write_targets() if i)
-    created = {}
+    created, mounts = {}, []
     for name in ctx.index_settings.keys():
-        if ctx.is_system_index(name) or ctx.is_searchable_snapshot(name):
+        if ctx.is_system_index(name):
+            continue
+        if ctx.is_searchable_snapshot(name):
+            m = re.search(r"\.ds-(.+)-(\d{4})\.(\d{2})\.(\d{2})-\d{6}$", name)
+            if m:
+                try:
+                    start = (_dt.datetime(int(m.group(2)), int(m.group(3)), int(m.group(4)), tzinfo=_dt.timezone.utc)
+                             - _dt.datetime(1970, 1, 1, tzinfo=_dt.timezone.utc)).total_seconds() * 1000.0
+                except ValueError:
+                    continue
+                end = num((ctx.ilm_explain or {}).get(name) or {}, "lifecycle_date_millis", default=None)
+                mounts.append((name, start, end if end and end >= start else None))
             continue
         if ctx.index_setting(name, "index.resize.source.name") or ctx.index_setting(name, "index.downsample.source.name"):
             continue        # shrink / downsample copies get a new creation date but hold old data, not new ingest
@@ -276,6 +295,30 @@ def r_ingest_headroom(ctx):
     if span < DAY_MS:
         return []
     window_bytes, stays, contrib = 0.0, 0.0, collections.Counter()
+    originals = set(created)
+    for name, start, end in mounts:
+        ds = ctx.data_stream_of(name)
+        orig = re.sub(r"^(partial-)?(restored-)?", "", name)
+        if orig in originals or not isinstance(ds, dict):
+            continue        # the original index is still there and already counted
+        lo, hi = now - span, min(end or start, now)
+        if hi < lo or start > now:
+            continue        # outside the window (or dated after the collection)
+        data = num(ctx.indices_stats, name, "primaries", "store", "total_data_set_size_in_bytes") \
+            or num(ctx.indices_stats, name, "primaries", "store", "size_in_bytes")
+        if not data:
+            continue
+        w = (dicts(ds.get("indices")) or [{}])[-1].get("index_name")
+        try:
+            rep = int(ctx.index_setting(w, "index.number_of_replicas") or 0)
+        except (TypeError, ValueError):
+            rep = 0
+        size = data * (1 + rep)
+        part = size if hi - start <= 0 or start >= lo else size * (hi - lo) / float(hi - start)
+        window_bytes += part
+        contrib[str(ds.get("name"))] += part
+        if not _drains(ctx, name):
+            stays += part
     for name, c in created.items():
         size = num(ctx.indices_stats, name, "total", "store", "size_in_bytes")
         age = now - c
@@ -286,9 +329,14 @@ def r_ingest_headroom(ctx):
         elif name in writes:
             part = size * span / age
         else:
-            continue
+            # rolled over inside the window: the part written between the window start and the rollover counts
+            end = num((ctx.ilm_explain or {}).get(name) or {}, "lifecycle_date_millis", default=None)
+            lo = now - span
+            if not end or end <= lo or end <= c:
+                continue
+            part = size * (min(end, now) - lo) / float(end - c)
         window_bytes += part
-        ds = ctx.data_stream_of(name)
+        ds = ctx.stream_of(name)
         key = str(ds.get("name") or name) if isinstance(ds, dict) else name
         contrib[key] += part
         if not _drains(ctx, name):
@@ -345,7 +393,7 @@ def _data_type(ctx, name):
             plain = plain[len(prefix):]
     if any(plain.startswith(p) or plain.startswith(".ds-" + p) for p in SEC_ALERTS):
         return "alerts"
-    ds = ctx.data_stream_of(name)
+    ds = ctx.stream_of(name)
     ds_name = str(ds.get("name") or "") if isinstance(ds, dict) else ""
     if not ds_name and plain.startswith(".ds-"):
         ds_name = plain[4:].rsplit("-", 2)[0]
@@ -361,8 +409,9 @@ def r_storage_by_type(ctx):
     """Storage by data type and tier (COST-005), as reported.
 
     Each index is classified by the official data stream naming scheme (<type>-<dataset>-<namespace>: logs, metrics, traces,
-    synthetics), as security alerts, as system, as another data stream or as another index. Partially mounted
-    (frozen) indices are a separate row because their store size is only the local cache. The tier is where the primary shards
+    synthetics), as security alerts, as system, as another data stream or as another index (failure store indices count under their
+    data stream). Partially mounted (frozen) indices are a separate row: they report a local store of 0, and the size of their data in
+    the snapshot repository (total_data_set_size) is added to the observed text. The tier is where the primary shards
     sit. Rows show index count, documents, primary and total store, and the share of the total store. Info only.
     """
     tiers = _node_tiers(ctx)
@@ -372,9 +421,12 @@ def r_storage_by_type(ctx):
             prim_tier.setdefault(sh["index"], tiers.get(sh["node"]) or "-")
     agg = collections.OrderedDict()
     total = 0
+    snap = 0
     for name, st in items(ctx.indices_stats):
         if not isinstance(st, dict):
             continue
+        if ctx.is_partial_mount(name):
+            snap += num(st, "primaries", "store", "total_data_set_size_in_bytes")
         key = (_data_type(ctx, name), prim_tier.get(name, "-"))
         a = agg.setdefault(key, [0, 0, 0, 0])
         a[0] += 1
@@ -391,7 +443,8 @@ def r_storage_by_type(ctx):
     top = ", ".join("%s %.0f%%" % (T("rules.cost.type." + k), v * 100.0 / total) for k, v in by_type.most_common(4))
     return [Finding(
         "COST-005", CAT, Severity.INFO, T("rules.cost.r_storage_by_type.01"),
-        observed=T("rules.cost.r_storage_by_type.02") % (fmt_bytes(total), top),
+        observed=T("rules.cost.r_storage_by_type.02") % (fmt_bytes(total), top)
+                 + ((T("rules.cost.r_storage_by_type.10") % fmt_bytes(snap)) if snap else ""),
         impact=T("rules.cost.r_storage_by_type.03"),
         recommend=T("rules.cost.r_storage_by_type.04"),
         evidence=table([T("rules.cost.r_storage_by_type.05"), "tier", T("rules.cost.r_storage_by_type.06"), "docs",
@@ -407,7 +460,8 @@ def r_tier_sizing(ctx):
 
     Pressure: any of every node busy (load15 per CPU >= load_per_cpu_warn or CPU >= tier_cpu_pct_warn, the HOT-005 test with its
     container guard), write or
-    search rejections on the tier's nodes, indexing pressure rejections, or a node at or above the high watermark (frozen excluded). Large headroom: every node of the tier has been up for at least
+    search rejections on the tier's nodes, indexing pressure rejections, a node at or above the high watermark (frozen excluded), or a
+    node whose JVM memory pressure (old generation, as in JVM-001) is at heap_used_pct_crit or above. Large headroom: every node of the tier has been up for at least
     node_compare_min_uptime_hours and has CPU below size_idle_cpu_pct, load15 per CPU below size_idle_load_per_cpu, heap below
     size_idle_heap_pct and disk below size_idle_disk_pct (disk not used for frozen), with no rejections. Anything else is
     "no clear signal". A bundle is one moment, so large headroom means "worth a look with monitoring", not "shrink now". Info only.
@@ -426,7 +480,9 @@ def r_tier_sizing(ctx):
                     hot_disk.append(n.name)
         cpu = [n.cpu_pct for n in nodes if n.cpu_pct is not None]
         load = [n.load15 / n.processors for n in nodes if n.load15 is not None and n.processors]
-        heap = [n.heap_used_pct for n in nodes if n.heap_used_pct is not None]
+        heap = [n.memory_pressure_pct for n in nodes if n.memory_pressure_pct is not None]
+        mem_high = [n.name for n in nodes if n.memory_pressure_pct is not None
+                    and n.memory_pressure_pct >= ctx.t["heap_used_pct_crit"]]
         disk = [n.disk_used_pct for n in nodes if n.disk_used_pct is not None] if tier != "frozen" else []
         busy = [ctx.load_high(n)
                 or (n.cpu_pct is not None and n.cpu_pct >= ctx.t["tier_cpu_pct_warn"]) for n in nodes]
@@ -439,6 +495,8 @@ def r_tier_sizing(ctx):
             reasons.append(T("rules.cost.r_tier_sizing.12") % fmt_num(ipr))
         if hot_disk:
             reasons.append(T("rules.cost.r_tier_sizing.13") % len(hot_disk))
+        if mem_high:
+            reasons.append(T("rules.cost.r_tier_sizing.17") % len(mem_high))
         settled = all(not ctx.recently_restarted(n) for n in nodes)
         idle = (settled and not reasons and cpu and load and heap
                 and max(cpu) < ctx.t["size_idle_cpu_pct"] and max(load) < ctx.t["size_idle_load_per_cpu"]
@@ -466,7 +524,7 @@ def r_tier_sizing(ctx):
         impact=T("rules.cost.r_tier_sizing.03"),
         recommend=T("rules.cost.r_tier_sizing.04"),
         evidence=table(["tier", T("rules.cost.r_tier_sizing.05"), T("rules.cost.r_tier_sizing.06"), "load15/cpu max",
-                        "heap% max", "disk% max", T("rules.cost.r_tier_sizing.07"), T("rules.cost.r_tier_sizing.08"),
+                        T("rules.cost.r_tier_sizing.18"), "disk% max", T("rules.cost.r_tier_sizing.07"), T("rules.cost.r_tier_sizing.08"),
                         T("rules.cost.r_tier_sizing.09")], rows),
         refs=[D_TIERS], source="nodes_stats.json")]
 

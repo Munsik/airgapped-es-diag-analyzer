@@ -44,7 +44,7 @@ It makes no network calls and uses only the Python standard library.
 - **Storage cost**: rolled-over data kept on hot, replicas nobody searches, uneven disk use across tiers, and how many days of ingest the landing tier can still hold
 - **Action priority by root cause**: findings that come from the same cause (for example yellow status, unassigned shards, allocation explain and replicas above the node count) are grouped under one representative finding, and the rest are shown as related findings
 - **Evidence basis on every finding**: Official / Reported fact / Tool threshold / Computed
-- **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 96 settings)
+- **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 99 settings)
 - **Oversharding analysis**: shards that can be removed per index, excess data stream rollovers, and shard size distribution
 - **Tier awareness**: hot/warm/cold/frozen are separated, and only nodes with the same role are compared
 - **Comparison mode**: compares against an earlier bundle to decide whether a cumulative counter is still increasing, with a before/now table per node. With three or more bundles it also reports throughput per interval (peak and off-peak) for sizing
@@ -219,9 +219,9 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 
 | Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
-| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 59 |
+| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 60 |
 | Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 57 |
-| Tool threshold | No official number exists, so the tool sets the threshold (for example heap usage 75%, average search latency 200ms) | 68 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example load15 per CPU 1.0, average search latency 200ms) | 67 |
 | Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-013 |
 
 When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
@@ -457,7 +457,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 999 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 1010 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 63 scenarios and checks the severity too | 63 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |
@@ -467,7 +467,7 @@ bash tests/run_all.sh diagnostic.zip
 | `tests/test_write_path.py` | Every branch of the write path and operations findings (PERF-012, OS-007, SHD-016, IDX-014, 015, CLU-017, MAP-004, DIF-013) on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_doc_audit.py` | Fixes from the official documentation audit: JVM-002 oops flag, CLU-007, DISK-006, DISK-007, IDX-013, CLU-015, SHD-010, MAP-006, max_headroom conditions, development mode, and context-dependent settings defaults, on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_es95.py` | Version-dependent defaults: merge policy defaults by version, allow_rebalance from 8.16, the columnar, logsdb_columnar and vectordb_document index modes (DISK-006, DISK-007, IDX-013, PERF-008, SET-006), and the monitoring plugin deprecation (OPS-007), on synthetic data, in both languages. No external bundle needed | 0 failures |
-| `tests/test_audit_0143.py` | Fixes from the 0.14.3 logic audit: transient over persistent settings, failure store indices, API error bodies as missing, the comparison base, restart-aware deltas (DIF-005/006/007), DIF-013 gating, DIF-008 on used bytes and tier membership, DIF-009 minimum volume, DIF-012 with skipped rules, the time-based merge policy, gz log tails, OVS-001 shrink factors, MAP-004 on rolled-over indices and container detection (OS-001), on synthetic data. No external bundle needed | 0 failures |
+| `tests/test_audit_0143.py` | Fixes from the 0.14.3 logic audit: transient over persistent settings, failure store indices, API error bodies as missing, the comparison base, restart-aware deltas (DIF-005/006/007), DIF-013 gating, DIF-008 on used bytes and tier membership, DIF-009 minimum volume, DIF-012 with skipped rules, the time-based merge policy, gz log tails, OVS-001 shrink factors, MAP-004 on rolled-over indices, container detection (OS-001) and the fixes from the review on a real Elastic Cloud bundle (JVM memory pressure, io_ticks wrap, time-based segments and more), on synthetic data. No external bundle needed | 0 failures |
 | `tests/test_bottleneck_cost.py` | Bottleneck summary, recently restarted nodes left out of comparisons (HOT-001, 002, PERF-012, DIF-009), FRZ-002, PERF-013, ING-001, COST-001 to 006, bottleneck causes scoped to the symptom tiers, DIF-008 per tier, DIF-014 interval checks and SET-005 per tier on synthetic data, in both languages. No external bundle needed | 0 failures |
 | `tests/test_handoff.py` | Support summary: no canary identifier (cluster, node, host, IP, path, certificate, license, repository, index, log, stack) is left at any level, mapping round trip, no summary when masking fails, CLI options. No external bundle needed | 0 failures |
 | `tests/check_docs.py` | Numbers, lists and links in README, RULES, COVERAGE and CHANGELOG match the code; finding IDs match the evidence basis table | 0 mismatches |

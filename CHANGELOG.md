@@ -34,16 +34,16 @@ A zero-base review of every finding's logic. Each rule was read again against th
 - OVS-001: recommended primaries = the smallest factor of the current count that keeps shards at or under 50GB (shrink only goes to a factor)
 - OVS-002: a stream whose rollover has a size condition (or data stream lifecycle) only receives little data → Info; age-only rollover stays Warning
 - OS-001: high load with low CPU on Linux also points to disk wait; OS-004 basis → tool threshold
-- BRK-001/002: the usage line is a threshold (70%); the parent breaker uses 90% (its estimate is real heap use against 95% of heap)
+- BRK-002: the usage line is a threshold (70%). With real memory accounting (the default) the parent breaker estimate is the whole heap, young generation garbage included, and ES forces a young GC before it trips (G1OverLimitStrategy), so its usage at one moment is no longer rated; JVM-001 rates old generation pressure. Parent trips (BRK-001) are still reported, and are Critical only when the node's JVM memory pressure is high
 - IP-001: -1 (counter not reported) is ignored
 - PERF-012: merge time minus throttled and stopped time
 - DISK-001: a dedicated frozen node above `flood_stage.frozen` → separate Warning (Elasticsearch only logs there)
 - SYS-001: Info when every node sets `node.store.allow_mmap: false` (the check is skipped). SYS-004 counts victim lines only
 - SHD-001: frozen-only nodes are not rated. SHD-003 allows the rollover overshoot past 50GB. SHD-005 leaves out partial mounts. SHD-006 needs a minimum difference (`shard_balance_min_diff`) and is Info from 8.6
-- IDX-001: Info with a single data node. IDX-005: Info unless the same index also had indexing throttled. IDX-006: version conflicts alone do not make it a Warning. IDX-009: the generic data role covers frozen. IDX-012: Critical only for corruption signs. IDX-014: both causes of indexing throttling are named. IDX-015: unknown version uses the 10GB default
+- IDX-001: Info with a single data node. IDX-005: Info unless the same index also had indexing throttled. IDX-006: Warning only for failures other than version conflicts, or query failures of 1% or more of an index's queries (at least 10); the failure ratio uses the primaries' index_total (index_failed is counted on the primary only), and the text no longer says mapping errors are counted (they are returned before the engine runs). IDX-009: the generic data role covers frozen. IDX-012: Critical only for corruption signs. IDX-014: both causes of indexing throttling are named. IDX-015: unknown version uses the 10GB default
 - PERF-003: only the request cache is rated
 - SHD-008/013 and the rollover hint: the implicit 200M document rollover applies from 8.8. ILM-007 is not raised before 8.8
-- SHD-009 and the master heap estimate leave out voting-only nodes. SHD-012 lists current write targets only. SHD-014 covers logsdb_columnar
+- SHD-009 and the master heap estimate leave out voting-only nodes. SHD-012 skips rolled-over indices, searchable snapshots and one-primary indices (two copies of a shard never share a node). SHD-014 covers logsdb_columnar
 - PERF-004: a write index with no recent write load is left out. PERF-007: node count of the index's own tier
 - CFG-002: path prefixes match on "/" boundaries. CFG-007: the last heap dump flag wins
 - DISK-006: searchable snapshots and indices without stored _source (synthetic, time_series) are skipped
@@ -62,6 +62,30 @@ A zero-base review of every finding's logic. Each rule was read again against th
 - Logs: `[gc][old]` and GC overhead patterns; low watermark log lines → Warning, high and flood → Critical; master not discovered → Warning; hot threads classify global ordinals building and skip Lucene frames on search threads
 - SET-001/006: a unitless 0 or -1 is compared as the same kind; `default` equals `default(LZ4)`; `node.processors` is compared with the available processors
 
+### Fixed: second review on a real Elastic Cloud bundle
+
+Every finding was recomputed from the raw files of a 14-node Elastic Cloud 9.5.3 bundle and compared with the Elasticsearch 9.5 source.
+
+- JVM-001: heap% at one moment (young generation garbage included) → JVM memory pressure, old generation used / max, as the official high JVM memory pressure guide defines it; 75% and 85% are now official thresholds. A frozen node at 87% heap but 58% old generation was Critical
+- DISK-008: Linux prints io_ticks as a 32-bit millisecond counter that wraps every 49.7 days, so ES reported a negative value and a hot node at 96.6% was "cannot be determined". The wrap is corrected. On Elastic Cloud / ECE / ECK the text says the device can be shared by other instances on the host, and that high utilization on NVMe does not always mean saturation
+- OS-001: inside a container the load average is the host's (nodes on one host report the same load), so a container node is rated on load only when its own CPU is at least 50%. OS-003 on Elastic Cloud: the advice is instance size or less CPU work, not the container limit. OS-005 is no longer raised on Elastic Cloud / ECE / ECK (platform-managed, swap off)
+- IDX-004: time-based indices use LogByteSizeMergePolicy (merge factor 32), which keeps up to 31 segments per size level by design; their line is (merge factor - 1) x levels. 52 data stream indices were false positives
+- SHD-012: a plain index taking writes directly had dropped out (0.14.3 regression), and one-primary indices were listed although the setting cannot change their placement. An index is listed only when it takes writes now (recent_write_load, or a write target, or indexing at collection), since index_total is cumulative
+- OVS-001: an index behind a plain read alias was skipped as a write index (0.14.3 regression); empty indices are left to SHD-011. Only data stream write indices, alias members flagged is_write_index, and the only member of a legacy ILM rollover alias without the flag count as still being filled
+- VEC-003: not raised at all below 8.12 (0.14.3 regression). Templates with synthetic or disabled _source are skipped, and _source.excludes patterns are matched as wildcards
+- SET-001/002/006: searchable snapshot mounts (their settings are set by the mount) and the merge settings data stream lifecycle writes are no longer listed; three operator settings were added to the knowledge base (99 settings in the knowledge base); a unitless 0 or -1 on a rate or a timeout is a change, not "lowered"; the dedicated-rule marker reads "rated by"
+- CLU-011 also rates a risky value set in elasticsearch.yml (`action.destructive_requires_name: false` was rated nowhere). CLU-013 ignores the Elastic Cloud transient placeholder
+- DISK-007: logsdb, time_series and the columnar modes default to synthetic _source (from 8.17), so 2,185 indices instead of 170
+- SHD-005 shows the real shard total (partial mounts were subtracted from the displayed count). SHD-004 does not count current write indices as small. SHD-013 is a Warning only when the latest finished generation ended late
+- SHD-014 skips searchable snapshot mounts and indices whose policy already caps shards at 30GB; SHD-015 skips indices ended by a max_primary_shard_size of 10GB or more; the rollover trigger names a size condition only within 90-120% of it
+- ILM-004 also lists a policy without rollover used by a data stream (the write index can never be deleted, the root cause of an ILM-002 delete error); the ILM-002 text says so. A "rollover alias does not point to index" error is a Warning
+- Data streams Elasticsearch manages for itself (hidden, `_meta.managed` without a Fleet package, such as ilm-history-7) are system data
+- MAP-003 skips Elasticsearch-managed templates and templates that match nothing. OPS-001 is not raised while databases are present, none has expired and downloads have succeeded (the counters are cumulative). TP-002 includes the merge pool. FRZ-001 Info text is neutral. RT-001 classifies ingest processor frames (json) as ingest pipeline. PERF-004 reads the right indexing buffer field (ES swaps the two)
+- COST-004 counts data that ILM has already mounted to cold or frozen inside the window, and the share of older indices that rolled over inside it (115 → 152GB per day on the bundle); failure stores count under their data stream. COST-005 shows the snapshot data of partial mounts. COST-006 counts high memory pressure. COST-001 advice covers hot-only managed policies
+- Bottleneck: when only write_coordination waits, CPU and the ingest pipeline are checked first (it was storage); capacity also reads DISK-004 and memory pressure
+- LOG-001: the frozen flood stage log line (no block) is a Warning. LOG-000 on Elastic Cloud points to the deployment logs. SHD-009 and CLU-015 no longer suggest the removed freeze API. SNP-005 reads as history
+- Comparison mode: a restart is also detected when uptime grew less than the interval. CLU-001 does not claim primaries are initializing without a shard list. `explicitly_set` ignores nested yml child keys. `rolled_over` is no longer quadratic on clusters with many aliases. FRZ-002 ties a Direct buffer OOM to the node of its log event
+
 ### Fixed: comparison mode
 
 - The comparison base was the newest baseline even when it was collected after the analyzed bundle → the latest earlier one; when every baseline is later, the run stops with a message
@@ -77,8 +101,8 @@ A zero-base review of every finding's logic. Each rule was read again against th
 ### Changed
 
 - Bottleneck summary: a symptom on a coordinating-only node widens the scope to every data node
-- Basis relabeled to tool threshold where the deciding number is the tool's: HOT-001, CLU-015, SHD-010, SHD-012, SHD-015, PERF-004, PERF-008, VEC-004, OS-004
-- New thresholds: `breaker_used_pct_warn` 70, `breaker_parent_used_pct_warn` 90, `shard_balance_min_diff` 10, `frozen_cache_turnover_per_day` 1.0, `workload_skew_min_per_sec` 10 (146 thresholds)
+- Basis relabeled to tool threshold where the deciding number is the tool's: HOT-001, CLU-015, SHD-010, SHD-012, SHD-015, PERF-004, PERF-008, VEC-004, OS-004; JVM-001 to official
+- New thresholds: `breaker_used_pct_warn` 70, `shard_balance_min_diff` 10, `frozen_cache_turnover_per_day` 1.0, `workload_skew_min_per_sec` 10, `query_failure_pct_warn` 1 (146 thresholds). `load_host_cpu_pct_max` 20 → 50
 - `ml_stats.json` moves from the unused to the used files in COVERAGE
 - `tests/test_audit_0143.py`
 

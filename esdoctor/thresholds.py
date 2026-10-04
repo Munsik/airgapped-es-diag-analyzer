@@ -8,8 +8,8 @@ from .i18n import T
 
 DEFAULTS = {
     # --- JVM ---
-    "heap_used_pct_warn": 75,                        # [Tool] Heap usage at collection time
-    "heap_used_pct_crit": 85,                        # [Tool] Heap usage at collection time
+    "heap_used_pct_warn": 75,                        # [Official] JVM memory pressure (old gen used / max) shown red on Elastic Cloud
+    "heap_used_pct_crit": 85,                        # [Official] JVM memory pressure to act on (high JVM memory pressure guide)
     "heap_max_bytes_crit": 30 * 1024 ** 3,           # [Official] Compressed oops boundary can be as high as about 30GB (used when the JVM flag is missing)
     "heap_oops_safe_bytes": 26 * 1024 ** 3,          # [Official] 26GB is safe on most systems (used when the JVM flag is missing)
     "heap_vs_ram_pct_warn": 50,                      # [Official] Heap <= 50% of total memory
@@ -45,7 +45,6 @@ DEFAULTS = {
     "shard_balance_min_diff": 10,                    # [Tool] Minimum shard count difference between nodes of a tier before the spread is reported (SHD-006)
     "breaker_tripped_warn": 1,                       # [Tool] Breaker trip count (1 = any history)
     "breaker_used_pct_warn": 70,                     # [Tool] Breaker estimated / limit (%) for request, fielddata, in_flight_requests etc.
-    "breaker_parent_used_pct_warn": 90,              # [Tool] Parent breaker estimated / limit (%). With use_real_memory (default) the parent estimate is the real heap use and its limit 95% of heap, so 90% is about 85% heap
 
     # --- Shards / indices ---
     "shards_per_gb_heap_warn": 20,                   # [Official] 20 shards per 1GB of heap (versions before 8.3 only)
@@ -98,7 +97,7 @@ DEFAULTS = {
     "merge_avg_ms_info": 20000,                      # [Tool] Field baseline: average merge time per merge
     "merge_avg_ms_warn": 40000,                      # [Tool] Field baseline
     "write_latency_min_ops": 100,                    # [Tool] Minimum flushes/refreshes/merges before a node average is rated
-    "load_host_cpu_pct_max": 20,                     # [Tool] Container node below this cpu% is not rated on load average
+    "load_host_cpu_pct_max": 50,                     # [Tool] Container nodes below this CPU percentage are not rated on load average (it is the host's)
     "write_node_index_share_min": 0.1,               # [Tool] A node indexes if its index_total is this share of the busiest node
     "write_shard_skew_warn": 0.5,                    # [Tool] (max - min) / average of write-target shards per node in a tier
     "write_shard_skew_min": 3,                       # [Tool] Minimum difference in write-target shards before it is reported
@@ -132,6 +131,7 @@ DEFAULTS = {
     "hotspot_disk_pct_floor": 50,                    # [Tool]
     "hotspot_cpu_pct_gap": 40,                       # [Tool]
     "workload_skew_ratio_warn": 1.8,                 # [Tool] Busiest node / average
+    "query_failure_pct_warn": 1,                     # [Tool] Query failures / queries (%) of a user index that counts as a problem (IDX-006)
     "workload_skew_min_per_sec": 10,                 # [Tool] Minimum average indexing operations per second per node before the skew is rated (DIF-009)
     "undesired_shards_warn": 1,                      # [Tool]
     "recovery_rate_low_bytes": 40 * 1024 ** 2,       # [Official] indices.recovery.max_bytes_per_sec at or below the 40mb default

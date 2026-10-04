@@ -33,9 +33,11 @@ def r_cluster_status(ctx):
                                                     ctx.health.get("initializing_shards"))],
          ["active_shards_percent", "%s%%" % active_pct]])
     if st == "red":
+        up = _unassigned_primaries(ctx)
         return [Finding("CLU-001", CAT, Severity.CRITICAL, T("rules.cluster.r_cluster_status.04"),
-                        observed=(T("rules.cluster.r_cluster_status.05") % _unassigned_primaries(ctx))
-                        if _unassigned_primaries(ctx) else T("rules.cluster.r_cluster_status.14"),
+                        observed=(T("rules.cluster.r_cluster_status.05") % up) if up
+                        else T("rules.cluster.r_cluster_status.14") if up == 0
+                        else T("rules.cluster.r_cluster_status.15"),
                         impact=T("rules.cluster.r_cluster_status.06"),
                         recommend=T("rules.cluster.r_cluster_status.07"),
                         evidence=ev, refs=[DOC_ALLOC], source="cluster_health.json")]
@@ -51,10 +53,13 @@ def r_cluster_status(ctx):
 
 
 def _unassigned_primaries(ctx):
-    """unassigned_primary_shards from cluster health, or counted from the shard list when health lacks the field (older versions)."""
+    """unassigned_primary_shards from cluster health, or counted from the shard list when health lacks the field (older versions).
+    None when neither is available."""
     v = ctx.health.get("unassigned_primary_shards")
     if v is not None:
         return v
+    if not ctx.shards:
+        return None
     return sum(1 for s in ctx.shards if (s.get("state") or "").upper() == "UNASSIGNED" and s.get("prirep") == "p")
 
 
@@ -273,7 +278,8 @@ RISKY_SETTINGS = [
 
 
 def r_risky_settings(ctx):
-    """Rates only cluster settings that differ from the default (explicitly set in persistent/transient). allocation.enable != all → Critical, rebalance.enable != all → Warning, disk.threshold_enabled=false → Critical, cluster.blocks.read_only(_allow_delete)=true → Critical, destructive_requires_name=false → Warning (CLU-011). A value in allocation.exclude._name/_ip/_host → Warning (CLU-012). Any transient setting → Info (CLU-013, no longer recommended since 7.16). use_adaptive_replica_selection=false → Warning (CLU-014, default is true)."""
+    """Rates settings that differ from the default: set in persistent/transient, or else set in a node's elasticsearch.yml (the effective
+    value then). allocation.enable != all → Critical, rebalance.enable != all → Warning, disk.threshold_enabled=false → Critical, cluster.blocks.read_only(_allow_delete)=true → Critical, destructive_requires_name=false → Warning (CLU-011). A value in allocation.exclude._name/_ip/_host → Warning (CLU-012). Any transient setting → Info (CLU-013, no longer recommended since 7.16; on Elastic Cloud / ECE the platform's empty placeholder values are ignored). use_adaptive_replica_selection=false → Warning (CLU-014, default is true)."""
     out = []
     rows = []
     for scope in ("persistent", "transient"):
@@ -281,9 +287,14 @@ def r_risky_settings(ctx):
             rows.append([scope, k, str(v)[:120]])
     for key, is_bad, sev, impact, rec in RISKY_SETTINGS:
         src = ctx.setting_source(key)
-        if src == "default":
-            continue
         v = ctx.setting(key)
+        if src == "default":
+            # not in cluster settings: a value from elasticsearch.yml is still the effective one
+            yml = [n.setting(key) for n in ctx.nodes
+                   if n.setting(key) is not None and not isinstance(n.setting(key), dict)]
+            if not yml:
+                continue
+            v, src = yml[0], "elasticsearch.yml" + (T("rules.cluster.r_risky_settings.12") if ctx.orchestrated else "")
         try:
             bad = is_bad(v)
         except Exception:
@@ -293,7 +304,7 @@ def r_risky_settings(ctx):
                 "CLU-011." + key, CAT, sev, T("rules.cluster.r_risky_settings.01") % key,
                 observed="%s = %s (%s)" % (key, v, src),
                 impact=tr(impact), recommend=tr(rec),
-                source="cluster_settings.json"))
+                source="elasticsearch.yml (nodes.json)" if src.startswith("elasticsearch.yml") else "cluster_settings.json"))
     # Leftover allocation excludes
     for key in ("cluster.routing.allocation.exclude._name",
                 "cluster.routing.allocation.exclude._ip",
@@ -306,14 +317,18 @@ def r_risky_settings(ctx):
                 impact=T("rules.cluster.r_risky_settings.03"),
                 recommend=T("rules.cluster.r_risky_settings.04"),
                 source="cluster_settings.json"))
-    if ctx.cluster_settings.get("transient"):
+    # On Elastic Cloud / ECE the platform keeps placeholder values such as allocation.exclude._name: no_instances_excluded in
+    # transient settings; those are platform markers, not user changes.
+    from ..settings_kb import EQUIV_EMPTY
+    trans = [r for r in rows if r[0] == "transient"
+             and not (ctx.orchestrated and str(r[2]).strip().lower() in EQUIV_EMPTY)]
+    if trans:
         out.append(Finding(
             "CLU-013", CAT, Severity.INFO, T("rules.cluster.r_risky_settings.05"),
-            observed=T("rules.cluster.r_risky_settings.06") % len(ctx.cluster_settings["transient"]),
+            observed=T("rules.cluster.r_risky_settings.06") % len(trans),
             impact=T("rules.cluster.r_risky_settings.07"),
             recommend=T("rules.cluster.r_risky_settings.08"),
-            evidence=table(["scope", "key", "value"],
-                           [r for r in rows if r[0] == "transient"]),
+            evidence=table(["scope", "key", "value"], trans),
             source="cluster_settings.json"))
     if ctx.setting("cluster.routing.use_adaptive_replica_selection") is not None and \
             str(ctx.setting("cluster.routing.use_adaptive_replica_selection")).lower() == "false":

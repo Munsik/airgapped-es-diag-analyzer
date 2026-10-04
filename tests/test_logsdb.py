@@ -209,7 +209,8 @@ def run_lang(lang, tmp):
     check(pre + "SHD-008 skips rolled-over indices", app % (1, 1) not in rows_of(s8) and app % (2, 2) not in rows_of(s8))
 
     s13 = f.get("SHD-013")
-    check(pre + "SHD-013 warning raised", s13 is not None and s13.severity == Severity.WARNING)
+    # generation 2 ended late but the later generations 3 and 4 ended on time: history, so Info (0.14.3)
+    check(pre + "SHD-013 raised as Info (older generation)", s13 is not None and s13.severity == Severity.INFO)
     check(pre + "SHD-013 lists the late rollover (230M)", app % (2, 2) in rows_of(s13), rows_of(s13))
     check(pre + "SHD-013 skips the normal rollover (201M)", app % (1, 1) not in rows_of(s13), rows_of(s13))
 

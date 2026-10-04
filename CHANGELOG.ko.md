@@ -32,16 +32,16 @@
 - OVS-001: 권장 primary 수 = 샤드를 50GB 이하로 유지하는 현재 개수의 약수 중 최소값(shrink 는 약수로만 가능)
 - OVS-002: 롤오버에 크기 조건(또는 data stream lifecycle)이 있으면 단지 수집량이 적은 것 → 참고. 기간만으로 롤오버하면 주의 유지
 - OS-001: Linux 에서 CPU 는 낮고 load 가 높으면 디스크 대기일 수 있음을 안내. OS-004 근거 → 도구 판단
-- BRK-001/002: 사용 기준선을 임계값(70%)으로 분리. parent breaker 는 90%(추정치가 실제 heap 사용량이고 한도가 heap 95%)
+- BRK-002: 사용 기준선을 임계값(70%)으로 분리. real memory 기준(기본값)에서 parent breaker 추정치는 young generation garbage 를 포함한 heap 전체이고, ES 가 발동 전에 young GC 를 강제하므로(G1OverLimitStrategy) 순간 사용률은 판정하지 않음. old generation 압박은 JVM-001 이 판정. parent 발동(BRK-001)은 그대로 보고하며, 그 노드의 JVM memory pressure 가 높을 때만 치명
 - IP-001: -1(카운터 미보고)은 무시
 - PERF-012: merge 시간에서 throttled·stopped 시간을 뺌
 - DISK-001: 전용 frozen 노드가 `flood_stage.frozen` 을 넘으면 → 별도 주의(Elasticsearch 는 로그만 남김)
 - SYS-001: 모든 노드가 `node.store.allow_mmap: false` 면 참고(검사 자체가 생략됨). SYS-004 는 실제 kill 대상 줄만 셈
 - SHD-001: frozen 전용 노드는 판정하지 않음. SHD-003 은 50GB 롤오버 초과 허용분을 반영. SHD-005 는 partial 마운트를 뺌. SHD-006 은 최소 차이(`shard_balance_min_diff`)가 필요하며 8.6 부터 참고
-- IDX-001: data 노드 1대면 참고. IDX-005: 같은 인덱스에 색인 throttle 이 없으면 참고. IDX-006: version conflict 만으로는 주의가 아님. IDX-009: 범용 data 역할은 frozen 포함. IDX-012: 손상 징후만 치명. IDX-014: 색인 throttle 의 두 원인을 모두 안내. IDX-015: 버전을 모르면 10GB 기본값
+- IDX-001: data 노드 1대면 참고. IDX-005: 같은 인덱스에 색인 throttle 이 없으면 참고. IDX-006: version conflict 외의 실패, 또는 인덱스 query 의 1% 이상(10건 이상)인 query 실패만 주의. 실패 비율은 primary 의 index_total 기준(index_failed 는 primary 에서만 셈). 매핑 오류는 엔진 실행 전에 반환되어 세지 않으므로 그렇게 적던 문구를 고침. IDX-009: 범용 data 역할은 frozen 포함. IDX-012: 손상 징후만 치명. IDX-014: 색인 throttle 의 두 원인을 모두 안내. IDX-015: 버전을 모르면 10GB 기본값
 - PERF-003: request cache 만 판정
 - SHD-008/013 과 롤오버 안내: 암묵적 2억건 롤오버는 8.8 부터. 8.8 미만에서는 ILM-007 을 내지 않음
-- SHD-009 와 마스터 heap 산정에서 voting-only 노드 제외. SHD-012 는 현재 write 대상만. SHD-014 는 logsdb_columnar 포함
+- SHD-009 와 마스터 heap 산정에서 voting-only 노드 제외. SHD-012 는 롤오버된 인덱스, searchable snapshot, primary 1개 인덱스(같은 샤드의 두 사본은 한 노드에 놓이지 않음)를 제외. SHD-014 는 logsdb_columnar 포함
 - PERF-004: 최근 write load 가 없는 write index 는 제외. PERF-007: 인덱스가 있는 tier 의 노드 수 사용
 - CFG-002: 경로 접두어를 "/" 경계로 비교. CFG-007: 마지막 heap dump 플래그가 적용
 - DISK-006: searchable snapshot 과 저장된 _source 가 없는 인덱스(synthetic, time_series)는 제외
@@ -60,6 +60,30 @@
 - 로그: `[gc][old]` 와 GC overhead 패턴, low watermark 로그 → 주의, high·flood → 치명, master not discovered → 주의, hot threads 의 global ordinals 생성 분류와 search 스레드의 Lucene 프레임 건너뜀
 - SET-001/006: 단위 없는 0, -1 을 같은 종류로 비교, `default` 와 `default(LZ4)` 를 같게 봄, `node.processors` 는 available processors 와 비교
 
+### 수정: 실제 Elastic Cloud 번들로 한 두 번째 점검
+
+14노드 Elastic Cloud 9.5.3 번들의 원본 파일로 모든 판정을 다시 계산하고 Elasticsearch 9.5 소스와 대조했습니다.
+
+- JVM-001: 순간 heap%(young generation garbage 포함) → 공식 high JVM memory pressure 가이드가 정의하는 JVM memory pressure(old generation 사용량 / 최대). 75%·85% 는 이제 공식 임계값. heap 87% 지만 old generation 58% 인 frozen 노드가 치명으로 나왔음
+- DISK-008: Linux 는 io_ticks 를 49.7일마다 한 바퀴 도는 32-bit 밀리초 카운터로 출력해 ES 가 음수를 보고했고, 96.6% 인 hot 노드가 "확인 불가"였음. 한 바퀴 보정을 적용. Elastic Cloud / ECE / ECK 에서는 장치를 같은 호스트의 다른 인스턴스와 함께 쓸 수 있고, NVMe 에서 높은 사용률이 곧 포화는 아니라고 안내
+- OS-001: 컨테이너 안의 load average 는 호스트 값이므로(같은 호스트 노드가 같은 load 를 보고) 노드 자체 CPU 가 50% 이상일 때만 load 로 판정. Elastic Cloud 의 OS-003 은 컨테이너 한도가 아니라 인스턴스 크기나 CPU 작업 감소를 안내. OS-005 는 Elastic Cloud / ECE / ECK 에서 내지 않음(플랫폼 관리, swap 꺼짐)
+- IDX-004: time-based 인덱스는 LogByteSizeMergePolicy(merge factor 32)를 써서 크기 단계마다 최대 31개 세그먼트를 설계상 유지하므로 기준을 (merge factor - 1) x 단계 수로 계산. 데이터 스트림 인덱스 52개가 오탐이었음
+- SHD-012: 직접 쓰기를 받는 일반 인덱스가 빠졌고(0.14.3 회귀), primary 1개 인덱스는 이 설정으로 배치가 바뀌지 않는데도 표시했음. index_total 은 누적값이므로 지금 쓰기를 받는 인덱스만 표시(recent_write_load, write 대상, 수집 순간 색인 중)
+- OVS-001: 단순 읽기 alias 뒤의 인덱스를 write index 로 보고 건너뛰었음(0.14.3 회귀). 빈 인덱스는 SHD-011 에서 다룸. 데이터 스트림 write index, is_write_index 로 표시된 alias 멤버, 플래그 없는 레거시 ILM rollover alias 의 유일한 멤버만 채워지는 중으로 봄
+- VEC-003: 8.12 미만에서 아예 나오지 않았음(0.14.3 회귀). _source 가 synthetic·비활성인 template 은 제외, _source.excludes 는 wildcard 로 비교
+- SET-001/002/006: searchable snapshot 마운트(마운트가 설정을 정함)와 data stream lifecycle 이 기록하는 merge 설정은 표시하지 않음. operator 설정 3개를 지식 베이스에 추가(설정 지식 베이스 99종). 속도·timeout 설정의 단위 없는 0, -1 은 "낮춤" 이 아니라 변경. 전용 룰 표시를 "rated by" 로 변경
+- CLU-011 은 elasticsearch.yml 에 있는 위험 값도 판정(`action.destructive_requires_name: false` 가 어디서도 판정되지 않았음). CLU-013 은 Elastic Cloud 의 transient placeholder 를 무시
+- DISK-007: logsdb, time_series, columnar 모드는 기본이 synthetic _source(8.17 부터)라 170개가 아니라 2,185개
+- SHD-005 는 실제 샤드 총수를 표시(partial 마운트를 뺀 값이 표시되었음). SHD-004 는 현재 write index 를 작은 샤드로 세지 않음. SHD-013 은 가장 최근 완료 세대가 늦게 끝났을 때만 주의
+- SHD-014 는 searchable snapshot 마운트와 정책이 이미 30GB 이하로 제한한 인덱스를 제외, SHD-015 는 10GB 이상의 max_primary_shard_size 로 끝난 인덱스를 제외. rollover 조건 추정은 크기 조건의 90~120% 일 때만 크기 조건으로 봄
+- ILM-004 는 데이터 스트림이 쓰는 rollover 없는 정책도 표시(write index 를 영원히 지울 수 없어 ILM-002 삭제 오류의 근본 원인). ILM-002 문구도 그렇게 고침. "rollover alias does not point to index" 오류는 주의
+- Elasticsearch 가 스스로 관리하는 데이터 스트림(hidden, Fleet package 없는 `_meta.managed`, 예: ilm-history-7)은 시스템 데이터로 봄
+- MAP-003 은 Elasticsearch 관리 template 과 아무것도 맞지 않는 template 을 제외. OPS-001 은 데이터베이스가 있고 만료된 것이 없으며 성공한 다운로드가 있으면 내지 않음(카운터는 누적값). TP-002 에 merge pool 포함. FRZ-001 참고 문구를 중립으로. RT-001 은 ingest processor(json) 프레임을 ingest pipeline 으로 분류. PERF-004 는 올바른 indexing buffer 필드를 읽음(ES 가 두 필드를 바꿔 기록)
+- COST-004 는 구간 안에서 ILM 이 이미 cold·frozen 으로 마운트한 데이터와, 구간 안에서 rollover 한 오래된 인덱스의 해당 부분도 셈(이 번들에서 하루 115 → 152GB). failure store 는 해당 데이터 스트림으로. COST-005 는 partial 마운트의 snapshot 데이터 크기를 표시. COST-006 은 높은 memory pressure 를 셈. COST-001 안내는 hot 단계만 있는 관리형 정책도 다룸
+- 병목 요약: write_coordination 만 대기 중이면 CPU 와 ingest pipeline 을 먼저 봄(storage 로 나왔음). 용량 판단에 DISK-004 와 memory pressure 반영
+- LOG-001: block 이 없는 frozen flood stage 로그는 주의. Elastic Cloud 의 LOG-000 은 deployment 로그를 안내. SHD-009 와 CLU-015 는 제거된 freeze API 를 권하지 않음. SNP-005 는 과거 이력으로 표현
+- 비교 모드: uptime 이 구간 길이보다 적게 늘어도 재시작으로 판단. CLU-001 은 샤드 목록 없이 primary 초기화 중이라고 단정하지 않음. `explicitly_set` 은 중첩 yml 하위 키를 무시. alias 가 많은 클러스터에서 `rolled_over` 가 제곱 시간으로 느려지지 않음. FRZ-002 는 Direct buffer OOM 을 로그 이벤트의 노드로 연결
+
 ### 수정: 비교 모드
 
 - 분석 대상보다 나중에 수집한 baseline 도 비교 기준이 될 수 있었음 → 그보다 이전 중 가장 최근 것. 모든 baseline 이 나중이면 안내와 함께 중단
@@ -75,8 +99,8 @@
 ### 변경
 
 - 병목 요약: coordinating 전용 노드에 증상이 있으면 모든 data 노드로 범위를 넓힘
-- 결정 수치가 도구 기준인 항목의 근거를 도구 판단으로 변경: HOT-001, CLU-015, SHD-010, SHD-012, SHD-015, PERF-004, PERF-008, VEC-004, OS-004
-- 새 임계값: `breaker_used_pct_warn` 70, `breaker_parent_used_pct_warn` 90, `shard_balance_min_diff` 10, `frozen_cache_turnover_per_day` 1.0, `workload_skew_min_per_sec` 10(총 146개)
+- 결정 수치가 도구 기준인 항목의 근거를 도구 판단으로 변경: HOT-001, CLU-015, SHD-010, SHD-012, SHD-015, PERF-004, PERF-008, VEC-004, OS-004. JVM-001 은 공식 기준으로
+- 새 임계값: `breaker_used_pct_warn` 70, `shard_balance_min_diff` 10, `frozen_cache_turnover_per_day` 1.0, `workload_skew_min_per_sec` 10, `query_failure_pct_warn` 1(총 146개). `load_host_cpu_pct_max` 20 → 50
 - COVERAGE 에서 `ml_stats.json` 을 미사용에서 사용으로 이동
 - `tests/test_audit_0143.py`
 
