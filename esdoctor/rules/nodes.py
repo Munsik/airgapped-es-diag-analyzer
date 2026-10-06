@@ -5,7 +5,7 @@ import collections
 
 from ..i18n import T, N_
 from ..model import Finding, Severity, table
-from ..util import dig, fmt_bytes, fmt_ms, fmt_num, pct, dicts, num, items
+from ..util import dig, fmt_bytes, fmt_ms, fmt_num, ip_rejections, pct, dicts, num, items
 
 CAT = "node"
 DOC_HEAP = (N_("rules.nodes._.01"),
@@ -64,7 +64,8 @@ def r_heap_sizing(ctx):
     whatever the heap size. Only when the flag is missing is the heap size used: the official docs say 26GB is safe on most systems
     and the boundary can be as high as about 30GB, so heap >= heap_max_bytes_crit (30GiB) → Warning and >= heap_oops_safe_bytes
     (26GiB) → Info.
-    heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → Warning (JVM-003). heap_init (Xms) != heap_max (Xmx) → Warning (JVM-004).
+    heap_max / os.mem.adjusted_total > heap_vs_ram_pct_warn + heap_vs_ram_tolerance_pct → Warning (JVM-003); for a node whose only
+    role is master the line is 60% (ES automatic heap sizing gives such nodes 60% of memory). heap_init (Xms) != heap_max (Xmx) → Warning (JVM-004).
     """
     out, rows = [], []
     oops_off, oversize, near, mismatch, too_big_vs_ram = [], [], [], [], []
@@ -84,7 +85,9 @@ def r_heap_sizing(ctx):
                 near.append(n.name)
         if hm and hi and hm != hi:
             mismatch.append(n.name)
-        if ratio and ratio > ctx.t["heap_vs_ram_pct_warn"] + ctx.t["heap_vs_ram_tolerance_pct"]:
+        # ES automatic heap sizing gives a node whose only role is master 60% of memory (MachineDependentHeap)
+        limit = 60 if list(n.roles or []) == ["master"] else ctx.t["heap_vs_ram_pct_warn"]
+        if ratio and ratio > limit + ctx.t["heap_vs_ram_tolerance_pct"]:
             too_big_vs_ram.append(n.name)
     ev = table(["node", "heap_max", "heap_init(Xms)", "RAM", "heap/RAM", "compressed_oops"], rows)
     if oops_off or oversize or near:
@@ -122,8 +125,8 @@ def r_heap_sizing(ctx):
 
 
 def r_gc(ctx):
-    """old share = old collection_time / uptime, old GC per hour = old count / uptime (h), young share = young time / uptime. old share >= old_gc_time_ratio_crit or per-hour >= old_gc_per_hour_crit → Critical. Any of old share >= warn, per-hour >= warn, or young share >= young_gc_time_ratio_warn → Warning. Otherwise OK. These are cumulative values, so compare mode (DIF-006) is more accurate."""
-    rows, warn, crit = [], [], []
+    """old share = old collection_time / uptime, old GC per hour = old count / uptime (h), young share = young time / uptime. old share >= old_gc_time_ratio_crit or per-hour >= old_gc_per_hour_crit → Critical. Any of old share >= warn, per-hour >= warn, or young share >= young_gc_time_ratio_warn → Warning. Otherwise OK. Nodes up for less than an hour are listed but not rated (nothing is reported when no node has been up that long). These are cumulative values, so compare mode (DIF-006) is more accurate."""
+    rows, warn, crit, rated = [], [], [], 0
     for n in ctx.nodes:
         up = n.uptime_ms or 0
         oc, ot = n.gc("old")
@@ -136,13 +139,16 @@ def r_gc(ctx):
         rows.append([n.name, fmt_ms(up), fmt_num(oc), fmt_ms(ot), "%.3f%%" % (old_ratio * 100),
                      fmt_num(yc), fmt_ms(yt), "%.2f%%" % (young_ratio * 100),
                      "%.1f" % old_per_hour])
+        if up < 3600000:
+            continue        # under an hour of uptime one old GC already reads as many per hour: listed, not rated
+        rated += 1
         if old_ratio >= ctx.t["old_gc_time_ratio_crit"] or old_per_hour >= ctx.t["old_gc_per_hour_crit"]:
             crit.append(n.name)
         elif (old_ratio >= ctx.t["old_gc_time_ratio_warn"]
               or old_per_hour >= ctx.t["old_gc_per_hour_warn"]
               or young_ratio >= ctx.t["young_gc_time_ratio_warn"]):
             warn.append(n.name)
-    if not rows:
+    if not rows or not rated:
         return []
     ev = table(["node", "uptime", T("rules.nodes.r_gc.01"), T("rules.nodes.r_gc.02"), T("rules.nodes.r_gc.03"),
                 T("rules.nodes.r_gc.04"), T("rules.nodes.r_gc.05"), T("rules.nodes.r_gc.06"), T("rules.nodes.r_gc.07")], rows)
@@ -166,8 +172,14 @@ def r_gc(ctx):
                     evidence=ev, source="nodes_stats.json")]
 
 
+def _busy(ctx, name):
+    """Cumulative throttling counts as Critical only when the node's CPU is busy at collection time too."""
+    n = next((x for x in ctx.nodes if x.name == name), None)
+    return n is not None and (n.cpu_pct or 0) >= ctx.t["load_host_cpu_pct_max"]
+
+
 def r_os(ctx):
-    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). A container node (Elastic Cloud / ECE / ECK, or a cgroup CPU quota or memory limit) with cpu% below load_host_cpu_pct_max is not rated: inside a container the load average can be the host's, so it is listed as Info. On Linux the load average also counts processes waiting on disk, so high load with low CPU often points to storage. swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit → Critical, >= warn → Warning (OS-003). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window."""
+    """load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → Warning (OS-001, nodes in both ranges are listed). A container node (Elastic Cloud / ECE / ECK, or a cgroup CPU quota or memory limit) with cpu% below load_host_cpu_pct_max is not rated: inside a container the load average can be the host's, so it is listed as Info. On Linux the load average also counts processes waiting on disk, so high load with low CPU often points to storage. swap_total > 0 and mlockall is not true → Warning (OS-002). cgroup throttled / elapsed_periods >= cgroup_throttle_ratio_crit with cpu% >= load_host_cpu_pct_max at collection → Critical, otherwise >= warn → Warning (OS-003; the counters are cumulative since the container started). open_fd / max_fd >= fd_used_pct_warn → Warning (OS-004). mlockall=false and no swap → Info (OS-005). uptime < uptime_short_hours → Warning (OS-006). restart_share_warn or more of the nodes restarted within uptime_short_hours → Warning (OS-007): cumulative counters (GC, rejections, cache, latency averages) then cover only a short window."""
     out = []
     rows, load_warn, load_crit, swap_on, throttle, load_host = [], [], [], [], [], []
     swap_used = []
@@ -211,7 +223,9 @@ def r_os(ctx):
         out.append(Finding(
             "OS-001", CAT, Severity.CRITICAL if load_crit else Severity.WARNING,
             T("rules.nodes.r_os.06"),
-            observed=T("rules.nodes.r_os.07") + " / ".join(parts),
+            observed=T("rules.nodes.r_os.07") + " / ".join(parts)
+                     + (T("rules.nodes.r_os.43") if any(ctx.in_container(n) for n in ctx.nodes
+                                                       if n.name in load_crit + load_warn) else ""),
             impact=T("rules.nodes.r_os.08"),
             recommend=T("rules.nodes.r_os.09"),
             evidence=ev, affected=load_crit + load_warn, source="nodes_stats.json"))
@@ -235,13 +249,14 @@ def r_os(ctx):
     if throttle:
         out.append(Finding(
             "OS-003", CAT,
-            Severity.CRITICAL if any(r >= ctx.t["cgroup_throttle_ratio_crit"] for _, r, _ in throttle)
+            Severity.CRITICAL if any(r >= ctx.t["cgroup_throttle_ratio_crit"] and _busy(ctx, nm) for nm, r, _ in throttle)
             else Severity.WARNING,
             T("rules.nodes.r_os.15"),
             observed=T("rules.nodes.r_os.16")
                      % ", ".join("%s(%.1f%%)" % (n, r * 100) for n, r, _ in throttle),
             impact=T("rules.nodes.r_os.17"),
-            recommend=T("rules.nodes.r_os.42") if ctx.orchestrated else T("rules.nodes.r_os.18"),
+            recommend=T("rules.nodes.r_os.42") if ctx.platform_managed
+            else (T("rules.nodes.r_os.44") if ctx.orchestrated else T("rules.nodes.r_os.18")),
             evidence=table(["node", T("rules.nodes.r_os.19"), T("rules.nodes.r_os.20")],
                            [[n, "%.2f%%" % (r * 100), fmt_num(t)] for n, r, t in throttle]),
             affected=[n for n, _r, _t in throttle], source="nodes_stats.json"))
@@ -283,7 +298,7 @@ def r_os(ctx):
             observed=", ".join("%s(uptime %s)" % (n, fmt_ms(u)) for n, u in short),
             impact=T("rules.nodes.r_os.31"),
             recommend=T("rules.nodes.r_os.32"),
-            source="nodes_stats.json"))
+            affected=[n for n, _ in short], source="nodes_stats.json"))
     timed = [n for n in ctx.nodes if n.uptime_ms]
     if len(timed) >= 2 and len(short) >= len(timed) * ctx.t["restart_share_warn"]:
         out.append(Finding(
@@ -354,12 +369,14 @@ def r_write_latency(ctx):
 
 
 def r_disk(ctx):
-    """Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001; on dedicated frozen nodes ES only logs a warning at flood_stage.frozen and blocks nothing, so those are a separate Warning), at or above high → Critical (DISK-002), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK."""
+    """Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001; on dedicated frozen nodes flood_stage.frozen blocks nothing but the health API disk indicator turns red, so those are a separate Critical), at or above high → Warning (DISK-002, the health API reports yellow once no shards can move away), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK. With several data paths, as ES does, flood and high use the path with the least available space and low uses the path with the most. With disk.threshold_enabled=false the impact says no watermark is enforced."""
     rows, over_low, over_high, over_flood, warn, frozen_flood = [], [], [], [], [], []
     by_tier = {}
     for n in ctx.data_nodes or ctx.nodes:
-        total, avail = n.fs_total, n.fs_avail
+        total, avail = n._least_path()
         up = n.disk_used_pct
+        mt, ma = n._most_path()     # the low watermark is checked on the path with the most free space
+        up_low = (1.0 - float(ma) / float(mt)) * 100.0 if (mt and ma is not None) else up
         if up is None:
             continue
         tier = ctx.tier_of(n) or "-"
@@ -373,7 +390,7 @@ def r_disk(ctx):
                 frozen_flood.append(n.name)     # ES only logs a warning here: no index block on dedicated frozen nodes
             continue
         by_tier.setdefault(tier, []).append(up)
-        low = ctx.watermark_used_pct("low", total)
+        low = ctx.watermark_used_pct("low", mt or total)
         high = ctx.watermark_used_pct("high", total)
         flood = ctx.watermark_used_pct("flood_stage", total)
         rows.append([n.name, tier, "%.1f%%" % up, fmt_bytes(total), fmt_bytes(avail),
@@ -383,40 +400,41 @@ def r_disk(ctx):
             over_flood.append(n.name)
         elif high and up >= high:
             over_high.append(n.name)
-        elif low and up >= low:
+        elif low and up_low >= low:
             over_low.append(n.name)
-        elif low and up >= low - ctx.t["disk_low_margin_pct"]:
+        elif low and up_low >= low - ctx.t["disk_low_margin_pct"]:
             warn.append(n.name)
     if not rows:
         return []
+    off = str(ctx.setting("cluster.routing.allocation.disk.threshold_enabled", "true")).lower() == "false"
     ev = table(["node", "tier", T("rules.nodes.r_disk.02"), T("rules.nodes.r_disk.03"), T("rules.nodes.r_disk.04"), T("rules.nodes.r_disk.05"), T("rules.nodes.r_disk.06"), T("rules.nodes.r_disk.07")], rows)
     out = []
     if over_flood:
         out.append(Finding(
             "DISK-001", CAT, Severity.CRITICAL, T("rules.nodes.r_disk.08"),
             observed=T("rules.nodes.r_disk.09") % ", ".join(over_flood),
-            impact=T("rules.nodes.r_disk.10"),
+            impact=T("rules.nodes.r_disk.34") if off else T("rules.nodes.r_disk.10"),
             recommend=T("rules.nodes.r_disk.11"),
             evidence=ev, affected=over_flood, refs=[DOC_DISK], source="nodes_stats.json"))
     if frozen_flood:
         out.append(Finding(
-            "DISK-001", CAT, Severity.WARNING, T("rules.nodes.r_disk.30"),
+            "DISK-001", CAT, Severity.CRITICAL, T("rules.nodes.r_disk.30"),
             observed=T("rules.nodes.r_disk.31") % ", ".join(frozen_flood),
             impact=T("rules.nodes.r_disk.32"),
             recommend=T("rules.nodes.r_disk.33"),
             evidence=ev, affected=frozen_flood, refs=[DOC_DISK], source="nodes_stats.json"))
     if over_high:
         out.append(Finding(
-            "DISK-002", CAT, Severity.CRITICAL, T("rules.nodes.r_disk.12"),
+            "DISK-002", CAT, Severity.WARNING, T("rules.nodes.r_disk.12"),
             observed=T("rules.nodes.r_disk.09") % ", ".join(over_high),
-            impact=T("rules.nodes.r_disk.13"),
+            impact=T("rules.nodes.r_disk.34") if off else T("rules.nodes.r_disk.13"),
             recommend=T("rules.nodes.r_disk.14"),
             evidence=ev, affected=over_high, refs=[DOC_DISK], source="nodes_stats.json"))
     if over_low:
         out.append(Finding(
             "DISK-003", CAT, Severity.WARNING, T("rules.nodes.r_disk.15"),
             observed=T("rules.nodes.r_disk.09") % ", ".join(over_low),
-            impact=T("rules.nodes.r_disk.16"),
+            impact=T("rules.nodes.r_disk.34") if off else T("rules.nodes.r_disk.16"),
             recommend=T("rules.nodes.r_disk.17"),
             evidence=ev, affected=over_low, refs=[DOC_DISK], source="nodes_stats.json"))
     if warn and not (over_flood or over_high or over_low):
@@ -549,7 +567,8 @@ def r_breakers(ctx):
 
 
 def r_indexing_pressure(ctx):
-    """Warning if any of the *_rejections (coordinating/primary/replica) under indexing_pressure.memory.total is > 0.
+    """Warning if coordinating, primary or replica rejections under indexing_pressure.memory.total are > 0 (util.ip_rejections; the
+    other *_rejections counters are shown but do not trigger it).
 
     A value of -1 means the node could not report the counter (mixed versions during an upgrade) and is ignored."""
     rows = []
@@ -557,7 +576,7 @@ def r_indexing_pressure(ctx):
         mem = dig(n.stats, "indexing_pressure", "memory", default={}) or {}
         tot = mem.get("total") or {}
         rej = {k: v for k, v in tot.items() if k.endswith("rejections") and num(v) > 0}
-        if rej:
+        if rej and ip_rejections(n.stats) > 0:
             rows.append([n.name, ", ".join("%s=%s" % (k, fmt_num(v)) for k, v in rej.items()),
                          fmt_bytes(dig(mem, "current", "all_in_bytes")),
                          fmt_bytes(mem.get("limit_in_bytes"))])
@@ -618,7 +637,9 @@ def r_ingest_failures(ctx):
 
     Runs when any node has ingest.total.failed >= ingest_failed_warn. Failed and processed counts are summed per pipeline across nodes,
     and the failure ratio is failed / processed. Any pipeline at or above ingest_fail_ratio_warn → Warning, otherwise Info.
-    Counters are cumulative since node start, and a pipeline called from another pipeline is counted in both.
+    Counters are cumulative since node start, and a pipeline called from another pipeline is counted in both (a nested
+    pipeline counts its own failure even when the caller handles it with on_failure or ignore_failure). When no pipeline has
+    failures (documents that failed before any pipeline ran, such as an unparsable source), the node totals failed / count are rated.
     """
     rows = []
     for n in ctx.nodes:
@@ -643,7 +664,14 @@ def r_ingest_failures(ctx):
     high = [r for r in pipes if r[3] >= ctx.t["ingest_fail_ratio_warn"]]
     sev = Severity.WARNING if high else Severity.INFO
     obs = T("rules.nodes.r_ingest_failures.02") % (len(rows), len(pipes))
-    if high:
+    if not pipes:
+        # failures counted before any pipeline ran (for example a source that cannot be parsed): rate the node totals
+        tf = sum(num(dig(n.stats, "ingest", "total", default={}) or {}, "failed") for n in ctx.nodes)
+        tc = sum(num(dig(n.stats, "ingest", "total", default={}) or {}, "count") for n in ctx.nodes)
+        ratio = tf / float(tc) if tc else 1.0
+        sev = Severity.WARNING if ratio >= ctx.t["ingest_fail_ratio_warn"] else Severity.INFO
+        obs += T("rules.nodes.r_ingest_failures.08") % (ratio * 100)
+    elif high:
         obs += T("rules.nodes.r_ingest_failures.05") % (len(high), ctx.t["ingest_fail_ratio_warn"] * 100)
     else:
         obs += T("rules.nodes.r_ingest_failures.06") % (ctx.t["ingest_fail_ratio_warn"] * 100)

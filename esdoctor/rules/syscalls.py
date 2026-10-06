@@ -15,7 +15,9 @@ _MIN_MAP_COUNT = 262144      # [Official] minimum for the bootstrap check (maxim
 _REC_MAP_COUNT = 1048576     # [Official] recommended value (if the default is lower, set it to 1048576)
 _MIN_NOFILE = 65535          # [Official] minimum for max file descriptors
 _MIN_NPROC = 4096            # [Official] minimum for the thread creation limit
-_OOM_RE = re.compile(r"out of memory: kill(?:ed)? process \d+ \(([^)]*)\)|oom-kill:|invoked oom-killer", re.I)
+_OOM_RE = re.compile(r"out of memory: kill(?:ed)? process (\d+) \(([^)]*)\)|oom-kill:[^\n]*|invoked oom-killer", re.I)
+_DMESG_BAD = re.compile(r"operation not permitted|read kernel buffer failed|permission denied", re.I)
+_KLINE = re.compile(r"^\s*\[[^\]]+\]", re.M)
 _BASE = "https://www.elastic.co/docs/deploy-manage/deploy/self-managed/"
 REF_MAP = (N_("rules.syscalls._.01"), _BASE + "vm-max-map-count")
 REF_SWAP = (N_("rules.syscalls._.02"), _BASE + "setup-configuration-memory")
@@ -55,7 +57,9 @@ def _int(v):
 def r_os_config(ctx):
     """OS settings of the host where diagnostics ran (SYS-001 to SYS-004).
 
-    vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation, in the docs since 8.15 to 8.17; 262144 before) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: target process is java/elasticsearch → Critical, any other process → Warning (SYS-004); no entry → OK.
+    vm.max_map_count in syscalls/sysctl.txt below 262144 (the bootstrap check minimum) → Critical, below 1048576 (official recommendation in the docs from 8.16; 262144 before) → Info, at or above → OK (SYS-001). sysctl vm.swappiness > 1, swap_total > 0 and mlockall not true → Info (SYS-002). Max open files below 65535 or Max processes below 4096 (soft limit) in syscalls/proc-limit.txt → Critical (SYS-003), otherwise OK. OOM killer entry in syscalls/dmesg.txt: the line names elasticsearch (the memcg of the service or the process name) → Critical,
+    any other process (a plain java may be another JVM) → Warning
+    (SYS-004); no entry → OK. dmesg output without kernel lines (an error such as "read kernel buffer failed" without root) → Info, not OK.
     When every node runs in development mode (loopback transport or single-node discovery), bootstrap checks are not enforced, so the Critical results of SYS-001 and SYS-003 drop to Warning.
     When every node sets node.store.allow_mmap: false, ES skips the max map count check, so SYS-001 is Info only.
     """
@@ -132,20 +136,34 @@ def r_os_config(ctx):
                                source="syscalls/proc-limit.txt"))
 
     dm = ctx.b.text("syscalls/dmesg.txt")
+    if dm is not None and (not _KLINE.search(dm) or (_DMESG_BAD.search(dm) and len(_KLINE.findall(dm)) < 2)):
+        dm2 = ctx.b.text("syscalls/dmesg_t.txt")
+        if dm2 and _KLINE.search(dm2) and not _DMESG_BAD.search(dm2[:300]):
+            dm = dm2
+        else:
+            # without root (kernel.dmesg_restrict) dmesg writes only an error: no records is not the same as no OOM
+            out.append(Finding("SYS-004", CAT, Severity.INFO, T("rules.syscalls.r_os_config.42"),
+                               observed=T("rules.syscalls.r_os_config.43"), source="syscalls/dmesg.txt"))
+            dm = None
     if dm is not None:
         # One kernel OOM event logs several lines (invoked oom-killer, oom-kill:, Killed process); count the victim lines,
         # and fall back to the other lines only when no victim line is present.
-        hits = [(m.group(1) or "") for m in _OOM_RE.finditer(dm)]
+        ms = list(_OOM_RE.finditer(dm))
+        hits = [(m.group(2) or "") for m in ms]
         victims = [h for h in hits if h]
         if victims:
             hits = victims
         if hits:
-            java = [h for h in hits if re.search(r"java|elasticsearch", h, re.I)]
+            # Elasticsearch is the victim when the OOM line names it (the memcg of the service, or the process name); a plain
+            # "java" may be another JVM on the host (Logstash, Kafka). The PID is not matched: a killed node restarts with a new one.
+            es_hit = any(re.search(r"elasticsearch", m.group(0), re.I) for m in ms)
+            java = any(re.search(r"java", h, re.I) for h in hits)
             out.append(Finding(
-                "SYS-004", CAT, Severity.CRITICAL if java else Severity.WARNING, T("rules.syscalls.r_os_config.26"),
+                "SYS-004", CAT, Severity.CRITICAL if es_hit else Severity.WARNING,
+                T("rules.syscalls.r_os_config.26"),
                 observed=T("rules.syscalls.r_os_config.27")
                          % (len(hits), ", ".join(sorted(set(h for h in hits if h))) or T("rules.syscalls.r_os_config.28"), tr(_SCOPE)),
-                impact=T("rules.syscalls.r_os_config.29"),
+                impact=T("rules.syscalls.r_os_config.29") + (T("rules.syscalls.r_os_config.44") if java and not es_hit else ""),
                 recommend=T("rules.syscalls.r_os_config.30"),
                 source="syscalls/dmesg.txt"))
         else:

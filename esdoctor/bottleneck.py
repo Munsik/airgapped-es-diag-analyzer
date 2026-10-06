@@ -13,13 +13,15 @@ When the symptom is tied to nodes (a queue or rejections on some nodes, PERF-013
 nodes of their data tiers (a bulk write waits for the replicas on the other nodes of the tier, a search waits for every shard copy it
 hits). A cause finding that names nodes counts only if it names one in scope: high heap on a frozen node does not explain a write
 queue on a hot node. Findings that name no node (cluster wide, or indices) always count.
+In comparison mode, thread pool rejections that did not increase between the bundles (DIF-004 without DIF-005) are history and
+are not a symptom. For capacity, a breaker trip history (BRK-001 below Critical) is not memory pressure.
 The groups reuse the findings in the report, so the summary never contradicts the body. It is a reading aid: the order is the
 tool's judgment of where to look first, not an official decision tree.
 """
 
 from .i18n import T
 from .model import Severity
-from .util import dig, fmt_num, items, num
+from .util import dig, fmt_num, ip_rejections, items, num
 
 ACTIVE = (Severity.CRITICAL, Severity.WARNING)
 # Findings that count as a cause even at Info: they only fire on a pattern, never as a plain report.
@@ -91,19 +93,29 @@ def _walk(findings, groups, scope=None, known=()):
     return out
 
 
-def _pool_sums(ctx, pools):
-    """(rejected, queued, names of nodes with either)."""
+def _pool_sums(ctx, pools, rejections=True):
+    """(rejected, queued, names of nodes with either, pools with a queue). rejections=False leaves the cumulative rejections out
+    (comparison mode, when they did not increase between the bundles)."""
     rej = queue = 0
-    where = set()
+    where, qpools = set(), set()
     for n in ctx.nodes:
         for pool, st in items(dig(n.stats, "thread_pool")):
             if pool in pools:
-                r, q = num(st, "rejected"), num(st, "queue")
+                r, q = (num(st, "rejected") if rejections else 0), num(st, "queue")
                 rej += r
                 queue += q
+                if q:
+                    qpools.add(pool)
                 if r or q:
                     where.add(n.name)
-    return rej, queue, where
+    return rej, queue, where, qpools
+
+
+def _rejections_current(findings):
+    """False in comparison mode when the thread pool rejections did not increase between the bundles (DIF-004 without DIF-005):
+    the cumulative count is then history, as the comparison says."""
+    ids = set(f.id for f in findings)
+    return not ("DIF-004" in ids and "DIF-005" not in ids)
 
 
 def _row(qid, state, verdict, basis, causes, nxt, worst=None):
@@ -146,16 +158,17 @@ def _ingest(ctx, findings):
     if not sum(num(n.stats, "indices", "indexing", "index_total") for n in ctx.data_nodes):
         return _row("ingest", "idle", "idle", [], [], False)
     sym, wide = [], False
-    rej, queue, scope = _pool_sums(ctx, ("write", "write_coordination"))
-    wrej, wqueue, _w = _pool_sums(ctx, ("write",))
+    cur = _rejections_current(findings)
+    rej, queue, scope, qpools = _pool_sums(ctx, ("write", "write_coordination"), cur)
+    wrej, wqueue, _w, _q = _pool_sums(ctx, ("write",), cur)
     coord_only = bool(rej or queue) and not (wrej or wqueue)
     if rej:
         sym.append(T("btl.s.write_rejected") % fmt_num(rej))
     if queue:
-        sym.append(T("btl.s.write_queue") % fmt_num(queue))
+        sym.append(T("btl.s.write_queue") % (", ".join(sorted(qpools)), fmt_num(queue)))
     ip = 0
     for n in ctx.nodes:
-        v = sum(num(x) for k, x in items(dig(n.stats, "indexing_pressure", "memory", "total")) if k.endswith("rejections"))
+        v = ip_rejections(n.stats)
         if v:
             ip += v
             scope.add(n.name)
@@ -180,7 +193,7 @@ def _search(ctx, findings):
     if not sum(num(n.stats, "indices", "search", "query_total") for n in ctx.data_nodes):
         return _row("search", "idle", "idle", [], [], False)
     sym, wide = [], False
-    rej, queue, scope = _pool_sums(ctx, ("search",))
+    rej, queue, scope, _q = _pool_sums(ctx, ("search",), _rejections_current(findings))
     if rej:
         sym.append(T("btl.s.search_rejected") % fmt_num(rej))
     if queue:
@@ -223,6 +236,8 @@ def _restart(findings):
 
 
 def _capacity(findings):
+    # breaker trip history alone (BRK-001 below Critical) is not live memory pressure
+    findings = [f for f in findings if not (f.id == "BRK-001" and f.severity != Severity.CRITICAL)]
     found = _walk(findings, CAPACITY)
     if not found:
         return _row("capacity", "clear", "clear", [], [], True)

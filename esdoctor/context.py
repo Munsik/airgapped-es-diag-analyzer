@@ -154,9 +154,49 @@ class NodeView(object):
             v = num(self.stats, "fs", "total", "free_in_bytes", default=None)
         return v
 
+    def _most_path(self):
+        """(total, available) of the data path with the most available bytes: ES checks the low watermark (allocation of new
+        shards) on that path (DiskThresholdDecider, most-available disk usage)."""
+        paths = []
+        for p in (dig(self.stats, "fs", "data") or []):
+            if isinstance(p, dict):
+                t = num(p, "total_in_bytes", default=None)
+                a = num(p, "available_in_bytes", default=None)
+                if a is None:
+                    a = num(p, "free_in_bytes", default=None)
+                if t and a is not None:
+                    paths.append((a, t))
+        if len(paths) >= 2:
+            a, t = max(paths)
+            return t, a
+        return self.fs_total, self.fs_avail
+
+    def _least_path(self):
+        """(total, available) of the data path with the least available bytes, as ES judges disk thresholds
+        (ClusterInfo least-available disk usage); fs.total when the node has a single path or no per-path data."""
+        paths = []
+        for p in (dig(self.stats, "fs", "data") or []):
+            if not isinstance(p, dict):
+                continue
+            t = num(p, "total_in_bytes", default=None)
+            a = num(p, "available_in_bytes", default=None)
+            if a is None:
+                a = num(p, "free_in_bytes", default=None)
+            if t and a is not None:
+                paths.append((a, t))
+        if len(paths) >= 2:
+            a, t = min(paths)
+            return t, a
+        return self.fs_total, self.fs_avail
+
+    @property
+    def disk_path_total(self):
+        """Total bytes of the path ES uses for the disk watermarks (see _least_path)."""
+        return self._least_path()[0]
+
     @property
     def disk_used_pct(self):
-        t, a = self.fs_total, self.fs_avail
+        t, a = self._least_path()
         if not t or a is None:
             return None
         return (1.0 - float(a) / float(t)) * 100.0
@@ -181,16 +221,8 @@ class NodeView(object):
 
     def setting(self, dotted, default=None):
         """settings in nodes.json mix flat and nested keys; support both."""
-        s = self.info.get("settings") or {}
-        if dotted in s:
-            return s[dotted]
-        cur = s
-        for part in dotted.split("."):
-            if isinstance(cur, dict) and part in cur:
-                cur = cur[part]
-            else:
-                return default
-        return cur
+        v = _flat_get(self.info.get("settings") or {}, dotted)
+        return default if v is None else v
 
 
 class Context(object):
@@ -344,6 +376,12 @@ class Context(object):
     def orchestrated(self):
         return self.deployment != "self-managed"
 
+    @property
+    def platform_managed(self):
+        """ECH / ECE, where the platform writes elasticsearch.yml and sets the instance resources. On ECK the user sets both in the
+        Elasticsearch resource, so it is orchestrated but not platform managed."""
+        return self.deployment in ("ECH", "ECE", "ECH/ECE")
+
     def load_high(self, node):
         """load15 per CPU >= load_per_cpu_warn, except in a container with low CPU use, where the load can be the host's (as in OS-001)."""
         per = (node.load15 / node.processors) if (node.load15 and node.processors) else None
@@ -422,13 +460,14 @@ class Context(object):
         return [n for n in self.nodes if n.is_master_eligible]
 
     def time_based(self, index):
-        """Whether ES uses the time-based merge policy (LogByteSizeMergePolicy, from 8.11) for the index.
+        """Whether ES uses the time-based merge policy (LogByteSizeMergePolicy, from 8.8) for the index.
 
-        ES decides per shard from the mapping: an @timestamp date field that is indexed and has doc values (8.x), or that has points or
-        a doc values skipper (9.x, MappingLookup.getTimestampFieldType; logsdb and time_series use the skipper). index.merge.policy.type
+        ES decides per shard from the @timestamp date field in the mapping (MappingLookup in the source): indexed and with doc values
+        (8.8 to 9.0); with doc values and either indexed or a doc values skipper (9.1, 9.2); indexed or a doc values skipper (9.3+,
+        getTimestampFieldType). The skipper is assumed for the logsdb, time_series and columnar modes. index.merge.policy.type
         overrides it. Without the mapping in the bundle, data stream membership is used (data streams always map @timestamp).
         """
-        if not self.version_tuple or self.version_tuple < (8, 11, 0):
+        if not self.version_tuple or self.version_tuple < (8, 8, 0):
             return False
         typ = str(self.index_setting(index, "index.merge.policy.type") or "").lower()
         if typ in ("tiered", "time_based"):
@@ -438,9 +477,12 @@ class Context(object):
             if not summ.get("timestamp"):
                 return False
             idx, dv = summ.get("ts_index", True), summ.get("ts_dv", True)
-            if self.version_tuple >= (9, 0, 0):
-                return idx or (dv and self.index_mode(index) in ("logsdb", "time_series", "logsdb_columnar", "columnar"))
-            return idx and dv
+            skip = dv and self.index_mode(index) in ("logsdb", "time_series", "logsdb_columnar", "columnar")
+            if self.version_tuple >= (9, 3, 0):
+                return bool(idx or skip)
+            if self.version_tuple >= (9, 1, 0):
+                return bool(dv and (idx or skip))
+            return bool(idx and dv)
         return bool(self.data_stream_of(index))
 
     def index_setting(self, index, key, default=None):
@@ -593,11 +635,20 @@ class Context(object):
         return str(v or "standard").lower()
 
     def ilm_policy_of(self, name):
-        """ILM policy name managing the index, or None."""
+        """ILM policy name managing the index, or None: from ILM explain when the index is there, else index.lifecycle.name, else
+        the ilm_policy of its data stream backing entry when that entry says ILM manages it."""
         ex = (self.ilm_explain or {}).get(name)
-        if isinstance(ex, dict) and ex.get("managed") and ex.get("policy"):
-            return ex.get("policy")
-        return self.index_setting(name, "index.lifecycle.name") or None
+        if isinstance(ex, dict):
+            # managed=false with a policy name means data stream lifecycle wins (prefer_ilm false): ILM does not run it
+            return ex.get("policy") if ex.get("managed") else None
+        pol = self.index_setting(name, "index.lifecycle.name")
+        if pol:
+            return pol
+        for ds in dicts(self.data_streams):
+            for i in dicts(ds.get("indices")):
+                if i.get("index_name") == name:
+                    return i.get("ilm_policy") if "index lifecycle" in str(i.get("managed_by") or "").lower() else None
+        return None
 
     def dlm_managed(self, name):
         """Whether a backing index is managed by data stream lifecycle (not ILM): the backing index entry says so (8.11+), or the
@@ -673,12 +724,22 @@ class Context(object):
         return self.tier_of(node) == "frozen"
 
     def dev_mode(self, node):
-        """True when the node runs in development mode: its bound transport address is loopback or discovery.type is
-        single-node. Bootstrap checks are enforced only in production mode (official)."""
+        """True when the node runs in development mode: its transport publish address and every bound address are loopback,
+        or discovery.type is single-node (BootstrapChecks.enforceLimits). -Des.enforce.bootstrap.checks=true forces production
+        mode. Bootstrap checks are enforced only in production mode (official)."""
+        if any(str(a).startswith("-Des.enforce.bootstrap.checks=true") for a in (node.jvm_args() or [])):
+            return False
         if str(node.setting("discovery.type") or "") == "single-node":
             return True
-        ta = str(node.info.get("transport_address") or "")
-        return ta.startswith("127.") or ta.startswith("[::1]") or ta.startswith("localhost")
+
+        def loop(a):
+            a = str(a or "")
+            return a.startswith("127.") or a.startswith("[::1]") or a.startswith("localhost")
+        ta = node.info.get("transport_address")
+        if not loop(ta):
+            return False
+        bound = dig(node.info, "transport", "bound_address")
+        return all(loop(b) for b in bound) if isinstance(bound, list) and bound else True
 
     def recently_restarted(self, node):
         """True when the node has been up for less than node_compare_min_uptime_hours.
@@ -796,15 +857,22 @@ def _l(x):
 
 
 def _flat_get(d, dotted):
-    """Supports both flat keys ('a.b.c') and nested dicts."""
+    """Supports flat keys ('a.b.c'), nested dicts, and a mix of both. ES renders a key that is both a value and a prefix
+    (watermark.low and watermark.low.max_headroom) as a dotted key inside the parent map (Settings, "." notation fallback),
+    so at every level the remaining path is also tried as one dotted key."""
     if not isinstance(d, dict):
         return None
-    if dotted in d:
-        return d[dotted]
-    cur = d
-    for part in dotted.split("."):
-        if isinstance(cur, dict) and part in cur:
-            cur = cur[part]
-        else:
-            return None
-    return cur
+    parts = dotted.split(".")
+
+    def walk(cur, i):
+        for j in range(len(parts), i, -1):
+            key = ".".join(parts[i:j])
+            if key in cur:
+                if j == len(parts):
+                    return cur[key]
+                if isinstance(cur[key], dict):
+                    v = walk(cur[key], j)
+                    if v is not None:
+                        return v
+        return None
+    return walk(d, 0)

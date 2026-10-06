@@ -138,7 +138,9 @@ def mapping_and_merge():
     s["e2"] = s["e"]
     check("9.x: doc values skipper (logsdb) counts as time-based", c95.time_based("e2"))
     check("8.x: index and doc values are both required", not _C((8, 19, 0)).time_based("e"))
-    check("before 8.11 nothing is time-based", not _C((8, 10, 0)).time_based("a"))
+    check("before 8.8 nothing is time-based", not _C((8, 7, 0)).time_based("a"))
+    check("8.8 to 8.10 time-based policy exists (LogByteSizeMergePolicy from 8.8)", _C((8, 10, 0)).time_based("a"))
+    check("9.1 and 9.2: doc values are required", not _C((9, 1, 0)).time_based("d") and _C((9, 2, 0)).time_based("a"))
     k = "index.merge.policy.max_merged_segment"
     check("plain index with @timestamp uses the time-based 100gb", default_for(k, c95, index="a") == "100gb", default_for(k, c95, index="a"))
     check("index without @timestamp keeps 5gb", default_for(k, c95, index="c") == "5gb", default_for(k, c95, index="c"))

@@ -14,7 +14,7 @@ import re
 from ..i18n import T, N_, tr
 from ..model import Finding, Severity, table
 from ..settings_kb import default_for
-from ..util import dicts, dig, fmt_bytes, fmt_ms, fmt_num, items, num, parse_bytes, strs
+from ..util import dicts, dig, fmt_bytes, fmt_ms, fmt_num, is_network_fs, items, num, parse_bytes, strs
 
 MAPC, OPS, CLU, PERF, VEC = "shard", "ops", "cluster", "perf", "vector"
 D_MAP = ("Mapping limit settings",
@@ -65,18 +65,19 @@ def _template_owner(ctx, index):
 def r_mapping_limits_actual(ctx):
     """Counts fields per index from the actual mappings in mapping.json, using the official counting method (each field, object, multi-field and runtime field counts as 1).
 
-    Field count >= total_fields.limit × mapping_fields_near_limit_pct → Warning (MAP-004; Info only if every listed index has ignore_dynamic_beyond_limit=true).
+    Field count >= total_fields.limit × mapping_fields_near_limit_pct → Warning (MAP-004; Info only if every listed index has ignore_dynamic_beyond_limit=true,
+    explicitly or by default: true for logsdb indices on recent index versions).
     Indices without ignore_dynamic_beyond_limit are listed first because they are the ones that can fail indexing; the table also shows
     who manages the data stream template (Fleet package or Elastic), since integration templates usually set the ignore option.
-    Searchable snapshot mounts and rolled-over indices are skipped for MAP-004 because they receive no new fields. Runtime fields
+    Searchable snapshot mounts and rolled-over indices are skipped for MAP-004 because they receive no new fields (MAP-005 and MAP-006
+    still cover mounts: sorting or aggregating them loads fielddata too). Runtime fields
     count toward the limit only from 8.5 (MappingLookup in the source).
     text field with fielddata=true → Warning (MAP-005). nested field count >= nested_fields.limit × nested_fields_near_limit_pct → Warning (MAP-006). The default limit is 100 for indices created on 9.3 or later and 50 before.
     """
     near, fd_rows, nest_rows = [], [], []
     ignored = 0
     for name, m in _mappings(ctx):
-        if ctx.is_searchable_snapshot(name):
-            continue        # mounted indices are read-only: no new fields can arrive
+        mounted = ctx.is_searchable_snapshot(name)     # read-only: no new fields can arrive (MAP-004 only)
         total, nested, fielddata = m["total"], m["nested"], m["fielddata"]
         if (0, 0, 0) < ctx.version_tuple < (8, 5, 0):
             total -= m.get("runtime", 0)
@@ -84,8 +85,11 @@ def r_mapping_limits_actual(ctx):
             limit = int(ctx.index_setting(name, "index.mapping.total_fields.limit") or 1000)
         except (TypeError, ValueError):
             limit = 1000
-        if limit > 0 and not ctx.rolled_over(name) and total >= limit * ctx.t["mapping_fields_near_limit_pct"] / 100.0:
-            ign = str(ctx.index_setting(name, "index.mapping.total_fields.ignore_dynamic_beyond_limit")).lower() == "true"
+        if limit > 0 and not mounted and not ctx.rolled_over(name) and total >= limit * ctx.t["mapping_fields_near_limit_pct"] / 100.0:
+            raw = ctx.index_setting(name, "index.mapping.total_fields.ignore_dynamic_beyond_limit")
+            if raw is None:
+                raw = default_for("index.mapping.total_fields.ignore_dynamic_beyond_limit", ctx, index=name)
+            ign = str(raw).lower() == "true"
             ignored += 1 if ign else 0
             near.append([name, fmt_num(total), fmt_num(limit), "%.0f%%" % (total * 100.0 / limit), "true" if ign else "false",
                          _template_owner(ctx, name)])
@@ -122,7 +126,7 @@ def r_mapping_limits_actual(ctx):
     if nest_rows:
         out.append(Finding(
             "MAP-006", MAPC, Severity.WARNING, T("rules.deep.r_mapping_limits_actual.12"),
-            observed=T("rules.deep.r_mapping_limits_actual.13") % len(nest_rows),
+            observed=T("rules.deep.r_mapping_limits_actual.13") % (len(nest_rows), ctx.t["nested_fields_near_limit_pct"]),
             impact=T("rules.deep.r_mapping_limits_actual.14"),
             recommend=T("rules.deep.r_mapping_limits_actual.15"),
             evidence=table(["index", T("rules.deep.r_mapping_limits_actual.16"), T("rules.deep.r_mapping_limits_actual.06")], nest_rows[: ctx.t["top_n"]]),
@@ -180,7 +184,8 @@ def r_ilm_policies(ctx):
     No max_primary_shard_size (or max_size) in the hot rollover → Warning (ILM-004): the official recommendation is rollover by shard size,
     and max_age alone leaves small indices piling up depending on the ingest rate (a cause of OVS-002). A policy used by a data stream
     with no rollover action at all is listed in ILM-004 too: that data stream never rolls over, its write index grows without limit and
-    the delete phase fails on it (a write index cannot be deleted). max_primary_shard_size > 50GB → Warning (ILM-005).
+    the delete phase fails on it while older backing indices exist (or deletes the whole stream when it is the only one). Data streams
+    managed by data stream lifecycle are not counted as users of the policy here. max_primary_shard_size > 50GB → Warning (ILM-005).
     No delete phase → Info (ILM-006, unlimited retention). Elastic-managed policies (_meta.managed=true) are checked like the others and marked "(Elastic managed)" in the table.
     max_primary_shard_docs above 200,000,000 → Info (ILM-007): from 8.8 rollover always runs at 200M documents per shard, so a higher
     value has no effect (official). Before 8.8 there is no such implicit condition, so ILM-007 is not raised.
@@ -201,7 +206,11 @@ def r_ilm_policies(ctx):
             continue
         ro = dig(phases, "hot", "actions", "rollover")
         label = pname + (T("rules.deep.r_ilm_policies.01") if managed else "")
-        ds_users = [d for d in strs(dig(body, "in_use_by", "data_streams")) if not d.startswith(".")]
+        # data streams whose next generation data stream lifecycle manages (prefer_ilm false) do not run this policy's rollover
+        dlm_streams = set(str(ds.get("name")) for ds in dicts(ctx.data_streams)
+                          if "lifecycle" in str(ds.get("next_generation_managed_by") or "").lower()
+                          and "index lifecycle" not in str(ds.get("next_generation_managed_by") or "").lower())
+        ds_users = [d for d in strs(dig(body, "in_use_by", "data_streams")) if not d.startswith(".") and d not in dlm_streams]
         if not isinstance(ro, dict) and ds_users:
             no_size.append([label, T("rules.deep.r_ilm_policies.23"), len(users)])
             no_rollover = True
@@ -226,7 +235,7 @@ def r_ilm_policies(ctx):
             impact=T("rules.deep.r_ilm_policies.04") + (T("rules.deep.r_ilm_policies.24") if no_rollover else ""),
             recommend=T("rules.deep.r_ilm_policies.05") + (T("rules.deep.r_ilm_policies.25") if no_rollover else ""),
             evidence=table([T("rules.deep.r_ilm_policies.06"), T("rules.deep.r_ilm_policies.07"), T("rules.deep.r_ilm_policies.08")], no_size[: ctx.t["top_n"]]),
-            refs=[D_ILM, D_SHARDS], source="ilm_policies.json"))
+            refs=[D_ILM, D_SHARDS], source="commercial/ilm_policies.json"))
     if too_big:
         out.append(Finding(
             "ILM-005", OPS, Severity.WARNING, T("rules.deep.r_ilm_policies.09"),
@@ -234,7 +243,7 @@ def r_ilm_policies(ctx):
             impact=T("rules.deep.r_ilm_policies.11"),
             recommend=T("rules.deep.r_ilm_policies.12"),
             evidence=table([T("rules.deep.r_ilm_policies.06"), "max_primary_shard_size", T("rules.deep.r_ilm_policies.13")], too_big[: ctx.t["top_n"]]),
-            refs=[D_ILM, D_SHARDS], source="ilm_policies.json"))
+            refs=[D_ILM, D_SHARDS], source="commercial/ilm_policies.json"))
     if docs_noop:
         out.append(Finding(
             "ILM-007", OPS, Severity.INFO, T("rules.deep.r_ilm_policies.19"),
@@ -243,7 +252,7 @@ def r_ilm_policies(ctx):
             recommend=T("rules.deep.r_ilm_policies.22"),
             evidence=table([T("rules.deep.r_ilm_policies.06"), "max_primary_shard_docs", T("rules.deep.r_ilm_policies.13")],
                            docs_noop[: ctx.t["top_n"]]),
-            refs=[D_ILM, D_SHARDS], source="ilm_policies.json"))
+            refs=[D_ILM, D_SHARDS], source="commercial/ilm_policies.json"))
     if no_delete:
         out.append(Finding(
             "ILM-006", OPS, Severity.INFO, T("rules.deep.r_ilm_policies.14"),
@@ -251,7 +260,7 @@ def r_ilm_policies(ctx):
             impact=T("rules.deep.r_ilm_policies.16"),
             recommend=T("rules.deep.r_ilm_policies.17"),
             evidence=table([T("rules.deep.r_ilm_policies.06"), T("rules.deep.r_ilm_policies.18"), T("rules.deep.r_ilm_policies.13")], no_delete[: ctx.t["top_n"]]),
-            refs=[D_ILM], source="ilm_policies.json"))
+            refs=[D_ILM], source="commercial/ilm_policies.json"))
     return out
 
 
@@ -300,7 +309,7 @@ def r_node_shutdown(ctx):
         impact=T("rules.deep.r_node_shutdown.03"),
         recommend=T("rules.deep.r_node_shutdown.04"),
         evidence=table(["node_id", "type", "status", "shard_migration", "explanation"], rows),
-        refs=[D_SHUT], source="nodes_shutdown_status.json")]
+        refs=[D_SHUT], source="commercial/nodes_shutdown_status.json")]
 
 
 def r_shard_store_errors(ctx):
@@ -319,9 +328,10 @@ def r_shard_store_errors(ctx):
     if not rows:
         return []
     return [Finding(
-        "IDX-012", MAPC, Severity.CRITICAL if corrupt else Severity.WARNING, T("rules.deep.r_shard_store_errors.01"),
+        "IDX-012", MAPC, Severity.CRITICAL if corrupt else Severity.WARNING,
+        T("rules.deep.r_shard_store_errors.01") if corrupt else T("rules.deep.r_shard_store_errors.05"),
         observed=T("rules.deep.r_shard_store_errors.02") % len(rows),
-        impact=T("rules.deep.r_shard_store_errors.03"),
+        impact=T("rules.deep.r_shard_store_errors.03") if corrupt else T("rules.deep.r_shard_store_errors.06"),
         recommend=T("rules.deep.r_shard_store_errors.04"),
         evidence=table(["index", "shard", "allocation", "exception"], rows[: ctx.t["top_n"]]),
         source="shard_stores.json")]
@@ -329,7 +339,8 @@ def r_shard_store_errors(ctx):
 
 def r_remote_clusters(ctx):
     """Remote clusters with connected=false in remote_cluster_info → Warning (OPS-003)."""
-    rows = [[name, str(body.get("connected")), body.get("mode"), num(body, "num_nodes_connected")]
+    rows = [[name, str(body.get("connected")), body.get("mode"), num(body, "num_nodes_connected"),
+             str(body.get("skip_unavailable")) if body.get("skip_unavailable") is not None else "-"]
             for name, body in items(ctx.remote_clusters) if isinstance(body, dict) and body.get("connected") is False]
     if not rows:
         return []
@@ -338,7 +349,7 @@ def r_remote_clusters(ctx):
         observed=T("rules.deep.r_remote_clusters.02") % len(rows),
         impact=T("rules.deep.r_remote_clusters.03"),
         recommend=T("rules.deep.r_remote_clusters.04"),
-        evidence=table(["remote", "connected", "mode", T("rules.deep.r_remote_clusters.05")], rows),
+        evidence=table(["remote", "connected", "mode", T("rules.deep.r_remote_clusters.05"), "skip_unavailable"], rows),
         source="remote_cluster_info.json")]
 
 
@@ -348,7 +359,7 @@ def r_frozen_cache(ctx):
     Evictions per day above frozen_cache_turnover_per_day x the region count (the whole cache replaced at least that often) → Warning,
     a sign that the cache is small compared to the searched data (tool threshold); otherwise Info when there is data.
     """
-    rows, hot = [], 0
+    rows, hot, rated = [], 0, 0
     for nid, body in items(ctx.frozen_cache.get("nodes")):
         sc = dig(body, "shared_cache", default={}) or {}
         regions = num(sc, "num_regions")
@@ -361,6 +372,7 @@ def r_frozen_cache(ctx):
         per_day = ev / max(days, 1.0 / 24) if days else None
         rows.append([name, fmt_bytes(num(sc, "size_in_bytes")), fmt_num(regions), fmt_num(num(sc, "reads")),
                      fmt_bytes(num(sc, "bytes_read_in_bytes")), fmt_num(ev), fmt_num(int(per_day)) if per_day is not None else "-"])
+        rated += 1 if per_day is not None else 0
         if per_day is not None and per_day > regions * ctx.t["frozen_cache_turnover_per_day"]:
             hot += 1
     if not rows:
@@ -370,16 +382,16 @@ def r_frozen_cache(ctx):
         T("rules.deep.r_frozen_cache.01") if hot else T("rules.deep.r_frozen_cache.02"),
         observed=(T("rules.deep.r_frozen_cache.03") % hot) if hot else
                  T("rules.deep.r_frozen_cache.04") % len(rows),
-        impact=T("rules.deep.r_frozen_cache.05") if hot else T("rules.deep.r_frozen_cache.10"),
+        impact=T("rules.deep.r_frozen_cache.05") if hot else (T("rules.deep.r_frozen_cache.10") if rated
+                                                              else T("rules.deep.r_frozen_cache.11")),
         recommend=T("rules.deep.r_frozen_cache.06") if hot else "",
         evidence=table(["node", T("rules.deep.r_frozen_cache.07"), "region", "reads", T("rules.deep.r_frozen_cache.08"), "evictions",
                         T("rules.deep.r_frozen_cache.09")], rows),
-        source="searchable_snapshots_cache_stats.json")]
+        source="commercial/searchable_snapshots_cache_stats.json")]
 
 
 D_SNAP = ("Searchable snapshots",
           "https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots")
-NET_FS = ("nfs", "cifs", "smb", "fuse", "glusterfs", "ceph")
 # Stack frames of a thread reading a file, and of the searchable snapshot / blob cache code that owns the shared cache file
 _FILE_READ = ("FileChannelImpl.read", "FileDispatcherImpl.pread", "FileDispatcherImpl.read", "IOUtil.read", "NIOFSDirectory")
 _CACHE_CODE = ("blobcache", "searchablesnapshots", "SharedBytes", "FrozenIndexInput")
@@ -408,28 +420,29 @@ def _cache_file_reads(ctx):
 
 
 def _direct_buffer_oom(ctx, names):
-    """Lines with 'Direct buffer memory' in the server logs (local/remote mode only) that belong to one of the given nodes.
+    """Log events with 'Direct buffer memory' in the server logs (local/remote mode only) that belong to one of the given nodes
+    (several lines of the same event count once).
 
     The node is taken from the log event the line belongs to: the line itself, or the nearest event header above it (a plain log line
     starts with "[20..", the timestamp; a stack trace line does not), up to 200 lines back. JSON log lines carry the node name in
     "elasticsearch.node.name" (or "node.name")."""
     from .runtime import _es_log_files
-    hits = 0
+    events = set()
     for rel in _es_log_files(ctx.b.log_files())[:40]:
         lines = (ctx.b.read_log(rel, ctx.t["log_scan_bytes"]) or "").splitlines()
         for i, ln in enumerate(lines):
             if "Direct buffer memory" not in ln:
                 continue
-            head = ln
+            head, at = ln, i
             if not (ln.startswith("[20") or ln.lstrip().startswith("{")):
                 for j in range(i - 1, max(-1, i - 200), -1):
                     if lines[j].startswith("[20") or lines[j].lstrip().startswith("{"):
-                        head = lines[j] + " " + ln
+                        head, at = lines[j] + " " + ln, j
                         break
             if any(("[%s]" % nm) in head or ('"elasticsearch.node.name":"%s"' % nm) in head.replace(" ", "")
                    or ('"node.name":"%s"' % nm) in head.replace(" ", "") for nm in names):
-                hits += 1
-    return hits
+                events.add((rel, at))      # one event (its header line) can carry the message and its "Caused by" line
+    return len(events)
 
 
 def r_frozen_network_storage(ctx):
@@ -437,7 +450,8 @@ def r_frozen_network_storage(ctx):
 
     A node has a shared cache when the cache stats show one, when it is a dedicated frozen node (which gets a shared cache by default),
     or when xpack.searchable.snapshot.shared_cache.size is set. Nodes with a shared cache can only have a single data path, so the
-    cache file sits on the filesystem of that path. If nodes_stats fs.data[].type is nfs / cifs / smb / fuse / glusterfs / ceph → Warning.
+    cache file sits on the filesystem of that path. If nodes_stats fs.data[].type is nfs / cifs / smb / fuse / glusterfs / ceph / lustre /
+    gpfs / beegfs / 9p (local FUSE types such as fuseblk excluded) → Warning.
     Searches read the cache file and cache misses write to it while searches run, unlike the segment files of other tiers, which do
     not change once written (PERF-009 covers the data path of every node).
     Supporting signals per node: hot threads reading a file inside the searchable snapshot cache code, and the search thread pool
@@ -453,8 +467,7 @@ def r_frozen_network_storage(ctx):
         if not _has_shared_cache(ctx, n, sizes):
             continue
         for d in dig(n.stats, "fs", "data", default=[]) or []:
-            t = str((d or {}).get("type") or "").lower()
-            if not t or not any(x in t for x in NET_FS):
+            if not is_network_fs((d or {}).get("type")):
                 continue
             if reads is None:
                 reads = _cache_file_reads(ctx)
@@ -479,7 +492,7 @@ def r_frozen_network_storage(ctx):
         recommend=T("rules.deep.r_frozen_network_storage.05"),
         evidence=table(["node", "mount", "type", T("rules.deep.r_frozen_network_storage.06"),
                         T("rules.deep.r_frozen_network_storage.07"), "search queue", "search rejected"], rows),
-        affected=names, refs=[D_SNAP], source="nodes_stats.json / searchable_snapshots_cache_stats.json / nodes_hot_threads.txt")]
+        affected=names, refs=[D_SNAP], source="nodes_stats.json / commercial/searchable_snapshots_cache_stats.json / nodes_hot_threads.txt")]
 
 
 # ------------------------------------------------------------------ Node stats details
@@ -502,7 +515,9 @@ def r_script_limit(ctx):
 def r_ingest_processors(ctx):
     """Sums the cumulative processing time per processor from the node ingest statistics and reports the top processors (ING-002, Info).
 
-    When hot threads (RT-001) show ingest using CPU, this is the evidence for which pipeline or processor is responsible.
+    When hot threads (RT-001) show ingest using CPU, this is the evidence for which pipeline or processor is responsible. Older
+    versions report a processor with a condition as type "conditional"; its type is taken from the key instead. For async
+    processors (enrich, inference) the time includes waiting for the lookup or the ML node.
     """
     agg = collections.Counter()
     cnt = collections.Counter()
@@ -511,6 +526,8 @@ def r_ingest_processors(ctx):
             for proc in dicts(p.get("processors") if isinstance(p, dict) else None):
                 for key, body in items(proc):
                     ptype = (body or {}).get("type") if isinstance(body, dict) else None
+                    if ptype == "conditional":
+                        ptype = str(key).split(":")[0]     # 8.0-era stats report a processor with "if" as type conditional
                     if ptype == "pipeline" or str(key).split(":")[0] == "pipeline":
                         continue            # nested pipeline calls are skipped to avoid double counting (8.x reports a
                                             # conditional pipeline processor as type "conditional" with key "pipeline:<name>")
@@ -570,9 +587,11 @@ def r_cluster_state_publication(ctx):
 
 
 def r_plugin_consistency(ctx):
-    """Warning if the installed plugins (name and version) are not identical on every node (CLU-023)."""
+    """Warning if the installed plugins (name and version) are not identical on every node (CLU-023). Nodes without plugin information are left out."""
     sigs = {}
     for n in ctx.nodes:
+        if "plugins" not in (n.info or {}):
+            continue        # node not in nodes.json: its plugins are unknown
         plugs = sorted("%s:%s" % (p.get("name"), p.get("version")) for p in dicts(n.info.get("plugins")))
         sigs[n.name] = plugs
     if len(sigs) < 2 or len(set(tuple(v) for v in sigs.values())) <= 1:
@@ -591,34 +610,41 @@ def r_plugin_consistency(ctx):
 # ------------------------------------------------------------------ ML, watcher, autoscaling, rollup
 def r_ml_deployments(ctx):
     """Warning if a trained model deployment has a state other than started, or an allocation status other than fully_allocated (ML-003)."""
-    rows = []
+    rows, any_adaptive = [], False
     for m in dicts(ctx.ml_trained_stats.get("trained_model_stats")):
         dep = m.get("deployment_stats")
         if not isinstance(dep, dict):
             continue
         st = str(dep.get("state") or "")
         alloc = str(dig(dep, "allocation_status", "state") or "")
+        adaptive = str(dig(dep, "adaptive_allocations", "enabled")).lower() == "true"
         if st.lower() != "started" or (alloc and alloc.lower() != "fully_allocated"):
-            rows.append([m.get("model_id"), dep.get("deployment_id"), st, alloc, str(dep.get("reason") or "")[:120]])
+            rows.append([m.get("model_id"), dep.get("deployment_id"), st, alloc + (" (adaptive)" if adaptive else ""),
+                         str(dep.get("reason") or "")[:120]])
+            any_adaptive = any_adaptive or adaptive
     if not rows:
         return []
     return [Finding(
         "ML-003", OPS, Severity.WARNING, T("rules.deep.r_ml_deployments.01"),
         observed=T("rules.deep.r_ml_deployments.02") % len(rows),
         impact=T("rules.deep.r_ml_deployments.03"),
-        recommend=T("rules.deep.r_ml_deployments.04"),
+        recommend=T("rules.deep.r_ml_deployments.04") + (T("rules.deep.r_ml_deployments.05") if any_adaptive else ""),
         evidence=table(["model", "deployment", "state", "allocation", "reason"], rows),
-        source="ml_trained_models_stats.json")]
+        source="commercial/ml_trained_models_stats.json")]
 
 
 def r_watcher_autoscaling_rollup(ctx):
-    """Watcher manually stopped → Warning when watches are still counted, otherwise Info (OPS-005; stopping Watcher clears the watch
-    counts in its stats). Autoscaling required storage or memory larger than the current one → Info (OPS-004).
-    Rollup jobs present → Info (OPS-006, rollup is deprecated and replaced by downsampling).
+    """Watcher manually stopped → Warning when watches exist, otherwise Info (OPS-005; stopping Watcher clears the watch
+    counts in its stats, so the document count of the .watches index is used then). Autoscaling required storage or memory larger than the current one → Info (OPS-004).
+    Rollup jobs present → Info (OPS-006, rollup is deprecated from 8.11 and replaced by downsampling; before 8.11 the text says it will be).
     """
     out = []
     ws = ctx.watcher_stack
     watches = sum(num(s, "watch_count") for s in dicts(ws.get("stats")))
+    if not watches:
+        # stopping Watcher clears the per-node counts: the .watches index still holds the watch definitions
+        watches = sum(num(st, "primaries", "docs", "count") for nm, st in ctx.indices_stats.items()
+                      if str(nm) == ".watches" or str(nm).startswith(".watches-"))
     # Stopping Watcher clears the per-node watch counts, so a stopped Watcher normally reports 0 watches: rate it on the flag.
     if ws.get("manually_stopped") is True:
         out.append(Finding(
@@ -626,12 +652,15 @@ def r_watcher_autoscaling_rollup(ctx):
             observed=(T("rules.deep.r_watcher_autoscaling_rollup.02") % watches) if watches
             else T("rules.deep.r_watcher_autoscaling_rollup.19"),
             impact=T("rules.deep.r_watcher_autoscaling_rollup.03"), recommend=T("rules.deep.r_watcher_autoscaling_rollup.04"),
-            source="watcher_stack.json"))
+            source="commercial/watcher_stack.json"))
     rows = []
     for pname, p in items(ctx.autoscaling.get("policies")):
         rs, rm = num(p, "required_capacity", "total", "storage"), num(p, "required_capacity", "total", "memory")
         cs, cm = num(p, "current_capacity", "total", "storage"), num(p, "current_capacity", "total", "memory")
-        if (rs > cs > 0) or (rm > cm > 0):          # storage and memory are compared separately
+        if not isinstance(p.get("current_capacity"), dict):
+            continue        # null current capacity: ES could not compute it accurately
+        # storage and memory are compared separately; a tier with no node yet has a current capacity of 0
+        if (rs > cs) or (rm > cm):
             rows.append([pname, fmt_bytes(num(p, "current_capacity", "total", "storage")),
                          fmt_bytes(num(p, "required_capacity", "total", "storage")),
                          fmt_bytes(num(p, "current_capacity", "total", "memory")),
@@ -643,16 +672,18 @@ def r_watcher_autoscaling_rollup(ctx):
             impact=T("rules.deep.r_watcher_autoscaling_rollup.07"),
             recommend=T("rules.deep.r_watcher_autoscaling_rollup.08"),
             evidence=table([T("rules.deep.r_watcher_autoscaling_rollup.09"), T("rules.deep.r_watcher_autoscaling_rollup.10"), T("rules.deep.r_watcher_autoscaling_rollup.11"), T("rules.deep.r_watcher_autoscaling_rollup.12"), T("rules.deep.r_watcher_autoscaling_rollup.13")], rows),
-            source="autoscaling_capacity.json"))
+            source="commercial/autoscaling_capacity.json"))
     jobs = dicts(ctx.rollup_jobs.get("jobs"))
     if jobs:
+        dep = not ((0, 0, 0) < ctx.version_tuple < (8, 11, 0))
         out.append(Finding(
-            "OPS-006", OPS, Severity.INFO, T("rules.deep.r_watcher_autoscaling_rollup.14"),
+            "OPS-006", OPS, Severity.INFO,
+            T("rules.deep.r_watcher_autoscaling_rollup.14") if dep else T("rules.deep.r_watcher_autoscaling_rollup.20"),
             observed=T("rules.deep.r_watcher_autoscaling_rollup.15") % len(jobs),
-            impact=T("rules.deep.r_watcher_autoscaling_rollup.16"),
+            impact=T("rules.deep.r_watcher_autoscaling_rollup.16") if dep else T("rules.deep.r_watcher_autoscaling_rollup.21"),
             recommend=T("rules.deep.r_watcher_autoscaling_rollup.17"),
             evidence=table(["job", T("rules.deep.r_watcher_autoscaling_rollup.18")], [[dig(j, "config", "id"), dig(j, "status", "job_state")] for j in jobs]),
-            source="rollup_jobs.json"))
+            source="commercial/rollup_jobs.json"))
     return out
 
 
@@ -664,7 +695,8 @@ def r_disk_io_utilization(ctx):
     Linux prints a device's io_ticks as an unsigned 32-bit millisecond counter (/proc/diskstats), so it wraps about every 49.7 days and
     ES, which subtracts the value seen at node start, then reports a negative delta. When the uptime is shorter than one wrap
     (2^32 ms), adding 2^32 to a negative device delta gives the real value. A result still below 0 or above 100 percent does not line up
-    with the JVM uptime and is shown as "cannot be determined", not rated.
+    with the JVM uptime and is shown as "cannot be determined", not rated. After one wrap or more of uptime a positive device delta
+    may also be that value plus 2^32, so it is "cannot be determined" too. The average divides by the devices that have a value.
     On Elastic Cloud / ECE / ECK the device can be shared by other containers on the same host, so the value is the device's, not
     only this node's; the text says so.
     """
@@ -675,23 +707,30 @@ def r_disk_io_utilization(ctx):
         up = n.uptime_ms or 0
         devices = dicts(io.get("devices"))
         devs = max(1, len(devices))
+        ambiguous = False
         if devices and all(d.get("io_time_in_millis") is not None for d in devices):
-            t = 0
+            t, used = 0, 0
             for d in devices:
                 v = num(d, "io_time_in_millis")
                 if v == -1:
                     continue           # ES reports -1 for a device without a value at node start (left out of its own total)
                 if v < 0 and 0 < up < wrap and 0 <= v + wrap <= up:
                     v += wrap          # 32-bit io_ticks wrapped once since the node started
+                if up >= wrap and v >= 0 and v + wrap <= up:
+                    ambiguous = True   # after 49.7 days a positive delta may also be that value plus 2^32
                 t += v
+                used += 1
+            devs = max(1, used)
         else:
             t = num(io, "total", "io_time_in_millis")
             if t < 0 and devs == 1 and 0 < up < wrap and 0 <= t + wrap <= up:
                 t += wrap
+            if devs == 1 and up >= wrap and t >= 0 and t + wrap <= up:
+                ambiguous = True
         if not t or not up:
             continue
         util = t / float(up) / devs * 100.0
-        valid = 0 <= util <= 100
+        valid = 0 <= util <= 100 and not ambiguous
         rows.append([n.name, ctx.tier_of(n) or "-", ("%.1f%%" % util) if valid else T("rules.deep.r_disk_io_utilization.11"),
                      fmt_num(num(io, "total", "read_operations")), fmt_num(num(io, "total", "write_operations")), devs])
         if valid and util >= ctx.t["disk_io_busy_pct_warn"]:
@@ -730,7 +769,7 @@ def r_search_usage(ctx):
 
     Expensive types (EXPENSIVE: nested, parent-child join, script, wildcard, regexp, fuzzy, prefix, query_string,
     runtime_mappings, script_fields) with a usage share >= search_expensive_share_warn (%) → Warning (PERF-011); used but with a
-    low share → Info. These are counts per type, not query bodies, so which query on which index cannot be determined.
+    low share → Info. runtime_mappings counts requests that define runtime fields, used or not, so it is shown but never raises Warning. These are counts per type, not query bodies, so which query on which index cannot be determined.
     """
     su = dig(ctx.cluster_stats, "indices", "search", default={}) or {}
     total = num(su, "total")
@@ -743,12 +782,13 @@ def r_search_usage(ctx):
         if not cnt:
             continue
         share = cnt * 100.0 / total
-        rows.append([key, T("rules.deep.r_search_usage.01") if kind == "query" else T("rules.deep.r_search_usage.02"), fmt_num(cnt), "%.2f%%" % share, tr(desc)])
-        if share >= ctx.t["search_expensive_share_warn"]:
-            heavy.append("%s %.1f%%" % (key, share))
+        rows.append([key, T("rules.deep.r_search_usage.01") if kind == "query" else T("rules.deep.r_search_usage.02"), fmt_num(cnt), "%.2f%%" % share, tr(desc), cnt])
+        if share >= ctx.t["search_expensive_share_warn"] and key != "runtime_mappings":
+            heavy.append("%s %.1f%%" % (key, share))     # runtime_mappings alone is not rated: defining a runtime field is not using it
     if not rows:
         return []
-    rows.sort(key=lambda r: -float(r[3].rstrip("%")))
+    rows.sort(key=lambda r: -r[5])
+    rows = [r[:5] for r in rows]
     top = sorted(((k, v) for k, v in items(q)), key=lambda kv: -num(kv[1]))[:8]
     return [Finding(
         "PERF-011", PERF, Severity.WARNING if heavy else Severity.INFO,
@@ -772,14 +812,22 @@ D_ILM_FM = ("Force merge (ILM)",
 _PHASE_TIER = {"hot": "hot", "warm": "warm", "cold": "cold"}
 
 
-def _policy_indices(ctx, body):
+def _policy_indices(ctx, body, pname=None):
+    """Indices that run the policy: in_use_by.indices plus the backing indices of in_use_by.data_streams whose own policy is this
+    one (a backing index can run another policy after a template change); without a known policy the data stream rule decides."""
     names = [i for i in strs(dig(body, "in_use_by", "indices")) if not ctx.is_system_index(i)]
     for ds_name in strs(dig(body, "in_use_by", "data_streams")):
         if ds_name.startswith("."):
             continue
         for ds in dicts(ctx.data_streams):
             if ds.get("name") == ds_name:
-                names += [i.get("index_name") for i in dicts(ds.get("indices")) if i.get("index_name")]
+                for i in dicts(ds.get("indices")):
+                    ix = i.get("index_name")
+                    if not ix:
+                        continue
+                    own = ctx.ilm_policy_of(ix) if pname else None
+                    if not own or own == pname:
+                        names.append(ix)
     return set(names)
 
 
@@ -826,11 +874,12 @@ def r_forcemerge(ctx):
     """ILM force merge to a single segment, disk headroom and progress.
 
     Official: force merge with max_num_segments=1 may need free space up to three times the shard size, and the force_merge
-    thread pool has max(1, allocated processors / 8) threads per node. Merges to one segment are forcemerge with max_num_segments=1
+    thread pool has max(1, allocated processors / 8) threads per node on current versions (one on older ones; the reported size is used). Merges to one segment are forcemerge with max_num_segments=1
     (run in its own phase) and searchable_snapshot with force_merge_index (default true, run in the tier of the preceding phase,
     a no-op after an earlier one-segment merge). A policy in use with such a merge where a node of the tier that runs it
     (hot/warm/cold; all non-frozen data nodes when the tier is not used) has less free disk
-    than forcemerge_free_space_factor x the largest primary shard of the indices using the policy → Warning (ILM-008).
+    than forcemerge_free_space_factor x the largest primary shard of the indices running the policy (backing indices that now run another
+    policy are left out) → Warning (ILM-008).
     ilm_explain entries that have been in the forcemerge action (or the forcemerge step of searchable_snapshot) for
     forcemerge_stuck_hours or more at collection time → Info (ILM-009),
     with the force_merge pool size and queue of the data nodes. Partially mounted indices are skipped (size is the cache size).
@@ -848,7 +897,7 @@ def r_forcemerge(ctx):
     for pname, body in items(ctx.ilm_policies):
         if not isinstance(body, dict):
             continue
-        users = _policy_indices(ctx, body)
+        users = _policy_indices(ctx, body, pname)
         if not users:
             continue
         largest = max([biggest.get(i, 0) for i in users] or [0])
@@ -880,7 +929,7 @@ def r_forcemerge(ctx):
             evidence=table([T("rules.deep.r_ilm_policies.06"), T("rules.deep.r_forcemerge.15"), "tier",
                             T("rules.deep.r_forcemerge.06"), T("rules.deep.r_forcemerge.07"),
                             T("rules.deep.r_forcemerge.08"), T("rules.deep.r_forcemerge.09")], rows[: ctx.t["top_n"]]),
-            refs=[D_FORCEMERGE, D_ILM_FM], source="ilm_policies.json / nodes_stats.json / indices.json"))
+            refs=[D_FORCEMERGE, D_ILM_FM], source="commercial/ilm_policies.json / nodes_stats.json / indices.json"))
 
     now = ctx.collection_time
     stuck = []

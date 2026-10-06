@@ -18,7 +18,7 @@ DOC_SIZE = (N_("rules.cluster._.03"),
 
 def r_cluster_status(ctx):
     """Reports cluster_health.status as is. red → Critical, yellow → Warning, green → OK."""
-    st = (ctx.health.get("status") or "").lower()
+    st = str(ctx.health.get("status") or "").lower()
     active_pct = ctx.health.get("active_shards_percent_as_number")
     ev = table(
         [T("rules.cluster.r_cluster_status.01"), T("rules.cluster.r_cluster_status.02")],
@@ -42,11 +42,18 @@ def r_cluster_status(ctx):
                         recommend=T("rules.cluster.r_cluster_status.07"),
                         evidence=ev, refs=[DOC_ALLOC], source="cluster_health.json")]
     if st == "yellow":
+        # ES keeps a new, shrunk or restored primary that is still being created at yellow (ClusterShardHealth), so unassigned
+        # shards can include primaries here
+        up = _unassigned_primaries(ctx) or 0
+        un = num(ctx.health, "unassigned_shards")
         return [Finding("CLU-001", CAT, Severity.WARNING, T("rules.cluster.r_cluster_status.08"),
-                        observed=T("rules.cluster.r_cluster_status.09") % ctx.health.get("unassigned_shards"),
-                        impact=T("rules.cluster.r_cluster_status.10"),
+                        observed=T("rules.cluster.r_cluster_status.09") % fmt_num(max(0, un - up))
+                        + ((T("rules.cluster.r_cluster_status.16") % up) if up else ""),
+                        impact=T("rules.cluster.r_cluster_status.10") if not up else T("rules.cluster.r_cluster_status.17"),
                         recommend=T("rules.cluster.r_cluster_status.11"),
                         evidence=ev, refs=[DOC_ALLOC], source="cluster_health.json")]
+    if st != "green":
+        return []           # status missing or unreadable: nothing to say
     return [Finding("CLU-001", CAT, Severity.OK, T("rules.cluster.r_cluster_status.12"),
                     observed=T("rules.cluster.r_cluster_status.13"),
                     evidence=ev, source="cluster_health.json")]
@@ -135,7 +142,8 @@ def r_internal_health(ctx):
             bad.append((name, ind))
     if not bad:
         return [Finding("CLU-004", CAT, Severity.OK, T("rules.cluster.r_internal_health.01"),
-                        observed=T("rules.cluster.r_internal_health.02") % len(inds),
+                        observed=T("rules.cluster.r_internal_health.02")
+                        % len([1 for _k, i in items(inds) if isinstance(i, dict) and str(i.get("status")).lower() == "green"]),
                         evidence=table(["indicator", "status", "symptom"], rows),
                         source="internal_health.json")]
     out = []
@@ -183,6 +191,8 @@ def r_master_quorum(ctx):
     """Number of master-eligible nodes (roles include master, voting_only included). 0 → Critical; 1 in a multi-node cluster → Critical,
     and so is a single node that can be elected when the others are voting_only (official: a voting-only node never acts as the elected
     master); 2 → Warning (losing one node loses quorum; official guidance: with 2 or fewer master-eligible nodes, all of them must stay up). An even count (4 or more) is not rated, because ES automatically leaves one node out of the voting configuration (CLU-006). No dedicated master and >= dedicated_master_data_nodes data nodes → Warning (CLU-007). The official docs only say dedicated masters make sense once a cluster has more than a handful of nodes; the node count is a field guideline."""
+    if not ctx.nodes:
+        return []           # node data missing or unreadable: a running cluster always has a master
     electable = [n for n in ctx.master_nodes if not n.is_voting_only]
     total = len(ctx.master_nodes)
     out = []
@@ -358,7 +368,11 @@ def r_shard_capacity(ctx):
         max_per_node = 1000
     frozen_only = set(n.name for n in ctx.data_nodes
                       if [r for r in n.roles if r.startswith("data")] == ["data_frozen"])
-    data_nodes = len([n for n in ctx.data_nodes if n.name not in frozen_only]) or len(ctx.nodes)
+    data_nodes = len([n for n in ctx.data_nodes if n.name not in frozen_only])
+    if not data_nodes:
+        if ctx.data_nodes:
+            return []       # only dedicated frozen data nodes: ES skips the normal shard limit check (ShardLimitValidator)
+        data_nodes = len(ctx.nodes)
     limit = max_per_node * data_nodes
     frozen_shards = len([sh for sh in ctx.shards if ctx.is_partial_mount(sh.get("index"))])
     closed_shards = 0
@@ -409,8 +423,9 @@ PERSISTENT_TASK_HINTS = ("[c]", "health-node", "geoip-downloader", "poller",
 
 
 def _is_persistent_task(action, desc):
-    blob = "%s %s" % (action or "", desc or "")
-    return any(h in blob for h in PERSISTENT_TASK_HINTS)
+    """Matched on the action only (persistent task actions end in "[c]" or name the feature): a description holds index names,
+    which can contain words such as "monitoring"."""
+    return any(h in str(action or "") for h in PERSISTENT_TASK_HINTS)
 
 
 WRITE_TASK_PREFIXES = ("indices:data/write/bulk", "indices:data/write/reindex", "indices:data/write/update/byquery",

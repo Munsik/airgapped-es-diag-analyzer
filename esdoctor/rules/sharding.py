@@ -106,11 +106,13 @@ def r_datastream_small_rollover(ctx):
 
     Excluding the write index and partial (frozen) mounted backing indices (whose size is the cache size), if there are
     ds_min_backing_indices or more backing indices and the median size per primary shard is
-    below ds_small_backing_shard_gb, the data stream is listed. When its rollover has no size condition (max_primary_shard_size or
-    max_size in the ILM policy) the cause is rollover on age alone → Warning. When a size condition exists (the built-in
-    logs@lifecycle and metrics@lifecycle policies, and data stream lifecycle, roll over at 50GB per primary shard) the stream simply
-    receives little data → Info, and the advice is a longer max_age or fewer data streams. Data streams Elasticsearch manages for
-    itself (ilm-history-*) are skipped.
+    below ds_small_backing_shard_gb, the data stream is listed. When its ILM rollover has no size or document condition
+    (max_primary_shard_size, max_size, max_docs, max_primary_shard_docs) the cause is rollover on age alone → Warning. When such a
+    condition exists (the built-in logs@lifecycle and metrics@lifecycle policies, and data stream lifecycle, roll over at 50GB per
+    primary shard) the stream simply receives little data → Info, and the advice is a longer max_age or fewer data streams. A stream
+    whose next generation is managed by data stream lifecycle is judged by the lifecycle; when the policy or its rollover action is
+    not in the bundle, or the stream has neither ILM nor lifecycle, the cause is shown as unknown or no automatic rollover (Info).
+    Data streams Elasticsearch manages for itself (ilm-history-*) are skipped.
     """
     rows = []
     for ds in ctx.data_streams or []:
@@ -118,6 +120,7 @@ def r_datastream_small_rollover(ctx):
         if not name or str(name).startswith(".") or ctx.es_managed_stream(ds):
             continue
         idxs = [i.get("index_name") for i in dicts(ds.get("indices"))][:-1]   # exclude the write index
+        n_backing = len(idxs) + 1
         sizes = []
         for ix in idxs:
             if ctx.is_partial_mount(ix):
@@ -132,18 +135,23 @@ def r_datastream_small_rollover(ctx):
         med = sizes[len(sizes) // 2]
         if med < ctx.t["ds_small_backing_shard_gb"] * GB:
             pol = ds.get("ilm_policy")
-            if pol:
+            lc = ds.get("lifecycle")
+            dlm = "lifecycle" in str(ds.get("next_generation_managed_by") or "").lower() \
+                and "index lifecycle" not in str(ds.get("next_generation_managed_by") or "").lower()
+            if pol and not dlm:
                 ro = ctx.rollover_conditions(pol)
-                sized = bool(ro.get("max_primary_shard_size") or ro.get("max_size"))
+                if not ro:
+                    label = T("rules.sharding.r_datastream_small_rollover.13")    # policy or rollover action not in the bundle
+                elif any(ro.get(k) for k in ("max_primary_shard_size", "max_size", "max_docs", "max_primary_shard_docs")):
+                    label = T("rules.sharding.r_datastream_small_rollover.10")
+                else:
+                    label = T("rules.sharding.r_datastream_small_rollover.11")
+            elif isinstance(lc, dict) and str(lc.get("enabled", True)).lower() != "false":
+                label = T("rules.sharding.r_datastream_small_rollover.10")    # data stream lifecycle: 50GB per primary shard
             else:
-                # data stream lifecycle rolls over at 50GB per primary shard by default; a stream with neither ILM nor an enabled
-                # lifecycle never rolls over on its own
-                lc = ds.get("lifecycle")
-                sized = isinstance(lc, dict) and str(lc.get("enabled", True)).lower() != "false"
-            rows.append([name, len(sizes) + 1, fmt_bytes(med), pol or "-",
-                         fmt_num(sum(ctx.shard_count(ix) for ix in idxs)),
-                         T("rules.sharding.r_datastream_small_rollover.10") if sized
-                         else T("rules.sharding.r_datastream_small_rollover.11")])
+                label = T("rules.sharding.r_datastream_small_rollover.14")    # neither ILM nor lifecycle: no automatic rollover
+            rows.append([name, n_backing, fmt_bytes(med), pol or "-",
+                         fmt_num(sum(ctx.shard_count(ix) for ix in idxs)), label])
     if not rows:
         return []
     age_only = [r for r in rows if r[5] == T("rules.sharding.r_datastream_small_rollover.11")]
@@ -156,13 +164,14 @@ def r_datastream_small_rollover(ctx):
         recommend=T("rules.sharding.r_datastream_small_rollover.04"),
         evidence=table(["data stream", T("rules.sharding.r_datastream_small_rollover.05"), T("rules.sharding.r_datastream_small_rollover.06"), T("rules.sharding.r_datastream_small_rollover.07"), T("rules.sharding.r_datastream_small_rollover.08"), T("rules.sharding.r_datastream_small_rollover.09")],
                        rows[: ctx.t["top_n"]]),
-        refs=[D_SHARDS], source="data_stream.json / indices_stats.json")]
+        refs=[D_SHARDS], source="commercial/data_stream.json / indices_stats.json")]
 
 
 def r_shard_size_distribution(ctx):
     """Reports the size distribution of user index primary shards (<1GB / 1-10GB / 10-50GB / 50GB+) as plain facts.
 
-    If user primaries with data (at least 1 document; searchable snapshot mounts and write indices excluded) number oversharding_min_shards or more,
+    If user primaries with data (at least 1 document; partially mounted indices, whose size is the cache size, and write indices
+    excluded; fully mounted searchable snapshots count) number oversharding_min_shards or more,
     the share under 10GB is >= oversharding_small_share_warn, and the total user data is at least oversharding_min_data_gb,
     it is a Warning for a 'cluster-wide oversharding trend'. If the conditions are not met, only the distribution is shown as Info.
     """
@@ -173,8 +182,8 @@ def r_shard_size_distribution(ctx):
         if (s.get("prirep") or "").lower() != "p":
             continue
         idx = s.get("index")
-        if ctx.is_system_index(idx) or idx in skip or ctx.is_searchable_snapshot(idx):
-            continue
+        if ctx.is_system_index(idx) or idx in skip or ctx.is_partial_mount(idx):
+            continue        # partial mounts report the cache size; fully mounted indices hold real data and shard slots
         try:
             docs = int(str(num(s, "docs")))
             b = parse_bytes(s.get("store")) or 0      # handles both a byte count and unit notation such as 1.2gb

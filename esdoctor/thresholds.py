@@ -44,6 +44,7 @@ DEFAULTS = {
     "frozen_cache_turnover_per_day": 1.0,            # [Tool] Frozen shared cache evictions per day, as a multiple of the region count (FRZ-001)
     "shard_balance_min_diff": 10,                    # [Tool] Minimum shard count difference between nodes of a tier before the spread is reported (SHD-006)
     "breaker_tripped_warn": 1,                       # [Tool] Breaker trip count (1 = any history)
+    "breaker_delta_crit": 10,                        # [Tool] Breaker trips between two bundles that make DIF-007 Critical
     "breaker_used_pct_warn": 70,                     # [Tool] Breaker estimated / limit (%) for request, fielddata, in_flight_requests etc.
 
     # --- Shards / indices ---

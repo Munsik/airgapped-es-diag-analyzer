@@ -117,6 +117,10 @@ class Result(object):
     ROOT_GROUPS = [
         ["CLU-001", "CLU-002", "CLU-003", "CLU-004.shards_availability", "IDX-002"],   # unassigned shards
         ["DISK-001", "DISK-002", "DISK-003", "CLU-004.disk"],                          # disk watermarks
+        ["DIF-005", "TP-001"],              # rejections: delta between bundles and cumulative count
+        ["DIF-007", "BRK-001"],             # breaker trips: delta and cumulative count
+        ["DIF-002", "OS-006"],              # restart: between bundles and recent uptime
+        ["DIF-008", "DISK-004"],            # disk growth projection and nearing the low watermark
     ]
 
     def priority(self):
@@ -175,6 +179,14 @@ class Result(object):
                 "load_per_cpu": round(n.load15 / n.processors, 2)
                                 if (n.load15 and n.processors) else None,
                 "shard_count": shard_count.get(n.name, 0),
+                # values the node matrix colours by, the same way the rules rate them
+                "mem_pressure_num": round(n.memory_pressure_pct, 1) if n.memory_pressure_pct is not None else None,
+                "load_rated": ctx.load_high(n) or not (n.load15 and n.processors),
+                "disk_low": None if ctx.is_frozen_only(n) or not n.disk_path_total
+                            else ctx.watermark_used_pct("low", n.disk_path_total),
+                "disk_flood": None if ctx.is_frozen_only(n) or not n.disk_path_total
+                              else ctx.watermark_used_pct("flood_stage", n.disk_path_total),
+                "tier": ctx.tier_of(n) if n.is_data else None,
                 "is_data": n.is_data,
                 "is_master": n.is_master_eligible,
             })
@@ -336,11 +348,13 @@ def analyze(path, thresholds=None, only=None, skip_ok=False, baseline=None, bund
         if not earlier:
             raise ValueError(T("engine.analyze.03") % ", ".join(baselines))
         base_ctx = earlier[-1]
-        base_findings, _ = _run_rules(base_ctx, only, True)
+        base_findings, base_errors = _run_rules(base_ctx, only, True)
+        # a rule that did not run (input missing, or it failed) on either bundle cannot tell new from resolved
+        not_run = [s["rule"] for s in (getattr(ctx, "skipped_rules", None) or [])] + [e["rule"] for e in errors]
+        base_not_run = [s["rule"] for s in (getattr(base_ctx, "skipped_rules", None) or [])] + [e["rule"] for e in base_errors]
         try:
             diff_summary, diff_findings = diff_mod.compare(
-                base_ctx, ctx, t, base_findings, findings, errors,
-                [s["rule"] for s in (getattr(ctx, "skipped_rules", None) or [])])
+                base_ctx, ctx, t, base_findings, findings, errors, not_run, base_not_run)
         except Exception:
             errors.append({"rule": "diff.compare",
                            "error": traceback.format_exc(limit=3)})

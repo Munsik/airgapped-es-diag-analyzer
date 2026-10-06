@@ -282,10 +282,13 @@ KB = {
         risk=("INFO", "INFO"), doc="ml"),
     "xpack.ml.use_auto_machine_memory_percent": S(
         "false", "dynamic", "cluster", N_("settings_kb._.243"),
-        change=N_("settings_kb._.244"), risk=None, doc="ml", basis="source"),
+        change=N_("settings_kb._.244"), risk=None, doc="ml"),
     "xpack.ml.max_model_memory_limit": S(
         "0b", "dynamic", "cluster", N_("settings_kb._.245"),
-        change=N_("settings_kb._.246"), risk=None, doc="ml", basis="source"),
+        change=N_("settings_kb._.246"), risk=None, doc="ml"),
+    "logger.level": S(
+        "INFO", "static", "node", N_("settings_kb._.249"),
+        change=N_("settings_kb._.250"), risk="INFO", doc="misc", basis="source"),
     "xpack.mapping.synthetic_source_fallback_to_stored_source": S(
         "false", "dynamic", "cluster", N_("settings_kb._.247"),
         change=N_("settings_kb._.248"), risk=None, doc="misc", basis="source"),
@@ -306,7 +309,7 @@ KB = {
         change=N_("settings_kb._.122"),
         risk="INFO", doc="fdcache"),
     "indices.breaker.total.use_real_memory": S(
-        "true", "static", "node", N_("settings_kb._.123"),
+        "true", "dynamic", "node", N_("settings_kb._.123"),
         change=N_("settings_kb._.124"),
         risk="WARNING", doc="breaker"),
     "thread_pool.write.queue_size": S(
@@ -531,8 +534,11 @@ def _num(v):
         return None
 
 
-AUTO_DEFAULT = ("thread_pool.write.size", "thread_pool.search.size", "thread_pool.search.queue_size",
-                "node.processors")
+AUTO_DEFAULT = ("thread_pool.write.size", "thread_pool.search.size", "node.processors")
+# Settings whose value may be written as a ratio (0.85) instead of a percentage (85%): RatioValue / RelativeByteSizeValue
+RATIO_OK = ("cluster.routing.allocation.disk.watermark.low", "cluster.routing.allocation.disk.watermark.high",
+            "cluster.routing.allocation.disk.watermark.flood_stage",
+            "cluster.routing.allocation.disk.watermark.flood_stage.frozen")
 UNBOUNDED = ("-1", "-1b", "unbounded")
 
 
@@ -545,7 +551,8 @@ def _recovery_default(node):
     data = [r for r in (node.roles or []) if r.startswith("data")]
     if not data or any(r not in ("data_cold", "data_frozen") for r in data):
         return "40mb"
-    ram = node.ram_total or 0
+    ram = (((getattr(node, "stats", None) or {}).get("os") or {}).get("mem") or {}).get("total_in_bytes") \
+        or node.ram_total or 0      # OsProbe total memory (node stats os.mem.total_in_bytes)
     for limit, val in ((4, "40mb"), (8, "60mb"), (16, "90mb"), (32, "125mb")):
         if ram <= limit * _GIB:
             return val
@@ -561,16 +568,21 @@ def default_for(key, ctx=None, node=None, index=None):
     """Default that depends on the version, the node or the index, or None to use the KB value.
 
     thread_pool.write.queue_size: max(10000, allocated processors x 750) from 9.2 (10000 before).
+    thread_pool.search.queue_size: search threads x 1000 from 9.0 (search threads = allocated processors x 3 / 2 + 1), 1000 before.
+    action.destructive_requires_name and transport.compress: false before 8.0.
+    node_concurrent_incoming/outgoing_recoveries: the current node_concurrent_recoveries value (ThrottlingAllocationDecider fallback).
     index.mapping.nested_fields.limit: 100 for indices created on index version 9_050_0_00 (9.3) or later, 50 before.
     indices.breaker.total.limit: 95% with use_real_memory (default), 70% when a node turns it off.
     indices.recovery.max_bytes_per_sec: per node role and memory (see _recovery_default).
     index.codec: best_compression for index modes that default to it (BEST_COMPRESSION_MODES), default otherwise.
     index.merge.policy.*: 9.5 changed segments_per_tier 10 → 8, floor_segment 2mb → 16mb and max_merge_at_once 10 → 16.
-    max_merged_segment is 100gb for time-based indices (mapping with an indexed @timestamp date field, from 8.11; data stream
+    max_merged_segment is 100gb for time-based indices (mapping with an indexed @timestamp date field, from 8.8; data stream
     membership when the mapping is not in the bundle) and 5gb otherwise.
     cluster.routing.allocation.allow_rebalance: always from 8.16 with the desired_balance allocator, indices_all_active before
     8.16 or when a node sets cluster.routing.allocation.type: balanced.
     index.queries.cache.enabled: false for the columnar and logsdb_columnar modes (9.5), true otherwise.
+    index.mapping.total_fields.ignore_dynamic_beyond_limit: true for logsdb and logsdb_columnar indices created on index version
+    8_519_0_00 up to (not including) 9_000_0_00, or 9_001_0_00 and later (MapperService); false otherwise.
     All taken from the Elasticsearch source of the matching versions.
     """
     try:
@@ -579,6 +591,17 @@ def default_for(key, ctx=None, node=None, index=None):
                 alloc = int(node.info.get("os", {}).get("allocated_processors") or node.processors or 0)
                 return str(max(10000, alloc * 750))
             return "10000"
+        if key == "thread_pool.search.queue_size" and ctx is not None and node is not None:
+            if ctx.version_tuple >= (9, 0, 0):
+                alloc = int(node.info.get("os", {}).get("allocated_processors") or node.processors or 0)
+                return str((alloc * 3 // 2 + 1) * 1000) if alloc else None
+            return "1000"
+        if key in ("action.destructive_requires_name", "transport.compress") and ctx is not None \
+                and ctx.version_tuple and ctx.version_tuple < (8, 0, 0):
+            return "false"
+        if key in ("cluster.routing.allocation.node_concurrent_incoming_recoveries",
+                   "cluster.routing.allocation.node_concurrent_outgoing_recoveries") and ctx is not None:
+            return str(ctx.setting("cluster.routing.allocation.node_concurrent_recoveries", "2"))
         if key == "index.mapping.nested_fields.limit" and ctx is not None and index is not None:
             created = ctx.index_setting(index, "index.version.created")
             if created is not None:
@@ -596,6 +619,12 @@ def default_for(key, ctx=None, node=None, index=None):
         if key == "cluster.routing.allocation.allow_rebalance" and ctx is not None:
             balanced = any(str(n.setting("cluster.routing.allocation.type", "")).lower() == "balanced" for n in ctx.nodes)
             return "indices_all_active" if (ctx.version_tuple < (8, 16, 0) or balanced) else "always"
+        if key == "index.mapping.total_fields.ignore_dynamic_beyond_limit" and ctx is not None and index is not None:
+            mode = str(ctx.index_mode(index) or "").lower()
+            if mode not in ("logsdb", "logsdb_columnar"):
+                return "false"
+            v = int(str(ctx.index_setting(index, "index.version.created")))
+            return "true" if (8519000 <= v < 9000000 or v >= 9001000) else "false"
         if key == "index.queries.cache.enabled" and ctx is not None and index is not None:
             mode = str(ctx.index_mode(index) or "standard").lower()
             return "false" if mode in ("columnar", "logsdb_columnar") else "true"
@@ -615,7 +644,7 @@ def default_for(key, ctx=None, node=None, index=None):
                 if hasattr(ctx, "time_based"):
                     timed = ctx.time_based(index)
                 else:
-                    timed = ctx.version_tuple >= (8, 11, 0) and bool(ctx.data_stream_of(index))
+                    timed = ctx.version_tuple >= (8, 8, 0) and bool(ctx.data_stream_of(index))
                 return "100gb" if timed else "5gb"
     except (TypeError, ValueError, AttributeError):
         return None
@@ -633,7 +662,7 @@ ZERO_UNLIMITED = frozenset([
 def compare(key, value, es_default=None, default=None):
     """(changed, direction, spec, default_used, default_source)
 
-    direction: "up" | "down" | "change" | None
+    direction: "up" | "down" | "change" | "kind" (set in another form than the default, e.g. bytes for a percentage) | None
     default_source: "official docs" | "bundle (reported by ES)" | "not registered"
     default: a context-dependent default from default_for(), used instead of the KB value when given.
     """
@@ -656,6 +685,8 @@ def compare(key, value, es_default=None, default=None):
     if cur.lower() == dft.lower():
         return False, None, spec, default, source
     a, b = _num(cur), _num(dft.split("(")[0])
+    if key in RATIO_OK and a and b and a[0] == "num" and b[0] == "pct" and 0.0 < a[1] <= 1.0:
+        a = ("pct", round(a[1] * 100, 6))     # 0.85 = 85% (RatioValue)
     if a and b and a[0] == "num" and b[0] in ("time", "bytes") and a[1] in (0.0, -1.0):
         a = (b[0], a[1])           # a unitless 0 or -1 on a time or byte setting, compared as the same kind
     if dft.split("(")[0].strip().lower() == cur.lower():
@@ -668,6 +699,8 @@ def compare(key, value, es_default=None, default=None):
         if a[0] in ("time", "bytes") and (a[1] == -1.0 or (a[1] == 0.0 and key in ZERO_UNLIMITED)):
             return True, "change", spec, default, source
         return True, ("up" if a[1] > b[1] else "down"), spec, default, source
+    if a and b and a[0] != b[0] and spec is not None and (spec.get("up") or spec.get("down")):
+        return True, "kind", spec, default, source     # e.g. an absolute watermark against a percentage default: no direction
     return True, "change", spec, default, source
 
 
@@ -678,6 +711,8 @@ def effect_of(spec, direction):
         return "↑ " + spec["up"]
     if direction == "down" and spec.get("down"):
         return "↓ " + spec["down"]
+    if direction == "kind":
+        return T("settings_kb.effect_of.02")
     return spec.get("change") or spec.get("up") or spec.get("down") or ""
 
 
@@ -685,6 +720,8 @@ def risk_of(spec, direction):
     if not spec:
         return "INFO"
     r = spec.get("risk")
+    if direction == "kind":
+        return "INFO"
     if isinstance(r, tuple):
         if direction == "up":
             return r[0]

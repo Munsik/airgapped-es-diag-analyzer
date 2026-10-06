@@ -10,7 +10,7 @@ import collections
 from ..i18n import T, N_, tr
 from ..model import Finding, Severity, table
 from ..settings_kb import BEST_COMPRESSION_MODES
-from ..util import dicts, dig, fmt_bytes, fmt_num, parse_bytes, pct, num, items, strs
+from ..util import dicts, dig, fmt_bytes, fmt_num, is_network_fs, parse_bytes, pct, num, items, strs
 
 CFG = "config"
 SIZ = "shard"
@@ -76,7 +76,7 @@ def _jvm_args(n):
 def r_cluster_name(ctx):
     """Warning if cluster.name is the default 'elasticsearch'. Info if ECH/ECE/ECK is detected."""
     name = ctx.cluster_name
-    if name and str(name).lower() == "elasticsearch":
+    if name and str(name) == "elasticsearch":     # ClusterName compares case-sensitively
         sev, rec = _orch(ctx, Severity.WARNING,
                          T("rules.guidance.r_cluster_name.01"))
         return [Finding(
@@ -92,7 +92,8 @@ def r_path_settings(ctx):
 
     The concern in the official docs is archive (tar.gz/zip) installs, where an upgrade replaces $ES_HOME
     and deletes the data with it. rpm/deb already default to external paths (/var/lib, /var/log), and docker
-    mounts a volume, so neither is affected. The install type is determined from build_type.
+    mounts a volume, so neither is affected. The install type is determined from build_type. An unset path.data means
+    $ES_HOME/data, and zip (Windows) paths are compared without regard to separators or case.
     """
     out, rows, in_home, multi = [], [], [], []
     for n in ctx.nodes:
@@ -106,11 +107,15 @@ def r_path_settings(ctx):
             data_list = [x.strip() for x in data.split(",") if x.strip()]
         if len(data_list) > 1:
             multi.append(n.name)
-        if build not in ("tar", "zip"):
+        if build not in ("tar", "zip") or not home:
             continue
-        for pth in data_list + ([logs] if logs else []):
-            if home and isinstance(pth, str) and (pth.rstrip("/") == home.rstrip("/")
-                                                  or pth.startswith(home.rstrip("/") + "/")):
+        # Windows paths use backslashes (zip installs); an unset path.data defaults to $ES_HOME/data (Environment)
+        norm = (lambda p: str(p).replace("\\", "/").rstrip("/").lower()) if build == "zip" \
+            else (lambda p: str(p).rstrip("/"))
+        h = norm(home)
+        for pth in (data_list or [h + "/data"]) + ([logs] if logs else []):
+            p = norm(pth)
+            if p == h or p.startswith(h + "/"):
                 in_home.append(n.name)
                 break
     if in_home:
@@ -134,22 +139,28 @@ def r_path_settings(ctx):
 
 
 def r_discovery(ctx):
-    """Multi-node cluster without discovery.seed_hosts / seed_providers → Warning (CFG-004). cluster.initial_master_nodes still set → Warning (CFG-005). Actual bound transport_address is loopback or discovery.type=single-node → Warning (CFG-006). On orchestrator deployments all of these drop to Info."""
+    """Multi-node cluster without discovery.seed_hosts / seed_providers (or the 7.x discovery.zen names) → Warning (CFG-004; nodes
+    without settings in nodes.json are skipped). cluster.initial_master_nodes still set → Warning (CFG-005). Node in development
+    mode (context.dev_mode: transport bound only to loopback, or discovery.type=single-node, unless -Des.enforce.bootstrap.checks=true)
+    → Warning (CFG-006). On orchestrator deployments all of these drop to Info."""
     out = []
     missing_seed, initial_left, dev_mode = [], [], []
+    only_single = True
     for n in ctx.nodes:
         seeds = n.setting("discovery.seed_hosts") or n.setting("discovery.zen.ping.unicast.hosts")
-        provider = n.setting("discovery.seed_providers")
+        provider = n.setting("discovery.seed_providers") or n.setting("discovery.zen.hosts_provider")
         single = str(n.setting("discovery.type") or "") == "single-node"
-        if len(ctx.nodes) > 1 and not seeds and not provider:
+        has_settings = bool((n.info or {}).get("settings"))     # without nodes.json settings nothing can be judged
+        if len(ctx.nodes) > 1 and has_settings and not seeds and not provider:
             missing_seed.append(n.name)
         if n.setting("cluster.initial_master_nodes"):
             initial_left.append(n.name)
         # Production mode is decided by whether the actually bound transport address is loopback.
         # The rating uses transport_address from nodes info (a fact), not the configured value.
-        ta = str(n.info.get("transport_address") or "")
-        if ta.startswith("127.") or ta.startswith("[::1]") or ta.startswith("localhost") or single:
+        if ctx.dev_mode(n):
+            ta = str(n.info.get("transport_address") or "")
             dev_mode.append("%s(%s)" % (n.name, "single-node" if single else ta))
+            only_single = only_single and single
     if missing_seed:
         sev, rec = _orch(ctx, Severity.WARNING,
                          T("rules.guidance.r_discovery.01"))
@@ -168,7 +179,7 @@ def r_discovery(ctx):
             recommend=rec, refs=[D_SETTINGS], source="nodes.json"))
     if dev_mode:
         sev, rec = _orch(ctx, Severity.WARNING,
-                         T("rules.guidance.r_discovery.08"))
+                         T("rules.guidance.r_discovery.12") if only_single else T("rules.guidance.r_discovery.08"))
         out.append(Finding(
             "CFG-006", CFG, sev, T("rules.guidance.r_discovery.09"),
             observed=T("rules.guidance.r_discovery.10") % ", ".join(dev_mode),
@@ -181,7 +192,8 @@ def _gc_logging_enabled(args):
     """For -Xlog options, a later option overrides an earlier one.
 
     Depending on the deployment type and version, '-Xlog:disable' can come before the GC logging options,
-    so its presence alone is not treated as logging being off. The check looks for file-based gc logging after the last disable.
+    so its presence alone is not treated as logging being off. The check looks for file-based gc logging after the last disable
+    (-Xlog:gc...:file=, or -Xloggc: on JDK 8).
     """
     last_disable = -1
     for i, a in enumerate(args):
@@ -190,6 +202,8 @@ def _gc_logging_enabled(args):
     for a in args[last_disable + 1:]:
         if a.startswith("-Xlog:") and "gc" in a.split(":", 2)[1] and "file=" in a:
             return True
+        if a.startswith("-Xloggc:"):
+            return True         # JDK 8 form (7.17 jvm.options: 8:-Xloggc:...)
     return False
 
 
@@ -242,8 +256,9 @@ def r_docs_per_shard(ctx):
     Rollover always runs once a shard reaches 200M documents, and ILM checks the condition every poll_interval (10m by default),
     so a rolled-over index normally ends a little above 200M. Rolled-over indices are reported only when they exceed 200M by more
     than docs_rollover_overshoot_pct (SHD-013, rollover ran late): Warning when the latest finished generation of a data stream (or an
-    index outside data streams) ended late, Info when only older generations did. Searchable snapshot mounts take no writes and are
-    rated the same way.
+    index outside data streams) ended late, Info when only older generations did. Searchable snapshot mounts of data stream backing
+    indices (in a data stream, or named .ds- after the mount prefix) take no writes and are rated the same way; other mounts never
+    rolled over and keep SHD-008.
     The write index and indices without rollover keep SHD-008. The implicit 200M rollover exists from 8.8 (ILM source), so before 8.8
     rolled-over indices also keep SHD-008.
     """
@@ -269,7 +284,9 @@ def r_docs_per_shard(ctx):
         if est >= ctx.t["docs_per_shard_crit"]:
             crit.append(row)
         elif docs >= limit:
-            if implicit and (ctx.rolled_over(idx) or ctx.is_searchable_snapshot(idx)):
+            mounted_backing = ctx.is_searchable_snapshot(idx) and (
+                ctx.stream_of(idx) is not None or str(idx).replace("partial-", "", 1).replace("restored-", "", 1).startswith(".ds-"))
+            if implicit and (ctx.rolled_over(idx) or mounted_backing):
                 if docs > late_limit:
                     ds = ctx.data_stream_of(idx)
                     late.append([idx, s.get("shard"), fmt_num(docs), "+%.1f%%" % ((docs / float(limit) - 1) * 100),
@@ -290,7 +307,7 @@ def r_docs_per_shard(ctx):
             "SHD-008", SIZ, Severity.WARNING, T("rules.guidance.r_docs_per_shard.07"),
             observed=T("rules.guidance.r_docs_per_shard.08") % (fmt_num(limit), len(warn)),
             impact=T("rules.guidance.r_docs_per_shard.09"),
-            recommend=T("rules.guidance.r_docs_per_shard.10"),
+            recommend=T("rules.guidance.r_docs_per_shard.10") if implicit else T("rules.guidance.r_docs_per_shard.17"),
             evidence=table(cols, warn[: ctx.t["top_n"]]), refs=[D_SHARDS, D_ROLLOVER], source="indices.json"))
     if late:
         late.sort(key=lambda r: -int(r[2].replace(",", "")))
@@ -568,6 +585,7 @@ def r_empty_indices(ctx):
     """Number of user indices with docs.count=0 >= empty_index_count_warn → Warning.
 
     Current write targets (data stream write index, alias write index) are excluded, because they may be empty right after a rollover.
+    Searchable snapshot mounts are excluded too: they take no writes and are removed by ILM.
     """
     rows = []
     targets = ctx.write_targets()
@@ -576,6 +594,8 @@ def r_empty_indices(ctx):
             continue        # Current write targets (e.g. a freshly rolled-over write index) are normally empty
         docs = dig(st, "primaries", "docs", "count")
         if docs == 0:
+            if ctx.is_searchable_snapshot(name):
+                continue        # mounts take no writes and age out with ILM: nothing to delete by hand
             shards = ctx.shard_count(name)
             rows.append([name, shards, fmt_bytes(dig(st, "total", "store", "size_in_bytes"))])
     if len(rows) < ctx.t["empty_index_count_warn"]:
@@ -584,7 +604,8 @@ def r_empty_indices(ctx):
     return [Finding(
         "SHD-011", SIZ, Severity.WARNING, T("rules.guidance.r_empty_indices.01"),
         observed=T("rules.guidance.r_empty_indices.02") % (len(rows), total_shards),
-        impact=T("rules.guidance.r_empty_indices.03"),
+        impact=T("rules.guidance.r_empty_indices.03") if ctx.version_tuple >= (8, 5, 0) or ctx.version_tuple == (0, 0, 0)
+        else T("rules.guidance.r_empty_indices.07"),
         recommend=T("rules.guidance.r_empty_indices.04"),
         evidence=table(["index", T("rules.guidance.r_empty_indices.05"), T("rules.guidance.r_empty_indices.06")], rows[: ctx.t["top_n"]]),
         refs=[D_SHARDS], source="indices_stats.json")]
@@ -596,7 +617,8 @@ def r_total_shards_per_node(ctx):
     Rolled-over and searchable snapshot indices take no writes, so the setting does nothing there (for data streams it belongs in the
     index template). An index with one primary is skipped: two copies of the same shard never share a node
     (SameShardAllocationDecider), so the limit cannot spread it further. index_total is cumulative, so an index is listed only when it
-    takes writes now: recent_write_load above 1e-6 (9.x stats), or else a write target or indexing at collection time.
+    takes writes now: recent_write_load above 1e-6 (9.1+ stats), or else a write target or indexing at collection time. The indexed
+    document count is taken from the primaries (the total includes replica operations).
     """
     rows = []
     for name, st in ctx.indices_stats.items():
@@ -611,7 +633,7 @@ def r_total_shards_per_node(ctx):
                 continue
         elif name not in ctx.write_targets() and not num(st, "total", "indexing", "index_current"):
             continue
-        it = num(st, "total", "indexing", "index_total")
+        it = num(st, "primaries", "indexing", "index_total") or num(st, "total", "indexing", "index_total")     # without replica ops
         if it < ctx.t["heavy_index_docs"]:
             continue
         v = ctx.index_setting(name, "index.routing.allocation.total_shards_per_node")
@@ -638,23 +660,22 @@ def r_index_buffer(ctx):
 
     indices.memory.index_buffer_size (default 10% of heap) is shared by the 'recently written (active)' shards.
     A shard with no writes for 5 minutes or more (indices.memory.shard_inactive_time, from the source) becomes inactive and gives its buffer back. The bundle cannot show directly which shards are active,
-    so only shards that are confirmed write targets (data stream write indices plus indices that were indexing at collection time) are counted.
-    A data stream write index whose recent_write_load (9.x stats, decays with a 5 minute half-life) is below 1e-6 has had no writes
-    for a long time and is left out.
+    so only shards with real write activity are counted: where the stats report recent_write_load (9.1+, decays with a 5 minute
+    half-life), a shard copy that uses at least 1% of a write thread; on older versions, indices indexing at collection time.
+    The buffer is not split evenly: IndexingMemoryController asks the largest shards to refresh only when the total goes over the
+    budget, so this is a sizing hint (Info).
     ES writes the two buffer fields of nodes info the other way round (total_indexing_buffer holds the bytes and
     total_indexing_buffer_in_bytes the readable value), so the numeric one is used.
     """
     write_idx = set()
-    for ds in ctx.data_streams or []:
-        idxs = ds.get("indices") or []
-        if idxs:
-            w = idxs[-1].get("index_name")
-            rwl = dig(ctx.indices_stats, w, "total", "indexing", "recent_write_load")
-            if rwl is None or num(rwl) > 1e-6:
-                write_idx.add(w)
     for name, st in ctx.indices_stats.items():
-        if (num(st, "total", "indexing", "index_current")) > 0:
-            write_idx.add(name)
+        rwl = dig(st, "total", "indexing", "recent_write_load")
+        if rwl is not None:
+            # 9.1+: a shard copy counts when it uses at least 1% of a write thread (recent_write_load per copy)
+            if num(rwl) / float(ctx.shard_count(name) or 1) >= 0.01:
+                write_idx.add(name)
+        elif (num(st, "total", "indexing", "index_current")) > 0:
+            write_idx.add(name)     # older versions: only indices indexing at collection time
     if not write_idx:
         return []
     active = collections.Counter()
@@ -681,7 +702,7 @@ def r_index_buffer(ctx):
         impact=T("rules.guidance.r_index_buffer.03"),
         recommend=T("rules.guidance.r_index_buffer.04"),
         evidence=table(["node", "indexing buffer", T("rules.guidance.r_index_buffer.05"), T("rules.guidance.r_index_buffer.06")], rows),
-        refs=[D_INDEX], source="nodes.json / data_stream.json / indices.json")]
+        refs=[D_INDEX], source="nodes.json / commercial/data_stream.json / indices.json")]
 
 
 def r_open_contexts(ctx):
@@ -705,9 +726,11 @@ def r_open_contexts(ctx):
 
 
 def r_search_timeout(ctx):
-    """Info if search.default_search_timeout is not set or is -1 (unlimited)."""
+    """Info if search.default_search_timeout is not set or is -1 (unlimited; 0 is an immediate timeout, not unlimited). Skipped when the bundle has no cluster settings."""
+    if not ctx.cluster_settings and not ctx.cluster_settings_defaults:
+        return []       # no settings in the bundle (missing or an error body): cannot tell
     v = ctx.setting("search.default_search_timeout")
-    if v and str(v) not in ("-1", "-1ms", "0"):
+    if v and str(v) not in ("-1", "-1ms"):
         return []
     return [Finding(
         "PERF-006", SPD, Severity.INFO, T("rules.guidance.r_search_timeout.01"),
@@ -793,12 +816,12 @@ def r_store_preload(ctx):
 
 
 def r_remote_storage(ctx):
-    """Warning if nodes_stats fs.data[].type includes nfs / cifs / smb / fuse / glusterfs / ceph."""
+    """Warning if nodes_stats fs.data[].type is a network filesystem (util.NET_FS: nfs / cifs / smb / fuse / glusterfs / ceph / lustre /
+    gpfs / beegfs / 9p; local FUSE types such as fuseblk are not counted)."""
     rows = []
     for n in ctx.nodes:
         for d in dig(n.stats, "fs", "data", default=[]) or []:
-            t = (d.get("type") or "").lower()
-            if t and any(x in t for x in ("nfs", "cifs", "smb", "fuse", "glusterfs", "ceph")):
+            if is_network_fs(d.get("type")):
                 rows.append([n.name, d.get("mount"), d.get("type"), fmt_bytes(d.get("total_in_bytes"))])
     if not rows:
         return []
@@ -912,6 +935,7 @@ def r_dynamic_mapping(ctx):
 
     Templates that Elasticsearch installs and manages itself (_meta.managed: true without a Fleet package) are skipped: users do not
     edit them. Templates whose patterns match no current index or data stream are skipped too, since they shape nothing yet.
+    A template is listed when dynamic is not set or is true and it has no dynamic_templates.
     """
     import fnmatch
     meta = dict((it.get("name"), (it.get("index_template") or {}).get("_meta") or {})
@@ -930,7 +954,7 @@ def r_dynamic_mapping(ctx):
             continue
         dyn = mappings.get("dynamic")
         has_dyn_tpl = bool(mappings.get("dynamic_templates"))
-        if dyn is None and not has_dyn_tpl:
+        if (dyn is None or str(dyn).lower() == "true") and not has_dyn_tpl:     # explicit true behaves like the default
             rows.append([name, ", ".join(patterns)[:80], T("rules.guidance.r_dynamic_mapping.01"), T("rules.guidance.r_dynamic_mapping.02")])
     if not rows:
         return []
@@ -989,27 +1013,35 @@ def _vector_stats(ctx):
             veq = num(dv, "off_heap", "total_veq_size_bytes")
             veb = num(dv, "off_heap", "total_veb_size_bytes")
             vex = num(dv, "off_heap", "total_vex_size_bytes")
+            cen = num(dv, "off_heap", "total_cenivf_size_bytes")
+            cli = num(dv, "off_heap", "total_clivf_size_bytes")
             # What must stay resident for HNSW traversal: quantized copy + graph if present, otherwise raw vectors + graph.
-            # The raw vectors (vec) are read only for rescoring on quantized indices.
-            if veq or veb or vec or vex:
+            # The raw vectors (vec) are read only for rescoring on quantized indices. DiskBBQ (IVF, 9.4+) keeps only the centroids
+            # (cenivf) resident and streams the posting lists (clivf) from disk.
+            if cen or cli:
+                need = cen + veq + veb + vex
+            elif veq or veb or vec or vex:
                 need = ((veq + veb) if (veq or veb) else vec) + vex
             else:
                 need = total or 0
             out[name] = {"bytes": total or 0, "need": need, "count": cnt,
-                         "vec": vec, "veq": veq, "veb": veb, "vex": vex}
+                         "vec": vec, "veq": veq, "veb": veb, "vex": vex, "ivf": bool(cen or cli)}
     return out
 
 
 def r_vector_memory(ctx):
-    """Per-index dense_vector off-heap (total, or primaries if total is missing). Required resident size = (veq+veb if present, otherwise vec) + vex. Sum / Σ(data node RAM - heap) >= vector_vs_fscache_pct_warn → Warning, below → Info. This is a cluster-wide estimate and does not look at the per-node distribution."""
+    """Per-index dense_vector off-heap (total, or primaries if total is missing). Required resident size = (veq+veb if present, otherwise vec) + vex;
+    for DiskBBQ (IVF) indices, cenivf + veq + veb + vex. Sum / Σ(RAM - heap of the data nodes holding shards of those indices) >= vector_vs_fscache_pct_warn → Warning,
+    below → Info. It is summed over those nodes and does not look at the per-node distribution. When every vector index is a system index the advice says so."""
     vs = _vector_stats(ctx)
     total = sum(v["need"] for v in vs.values())
     if not total:
         return []
-    # Available filesystem cache = data node RAM - heap
+    # Available filesystem cache = RAM - heap of the data nodes that hold shards of the vector indices
+    holders = set(s.get("node") for s in ctx.shards if s.get("index") in vs and s.get("node"))
     avail = 0
     rows_node = []
-    for n in ctx.data_nodes or ctx.nodes:
+    for n in [x for x in (ctx.data_nodes or ctx.nodes) if not holders or x.name in holders]:
         ram, heap = n.ram_total or 0, n.heap_max or 0
         free = max(0, ram - heap)
         avail += free
@@ -1021,20 +1053,22 @@ def r_vector_memory(ctx):
                  fmt_bytes(v["vec"]), fmt_bytes(v["veq"] + v["veb"]), fmt_bytes(v["vex"])]
                 for k, v in top])
     p = pct(total, avail)
+    sys_note = T("rules.guidance.r_vector_memory.15") if all(ctx.is_system_index(k) for k in vs) else ""
+    all_ivf = all(v.get("ivf") for k, v in vs.items() if v["need"])
     if p is not None and p >= ctx.t["vector_vs_fscache_pct_warn"]:
         return [Finding(
             "VEC-001", VEC, Severity.WARNING, T("rules.guidance.r_vector_memory.07"),
             observed=T("rules.guidance.r_vector_memory.08")
                      % (fmt_bytes(total), fmt_bytes(avail), p),
             impact=T("rules.guidance.r_vector_memory.09"),
-            recommend=T("rules.guidance.r_vector_memory.10"),
+            recommend=sys_note or (T("rules.guidance.r_vector_memory.16") if all_ivf else T("rules.guidance.r_vector_memory.10")),
             evidence=ev, refs=[D_KNN], source="indices_stats.json / nodes_stats.json")]
     return [Finding(
         "VEC-001", VEC, Severity.INFO, T("rules.guidance.r_vector_memory.11"),
         observed=T("rules.guidance.r_vector_memory.12")
                  % (fmt_bytes(total), fmt_bytes(avail), (" (%.0f%%)" % p) if p is not None else ""),
         impact=T("rules.guidance.r_vector_memory.13"),
-        recommend=T("rules.guidance.r_vector_memory.14"),
+        recommend=sys_note or T("rules.guidance.r_vector_memory.14"),
         evidence=ev, refs=[D_KNN], source="indices_stats.json")]
 
 
@@ -1042,7 +1076,8 @@ def r_vector_quantization(ctx):
     """Whether high-dimension float vectors are quantized (rated after merging components).
 
     From 8.14, a float dense_vector without index_options gets quantized HNSW by default (int8_hnsw; bbq_hnsw for 384 dimensions
-    or more from 9.1; bbq_disk from 9.4 when the license allows it). byte and bit vectors are not quantized and are not rated.
+    or more from 9.1; bbq_disk from 9.4 when the license allows it). float and bfloat16 vectors are rated; byte and bit vectors are
+    not quantized and are not rated. An unknown version is treated as the latest.
     So 'not set' is not treated as a problem on 8.14 or later; only an explicit non-quantized type (hnsw/flat) is rated (VEC-002).
     Fields with index: false (or no index parameter before 8.11, when dense_vector was not indexed by default) have no HNSW and are
     skipped, and VEC-002 is not rated below 8.12 where no quantized type exists.
@@ -1052,9 +1087,10 @@ def r_vector_quantization(ctx):
     time_series included) are skipped: the vectors are not stored in _source there.
     """
     import fnmatch
+    latest = ctx.version_tuple == (0, 0, 0)     # unknown version: treated as the latest, as in VEC-003 and DISK-007
     rate_dim = not ((0, 0, 0) < ctx.version_tuple < (8, 12, 0))
-    quant_default = ctx.version_tuple >= (8, 14, 0)
-    indexed_default = ctx.version_tuple >= (8, 11, 0)
+    quant_default = latest or ctx.version_tuple >= (8, 14, 0)
+    indexed_default = latest or ctx.version_tuple >= (8, 11, 0)
     rows_dim, rows_src = [], []
 
     def walk(props, path, tname, bucket):
@@ -1077,7 +1113,7 @@ def r_vector_quantization(ctx):
                     dims_i = int(dims) if dims else 0
                 except (TypeError, ValueError):
                     dims_i = 0
-                if rate_dim and etype == "float" and dims_i >= ctx.t["vector_dim_quantize_warn"] and not quantized:
+                if rate_dim and etype in ("float", "bfloat16") and dims_i >= ctx.t["vector_dim_quantize_warn"] and not quantized:
                     if unquantized_explicit or (missing and not quant_default):
                         rows_dim.append([tname, full, dims_i, itype or T("rules.guidance.r_vector_quantization.walk.01")])
             if f.get("properties"):
@@ -1130,18 +1166,29 @@ def r_vector_quantization(ctx):
 
 
 def r_vector_segments(ctx):
-    """For indices with vector data, primary segments / primary shards >= vector_segments_per_shard_warn → Warning."""
+    """For indices with vector data, primary segments / primary shards >= vector_segments_per_shard_warn → Warning.
+
+    The max_merged_segment column shows the effective default when it is not set (100gb for time-based indices), and the advice to
+    raise it is given only when some listed index is below 10GB."""
     vs = _vector_stats(ctx)
     if not vs:
         return []
-    rows = []
+    rows, any_small = [], False
     for name in vs:
         seg = num(ctx.indices_stats, name, "primaries", "segments", "count")
         shards = ctx.primary_count(name) or 1
         per = seg / float(shards)
         mms = ctx.index_setting(name, "index.merge.policy.max_merged_segment")
         if per >= ctx.t["vector_segments_per_shard_warn"]:
-            rows.append([name, fmt_num(seg), shards, "%.0f" % per, str(mms or T("rules.guidance.r_vector_segments.01"))])
+            if mms is None:
+                from ..settings_kb import default_for
+                mms_eff = default_for("index.merge.policy.max_merged_segment", ctx, index=name) or "5gb"
+                label = T("rules.guidance.r_vector_segments.08") % mms_eff
+            else:
+                mms_eff, label = mms, str(mms)
+            small_mms = (parse_bytes(mms_eff) or 0) < 10 * 1024 ** 3
+            any_small = any_small or small_mms
+            rows.append([name, fmt_num(seg), shards, "%.0f" % per, label])
     if not rows:
         return []
     return [Finding(
@@ -1149,7 +1196,7 @@ def r_vector_segments(ctx):
         observed=T("rules.guidance.r_vector_segments.03")
                  % (ctx.t["vector_segments_per_shard_warn"], len(rows)),
         impact=T("rules.guidance.r_vector_segments.04"),
-        recommend=T("rules.guidance.r_vector_segments.05"),
+        recommend=T("rules.guidance.r_vector_segments.05") if any_small else T("rules.guidance.r_vector_segments.09"),
         evidence=table(["index", T("rules.guidance.r_vector_segments.06"), "primary", T("rules.guidance.r_vector_segments.07"), "max_merged_segment"],
                        rows[: ctx.t["top_n"]]),
         refs=[D_KNN], source="indices_stats.json / settings.json")]

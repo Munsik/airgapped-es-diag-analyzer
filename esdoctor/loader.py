@@ -228,7 +228,9 @@ class Bundle(object):
         out = []
         for n in self._names:
             low = n.lower()
-            if "/logs/" in low or low.startswith("logs/"):
+            if "docker-logs" in low and low.endswith(".txt"):
+                out.append(n)       # docker targets: support-diagnostics writes the container logs to docker/docker-logs*.txt
+            elif "/logs/" in low or low.startswith("logs/"):
                 if low.endswith((".log", ".json", ".json.gz")) or ".log." in low:
                     out.append(n)
         return out

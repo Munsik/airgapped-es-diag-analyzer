@@ -96,13 +96,20 @@ def run_lang(lang, tmp):
     # 2) Values below the limits: critical
     r2 = os.path.join(tmp, "bad")
     build(r2, sysctl="vm.max_map_count = 65530\n", limits=LIM_BAD,
-          dmesg="[ 9.1] Out of memory: Killed process 42 (java) total-vm:1kB\n")
+          dmesg="[ 9.0] oom-kill:constraint=CONSTRAINT_MEMCG,task_memcg=/system.slice/elasticsearch.service,task=java,pid=42\n"
+                "[ 9.1] Out of memory: Killed process 42 (java) total-vm:1kB\n")
     s = ids(analyze(r2))
     for k in ("SYS-001", "SYS-003", "SYS-004"):
         check("%sbelow limit: %s CRITICAL" % (pre, k), s.get(k) == "CRITICAL", s.get(k))
     r2b = os.path.join(tmp, "bad2")
     build(r2b, dmesg="[ 9.1] Out of memory: Killed process 42 (backup) total-vm:1kB\n")
     check(pre + "OOM kill of a non-java process is WARNING", ids(analyze(r2b)).get("SYS-004") == "WARNING")
+    r2c = os.path.join(tmp, "bad3")
+    build(r2c, dmesg="[ 9.1] Out of memory: Killed process 42 (java) total-vm:1kB\n")
+    check(pre + "OOM kill of a java process not tied to Elasticsearch is WARNING", ids(analyze(r2c)).get("SYS-004") == "WARNING")
+    r2d = os.path.join(tmp, "bad4")
+    build(r2d, dmesg="dmesg: read kernel buffer failed: Operation not permitted\n")
+    check(pre + "unreadable dmesg is INFO, not OK", ids(analyze(r2d)).get("SYS-004") == "INFO", ids(analyze(r2d)).get("SYS-004"))
 
     # 3) A real OOM exception is found even inside a gz file; the same text in _server.json is not counted twice
     r3 = os.path.join(tmp, "oom")

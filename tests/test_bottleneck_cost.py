@@ -65,7 +65,7 @@ def _by_name(doc):
     return dict((v["name"], k) for k, v in doc["nodes"].items())
 
 
-def build(root, symptoms=True, zones=False, restart_hot2=True, hot2_index_total=10 ** 6):
+def build(root, symptoms=True, zones=False, restart_hot2=True, hot2_index_total=10 ** 6, hot1_index_total=10 ** 8):
     """hot-1, hot-2 (restarted 2 hours ago), warm-1, frozen-1 (NFS)."""
     b = Bundle()
     b.policies["p2"] = {"policy": {"phases": {"hot": {"actions": {"rollover": {"max_primary_shard_size": "50gb"}}},
@@ -118,7 +118,7 @@ def build(root, symptoms=True, zones=False, restart_hot2=True, hot2_index_total=
             st["fs"]["total"] = {"total_in_bytes": 1000 * GB, "available_in_bytes": 250 * GB, "free_in_bytes": 250 * GB}
             st["jvm"]["mem"]["heap_used_percent"] = 90 if name == "hot-1" else 10
             st["os"]["cpu"]["percent"] = 60 if name == "hot-1" else 5
-            st["indices"]["indexing"]["index_total"] = 10 ** 8 if name == "hot-1" else hot2_index_total
+            st["indices"]["indexing"]["index_total"] = hot1_index_total if name == "hot-1" else hot2_index_total
             st["indices"]["search"]["query_total"] = 10 ** 6
         if name == "hot-2":
             st["indices"]["flush"]["total_time_in_millis"] = 1000 * 1500
@@ -279,9 +279,14 @@ def run_variants(tmp):
 
     # hourly rate decides HOT-002: hot-2 settled with 10x fewer operations per hour
     root = os.path.join(tmp, "rate")
-    build(root, restart_hot2=False, hot2_index_total=10 ** 7)
+    build(root, restart_hot2=False, hot2_index_total=10 ** 8, hot1_index_total=10 ** 9)
     f = findings(analyze(root))
     check("rate: HOT-002 indexing skew", "HOT-002.index_total" in f, sorted(f))
+    # the same 10x skew on a quiet tier (below workload_skew_min_per_sec per node) is not rated
+    root = os.path.join(tmp, "rate_quiet")
+    build(root, restart_hot2=False, hot2_index_total=10 ** 7)
+    f = findings(analyze(root))
+    check("rate: quiet tier skew not rated", "HOT-002.index_total" not in f, sorted(f))
 
     # comparison: hot-2 restarted in the interval, left out of the totals
     base = os.path.join(tmp, "base")

@@ -125,25 +125,32 @@ def r_shard_size(ctx):
 def r_small_shards(ctx):
     """Warning if user-index primaries with store < small_shard_mb number at least small_shard_count_warn, and small primaries make up at least small_shard_ratio_warn of all primaries. System indices do not count toward the shard-count condition because users cannot tune them.
     Current write indices (data streams, failure stores, rollover aliases) are small because they are still being filled, so they are
-    not counted as small."""
+    not counted as small. Unassigned primaries (no store size) are skipped. The evidence groups the small user primaries by data stream
+    (or by index outside data streams), with how many are searchable snapshot mounts, which cannot be shrunk or force-merged."""
     small, total, user_small = 0, 0, 0
     rows = []
-    per_index = collections.defaultdict(lambda: [0, 0])  # count, bytes
+    groups = collections.OrderedDict()  # data stream or index -> [small primaries, bytes, mounted, indices]
     writing = ctx.explicit_write_targets()
     for s in ctx.shards:
         if (s.get("prirep") or "").lower() != "p" or ctx.is_partial_mount(s.get("index")):
             continue
+        if s.get("store") in (None, "") or str(s.get("state") or "STARTED").upper() not in ("STARTED", "RELOCATING"):
+            continue        # an unassigned or initializing primary has no size yet
         b = parse_bytes(s.get("store")) or 0
         total += 1
         idx = s.get("index")
         if idx in writing:
             continue
-        per_index[idx][0] += 1
-        per_index[idx][1] += b
         if b < ctx.t["small_shard_mb"] * 1024 * 1024:
             small += 1
             if not ctx.is_system_index(idx):
                 user_small += 1
+                ds = ctx.stream_of(idx)
+                g = groups.setdefault((ds or {}).get("name") or idx, [0, 0, 0, set()])
+                g[0] += 1
+                g[1] += b
+                g[2] += 1 if ctx.is_searchable_snapshot(idx) else 0
+                g[3].add(idx)
     if not total:
         return []
     ratio = small / float(total)
@@ -151,10 +158,9 @@ def r_small_shards(ctx):
     # so the action-needed decision is based on user indices only.
     if user_small < ctx.t["small_shard_count_warn"] or ratio < ctx.t["small_shard_ratio_warn"]:
         return []
-    # Candidates that create many small shards (several shards but a small total size)
-    for idx, (cnt, byt) in per_index.items():
-        if cnt >= 2 and byt < cnt * ctx.t["small_shard_mb"] * 1024 * 1024:
-            rows.append([idx, cnt, fmt_bytes(byt), fmt_bytes(byt / cnt)])
+    # Where the small primaries come from: a data stream (finished backing indices) or a standalone index
+    for name, (cnt, byt, mounted, idxs) in groups.items():
+        rows.append([name, cnt, len(idxs), fmt_bytes(byt), fmt_bytes(byt / cnt), mounted])
     rows.sort(key=lambda r: -r[1])
     return [Finding(
         "SHD-004", CAT, Severity.WARNING, T("rules.shards.r_small_shards.01"),
@@ -162,12 +168,14 @@ def r_small_shards(ctx):
                  % (total, small, ratio * 100, ctx.t["small_shard_mb"], user_small),
         impact=T("rules.shards.r_small_shards.03"),
         recommend=T("rules.shards.r_small_shards.04"),
-        evidence=table(["index", T("rules.shards.r_small_shards.05"), T("rules.shards.r_small_shards.06"), T("rules.shards.r_small_shards.07")], rows[: ctx.t["top_n"]]),
+        evidence=table([T("rules.shards.r_small_shards.08"), T("rules.shards.r_small_shards.05"), T("rules.shards.r_small_shards.09"),
+                        T("rules.shards.r_small_shards.06"), T("rules.shards.r_small_shards.07"), T("rules.shards.r_small_shards.10")],
+                       rows[: ctx.t["top_n"]]),
         refs=[DOC_SIZE], source="indices.json")]
 
 
 def r_replica_zero(ctx):
-    """User indices with number_of_replicas=0, no auto_expand_replicas, and not a searchable snapshot index → Warning.
+    """User indices with number_of_replicas=0, no auto_expand_replicas (or 0-0), and not a searchable snapshot index → Warning.
 
     With a single data node a replica cannot be allocated anywhere, so 0 replicas is the only green setting: Info there."""
     rows = []
@@ -178,7 +186,7 @@ def r_replica_zero(ctx):
         auto = ctx.index_setting(name, "index.auto_expand_replicas")
         if _is_snapshot_backed(ctx, name):
             continue        # The snapshot is the source of truth, so replica 0 is normal
-        if str(rep) == "0" and (not auto or str(auto).lower() == "false"):
+        if str(rep) == "0" and (not auto or str(auto).lower() in ("false", "0-0")):
             rows.append([name, fmt_bytes(_primary_store(ctx, name)),
                          fmt_num(dig(ctx.indices_stats, name, "primaries", "docs", "count"))])
     if not rows:
@@ -194,8 +202,10 @@ def r_replica_zero(ctx):
 
 
 def r_replica_unassignable(ctx):
-    """number_of_replicas > (number of data nodes - 1) → Warning (replicas stay unassigned permanently). Indices with auto_expand_replicas are excluded. The node count per tier is not checked, so the rating is conservative (it can miss cases but never raises a false alarm)."""
+    """number_of_replicas > (number of data nodes - 1) → Warning (replicas stay unassigned permanently). Indices with auto_expand_replicas are excluded. The node count per tier is not checked, so the rating is conservative (it can miss cases but never raises a false alarm). Without node information nothing is rated."""
     data_nodes = len(ctx.data_nodes) or len(ctx.nodes)
+    if not data_nodes:
+        return []       # no node information in the bundle
     rows = []
     for name in ctx.index_settings.keys():
         auto = ctx.index_setting(name, "index.auto_expand_replicas")
@@ -248,10 +258,10 @@ def r_deleted_docs(ctx):
 def r_segments(ctx):
     """Primary segments / primary shards >= segments_per_shard_warn and primary store > 100MB → Warning.
 
-    Time-based indices (context.time_based: data streams and other indices with an @timestamp field, from 8.11) use
+    Time-based indices (context.time_based: data streams and other indices with an @timestamp field, from 8.8) use
     LogByteSizeMergePolicy, which only merges adjacent segments and keeps up to merge_factor - 1 (default 32 - 1) segments on each size
-    level between floor_segment and the shard size (MergePolicyConfig in the source). A 20GB shard can hold about 90 segments by
-    design. For those indices the line is the larger of segments_per_shard_warn and (merge_factor - 1) x number of levels.
+    level (Lucene LogMergePolicy: a level spans 0.75 in log base merge_factor above floor_segment, 1.5 below it). A 20GB shard can hold
+    about 150 segments by design. For those indices the line is the larger of segments_per_shard_warn and (merge_factor - 1) x levels.
     """
     import math
     from ..settings_kb import default_for
@@ -273,10 +283,15 @@ def r_segments(ctx):
             floor = parse_bytes(ctx.index_setting(name, "index.merge.policy.floor_segment")
                                 or default_for("index.merge.policy.floor_segment", ctx)) or 2 * 1024 ** 2
             shard = size / float(shards)
-            levels = (int(math.ceil(math.log(shard / float(floor)) / math.log(mf))) if shard > floor and mf > 1 else 0) + 1
-            line = max(line, (mf - 1) * levels)
+            if mf > 1:
+                # Lucene LogMergePolicy: a level spans 0.75 (in log base merge_factor) above floor_segment and 1.5 below it,
+                # and each level keeps up to merge_factor - 1 segments. Below the floor, flushed segments from 64KB are assumed.
+                lmf = math.log(mf)
+                above = int(math.ceil(math.log(shard / float(floor)) / lmf / 0.75)) if shard > floor else 0
+                below = max(1, int(math.ceil(math.log(floor / 65536.0) / lmf / 1.5))) if floor > 65536 else 1
+                line = max(line, (mf - 1) * (above + below))
         if per >= line and size > 100 * 1024 * 1024:
-            rows.append([name, fmt_num(seg), shards, "%.0f" % per, fmt_bytes(size)])
+            rows.append([name, fmt_num(seg), shards, "%.0f" % per, fmt_bytes(size), line])
     if not rows:
         return []
     rows.sort(key=lambda r: -float(r[3]))
@@ -285,7 +300,8 @@ def r_segments(ctx):
         observed=T("rules.shards.r_segments.02") % (ctx.t["segments_per_shard_warn"], len(rows)),
         impact=T("rules.shards.r_segments.03"),
         recommend=T("rules.shards.r_segments.04"),
-        evidence=table(["index", T("rules.shards.r_segments.05"), T("rules.shards.r_segments.06"), T("rules.shards.r_segments.07"), T("rules.shards.r_segments.08")], rows[: ctx.t["top_n"]]),
+        evidence=table(["index", T("rules.shards.r_segments.05"), T("rules.shards.r_segments.06"), T("rules.shards.r_segments.07"), T("rules.shards.r_segments.08"),
+                        T("rules.shards.r_segments.09")], rows[: ctx.t["top_n"]]),
         source="indices_stats.json")]
 
 
@@ -319,7 +335,7 @@ def r_merge_throttle(ctx):
 
 
 def r_search_latency(ctx):
-    """For indices with query_total >= min_query_total_for_latency, average query latency = query_time / query_total. >= search_latency_ms_crit → Critical, >= warn → Warning (PERF-001). Average indexing time per document = index_time / index_total is rated the same way with index_latency_ms_crit / warn (PERF-002). These are cumulative averages, not p99. Partially mounted (frozen) indices are not rated for search latency: they read from the snapshot repository on cache misses, so slower searches are expected there (see FRZ-001)."""
+    """For indices with query_total >= min_query_total_for_latency, average query-phase time per shard = query_time / query_total (counted once per shard, not request latency). >= search_latency_ms_crit → Critical, >= warn → Warning (PERF-001). Average indexing time per document = index_time / index_total is rated the same way with index_latency_ms_crit / warn (PERF-002). These are cumulative averages, not p99. Partially mounted (frozen) indices are not rated for search latency: they read from the snapshot repository on cache misses, so slower searches are expected there (see FRZ-001)."""
     rows_slow, rows_idx = [], []
     for name, st in ctx.indices_stats.items():
         qt = num(st, "total", "search", "query_total")
@@ -376,12 +392,14 @@ def r_index_failures(ctx):
     op_type=create retries (Elastic Agent, Fleet). The ratio uses the primaries' index_total, because index_failed is counted on the
     primary only while the total index_total includes replica operations.
     query_failure counts any exception in the query phase, cancelled searches included, so a handful is normal.
+    Before 8.18 conflicts cannot be told apart, so index_failed alone is not rated there (shown with a note).
     Warning when a user index has failures other than version conflicts, or query failures of at least query_failure_pct_warn
     percent of its queries (and at least 10); otherwise Info. Rows are sorted so those come first.
     """
-    rows, user_rows = [], []
+    rows, user_rows, no_vc = [], [], [0]
     for name, st in ctx.indices_stats.items():
         failed = num(st, "total", "indexing", "index_failed")
+        has_vc = "index_failed_due_to_version_conflict" in (dig(st, "total", "indexing") or {})    # 8.18+
         vc = num(st, "total", "indexing", "index_failed_due_to_version_conflict")
         qf = num(st, "total", "search", "query_failure")
         if failed or qf:
@@ -390,8 +408,10 @@ def r_index_failures(ctx):
             ratio = failed / float(failed + it) if (failed + it) else 0
             qratio = qf / float(qt) if qt else (1.0 if qf else 0.0)
             bad = not ctx.is_system_index(name) and (
-                failed - vc > 0 or (qf >= 10 and qratio * 100 >= ctx.t["query_failure_pct_warn"]))
-            row = [name, fmt_num(failed), fmt_num(vc), "%.1f%%" % (ratio * 100) if failed else "-", fmt_num(qf),
+                (has_vc and failed - vc > 0) or (qf >= 10 and qratio * 100 >= ctx.t["query_failure_pct_warn"]))
+            if failed and not has_vc:
+                no_vc[0] += 1
+            row = [name, fmt_num(failed), fmt_num(vc) if has_vc else "-", "%.1f%%" % (ratio * 100) if failed else "-", fmt_num(qf),
                    ("%.2f%%" % (qratio * 100)) if qf else "-", fmt_num(it), (bad, failed - vc, qratio, ratio)]
             rows.append(row)
             if bad:
@@ -403,7 +423,7 @@ def r_index_failures(ctx):
         "IDX-006", CAT,
         Severity.WARNING if user_rows else Severity.INFO,
         T("rules.shards.r_index_failures.01") + ("" if user_rows else T("rules.shards.r_index_failures.02")),
-        observed=T("rules.shards.r_index_failures.03") % len(rows),
+        observed=T("rules.shards.r_index_failures.03") % len(rows) + (T("rules.shards.r_index_failures.10") if no_vc[0] else ""),
         impact=T("rules.shards.r_index_failures.04"),
         recommend=T("rules.shards.r_index_failures.05"),
         evidence=table(["index", "index_failed", T("rules.shards.r_index_failures.07"), T("rules.shards.r_index_failures.06"),
@@ -413,8 +433,12 @@ def r_index_failures(ctx):
 
 
 def r_mapping_limits(ctx):
-    """User index with mapping.total_fields.limit > 1000 (the default) → Warning (MAP-001), or Info if all such indices have ignore_dynamic_beyond_limit=true. Searchable snapshot mounts are skipped (read-only). Total field count in cluster_stats > 100,000 → Info (MAP-002)."""
-    rows, ignored = [], 0
+    """User index with mapping.total_fields.limit > 1000 (the default) → Warning (MAP-001), or Info if every such index has
+    ignore_dynamic_beyond_limit=true (when not set, the default: true for logsdb indices on recent index versions) or belongs to a
+    data stream of an Elastic integration package (_meta package or managed_by fleet), where the limit is product-set. Searchable
+    snapshot mounts are skipped (read-only). Total field count in cluster_stats > 100,000 → Info (MAP-002)."""
+    from ..settings_kb import default_for
+    rows, ignored, packaged = [], 0, 0
     for name in ctx.index_settings.keys():
         if ctx.is_system_index(name) or ctx.is_searchable_snapshot(name):
             continue        # System indices use product-set values; searchable snapshot mounts are read-only, nothing to act on
@@ -426,20 +450,28 @@ def r_mapping_limits(ctx):
         except (TypeError, ValueError):
             continue
         if lim > 1000:
-            ign = str(ctx.index_setting(name, "index.mapping.total_fields.ignore_dynamic_beyond_limit")).lower() == "true"
+            raw = ctx.index_setting(name, "index.mapping.total_fields.ignore_dynamic_beyond_limit")
+            if raw is None:
+                raw = default_for("index.mapping.total_fields.ignore_dynamic_beyond_limit", ctx, index=name)
+            ign = str(raw).lower() == "true"
             ignored += 1 if ign else 0
-            rows.append([name, fmt_num(lim), "true" if ign else "false"])
+            meta = ((ctx.stream_of(name) or {}).get("_meta") or {})
+            product = isinstance(meta, dict) and bool(meta.get("package") or meta.get("managed_by") == "fleet")
+            if product and not ign:
+                packaged += 1   # limit set by an Elastic integration package: product-set, not a mapping explosion
+            rows.append([name, fmt_num(lim), "true" if ign else "false",
+                         T("rules.shards.r_mapping_limits.09") if product else "-"])
     total_fields = dig(ctx.cluster_stats, "indices", "mappings", "total_field_count")
     out = []
     if rows:
         out.append(Finding(
-            "MAP-001", CAT, Severity.INFO if ignored == len(rows) else Severity.WARNING,
+            "MAP-001", CAT, Severity.INFO if ignored + packaged == len(rows) else Severity.WARNING,
             T("rules.shards.r_mapping_limits.01"),
             observed=T("rules.shards.r_mapping_limits.02")
-                     % (len(rows), ignored),
+                     % (len(rows), ignored) + ((T("rules.shards.r_mapping_limits.11") % packaged) if packaged else ""),
             impact=T("rules.shards.r_mapping_limits.03"),
             recommend=T("rules.shards.r_mapping_limits.04"),
-            evidence=table(["index", "total_fields.limit", "ignore_dynamic_beyond_limit"],
+            evidence=table(["index", "total_fields.limit", "ignore_dynamic_beyond_limit", T("rules.shards.r_mapping_limits.10")],
                            sorted(rows, key=lambda r: r[2])[: ctx.t["top_n"]]),
             refs=[DOC_MAPPING], source="settings.json"))
     if total_fields and total_fields > 100000:
@@ -494,10 +526,14 @@ def r_read_only_blocks(ctx):
     (old backing indices of a data stream, alias members that are not the write target, indexing_complete=true).
     It is normal for the ILM readonly, shrink, forcemerge and searchable_snapshot phases to put a write block on an index after rollover.
     Problem (Critical, IDX-008): index.blocks.read_only_allow_delete=true (usually left over from flood stage, applies to all indices),
-    or a write/read_only block on a current write target (data stream write index / alias write index).
-    Needs checking (Info, IDX-011): a write/read_only block on a standalone index that belongs to no data stream or alias (may be intentional archiving).
+    or a write/read_only block on a current write target (data stream write index, failure store write index, alias write index or
+    legacy rollover alias).
+    Needs checking (Info, IDX-011): a write/read_only block on any other index that is not rolled over: a standalone index, a member
+    of an alias without a write index, or the only member of an alias with no is_write_index flag (often a read alias); it may be
+    intentional archiving.
     """
-    targets = ctx.write_targets()
+    targets = ctx.explicit_write_targets()
+    implicit = set(ctx.write_targets()) - set(targets)     # only member of an alias with no is_write_index flag: may be a read alias
     bad, check, normal = [], [], collections.Counter()
     for name in ctx.index_settings.keys():
         flags = [k for k in ("index.blocks.read_only_allow_delete", "index.blocks.read_only",
@@ -519,7 +555,8 @@ def r_read_only_blocks(ctx):
         if ctx.is_system_index(name):
             normal[T("rules.shards.r_read_only_blocks.04")] += 1
             continue
-        check.append([name, ", ".join(f.split(".")[-1] for f in flags)])
+        check.append([name, ", ".join(f.split(".")[-1] for f in flags)
+                      + ((T("rules.shards.r_read_only_blocks.19")) if name in implicit else "")])
     out = []
     note = (T("rules.shards.r_read_only_blocks.05") % ", ".join(T("rules.shards.r_read_only_blocks.06") % kv for kv in normal.items())) if normal else ""
     if bad:
@@ -529,7 +566,7 @@ def r_read_only_blocks(ctx):
             impact=T("rules.shards.r_read_only_blocks.09"),
             recommend=T("rules.shards.r_read_only_blocks.10"),
             evidence=table(["index", T("rules.shards.r_read_only_blocks.11"), T("rules.shards.r_read_only_blocks.12")], bad[: ctx.t["top_n"]]),
-            source="settings.json / data_stream.json / alias.json"))
+            source="settings.json / commercial/data_stream.json / alias.json"))
     if check:
         out.append(Finding(
             "IDX-011", CAT, Severity.INFO, T("rules.shards.r_read_only_blocks.13"),
@@ -542,7 +579,7 @@ def r_read_only_blocks(ctx):
         out.append(Finding(
             "IDX-008", CAT, Severity.OK, T("rules.shards.r_read_only_blocks.17"),
             observed=T("rules.shards.r_read_only_blocks.18") % note,
-            source="settings.json / data_stream.json / alias.json"))
+            source="settings.json / commercial/data_stream.json / alias.json"))
     return out
 
 
@@ -667,7 +704,7 @@ def r_data_stream_health(ctx):
 def r_cache_efficiency(ctx):
     """Efficiency of the query cache and the shard request cache.
 
-    Only the request cache is rated (hit rate < 20% and evictions > hits → Warning). Query cache evictions also count entries dropped
+    Only the request cache is rated (at least 10000 lookups, hit rate < 20% and evictions > hits → Warning). Query cache evictions also count entries dropped
     when segments close after merges, and misses include lookups the caching policy chose not to cache, so a low query cache hit rate
     on its own is normal and only shown."""
     qc_hit = num(ctx.indices_stats_all, "total", "query_cache", "hit_count")
@@ -685,7 +722,7 @@ def r_cache_efficiency(ctx):
                  "%.1f%%" % qc_rate if qc_rate is not None else "-", fmt_num(qc_evict)],
                 ["request cache", fmt_num(rc_hit), fmt_num(rc_miss),
                  "%.1f%%" % rc_rate if rc_rate is not None else "-", fmt_num(rc_evict)]])
-    warn = rc_rate is not None and rc_rate < 20 and rc_evict > rc_hit
+    warn = rc_rate is not None and rc_hit + rc_miss >= 10000 and rc_rate < 20 and rc_evict > rc_hit
     if not warn:
         return [Finding("PERF-003", CAT, Severity.INFO, T("rules.shards.r_cache_efficiency.03"),
                         observed=T("rules.shards.r_cache_efficiency.04")
@@ -749,7 +786,7 @@ def r_write_hotspot(ctx):
         recommend=T("rules.shards.r_write_hotspot.04"),
         evidence=table(["tier", "node", T("rules.shards.r_write_hotspot.05"), T("rules.shards.r_write_hotspot.06")],
                        rows[: ctx.t["top_n"] * 2]),
-        source="indices.json / data_stream.json / alias.json / indices_stats.json")]
+        source="indices.json / commercial/data_stream.json / alias.json / indices_stats.json")]
 
 
 def r_indexing_throttle(ctx):
@@ -787,19 +824,31 @@ def r_translog_uncommitted(ctx):
     """Uncommitted translog per shard copy against index.translog.flush_threshold_size (IDX-015).
 
     Official: a flush runs once the uncommitted translog reaches flush_threshold_size (default 10GB), and uncommitted
-    operations are replayed on recovery (the default was 512MB before 8.8). Average uncommitted size per shard copy (index total / copies) at or above the
-    effective threshold → Warning: flushes are not keeping up, and recovery of those shards will replay that much.
+    operations are replayed on recovery (the default was 512MB before 8.8). From 8.8 ES also caps the threshold at 1% of the disk
+    (at least 10MB, IndexSettings.getFlushThresholdSize); the smallest disk among the nodes holding the index is used. Average
+    uncommitted size per assigned shard copy (index total / copies) at or above the effective threshold → Warning: flushes are not
+    keeping up, and recovery of those shards will replay that much.
     """
     old = (0, 0, 0) < ctx.version_tuple < (8, 8, 0)     # unknown version: assume the current default
     default = parse_bytes(ctx.t["translog_flush_threshold_default"] if not old
                           else ctx.t["translog_flush_threshold_legacy"]) or 10 * 1024 ** 3
+    disk = dict((n.name, n.disk_path_total) for n in ctx.nodes if n.disk_path_total)
+    held = collections.defaultdict(list)
+    for s in ctx.shards:
+        if str(s.get("state") or "").upper() in ("STARTED", "RELOCATING", "INITIALIZING") and s.get("node"):
+            held[s.get("index")].append(str(s.get("node")).split(" ")[0])
     rows = []
     for name, st in ctx.indices_stats.items():
         unc = num(st, "total", "translog", "uncommitted_size_in_bytes")
-        copies = ctx.shard_count(name) or 1
+        copies = len(held.get(name) or []) or ctx.shard_count(name) or 1
         if not unc:
             continue
         limit = parse_bytes(ctx.index_setting(name, "index.translog.flush_threshold_size")) or default
+        if not old:
+            # IndexSettings.getFlushThresholdSize: never more than 1% of the disk (at least 10MB), from 8.8
+            sizes = [disk[nm] for nm in held.get(name) or [] if nm in disk]
+            if sizes:
+                limit = min(limit, max(min(sizes) // 100, 10 * 1024 ** 2))
         per = unc / float(copies)
         if per >= limit:
             rows.append([name, fmt_bytes(unc), copies, fmt_bytes(per), fmt_bytes(limit), per])

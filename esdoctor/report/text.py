@@ -229,6 +229,9 @@ def markdown(result, show_ok=True):
             for r in fd.evidence["rows"][:20]:
                 md.append("| " + " | ".join(("" if v is None else str(v)).replace("|", "/")
                                             for v in r) + " |")
+            if len(fd.evidence["rows"]) > 20:
+                md.append("")
+                md.append(T("report.handoff._evidence.01") % (len(fd.evidence["rows"]) - 20))
     md.append("")
     sk = getattr(result.ctx, "skipped_rules", [])
     if sk:

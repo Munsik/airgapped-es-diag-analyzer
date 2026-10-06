@@ -10,7 +10,7 @@ import collections
 
 from ..i18n import T, N_
 from ..model import Finding, Severity, table
-from ..util import dicts, dig, fmt_bytes, fmt_num, items, num
+from ..util import dicts, dig, fmt_bytes, fmt_num, ip_rejections, items, num, parse_time_ms
 
 CAT = "cost"
 DAY_MS = 86400000.0
@@ -125,7 +125,7 @@ def r_hot_rolled_over(ctx):
         recommend=T("rules.cost.r_hot_rolled_over.04"),
         evidence=table(["ILM policy", T("rules.cost.r_hot_rolled_over.06"), T("rules.cost.r_hot_rolled_over.07"),
                         T("rules.cost.r_hot_rolled_over.08"), T("rules.cost.r_hot_rolled_over.09")], rows[: ctx.t["top_n"]]),
-        refs=[D_ILM_PHASES, D_TIERS], source="ilm_explain.json / ilm_policies.json / indices_stats.json")]
+        refs=[D_ILM_PHASES, D_TIERS], source="commercial/ilm_explain.json / commercial/ilm_policies.json / indices_stats.json")]
 
 
 def _zones(ctx):
@@ -141,7 +141,7 @@ def _zones(ctx):
 def r_idle_replicas(ctx):
     """Indices with cost_replicas_min or more replicas and no searches (COST-002).
 
-    User indices (system indices and searchable snapshot mounts excluded) with number_of_replicas >= cost_replicas_min, documents,
+    User indices (system indices, searchable snapshot mounts and indices with auto_expand_replicas excluded) with number_of_replicas >= cost_replicas_min, documents,
     and indices_stats total.search.query_total of 0. When the data nodes span at least replicas + 1 availability zones, one copy per
     zone is a deliberate layout and the index is not listed. The second and later replicas add disk and indexing work without
     adding availability against a single node loss. Search counters reset when a shard moves or its node restarts, so 0 means
@@ -152,6 +152,9 @@ def r_idle_replicas(ctx):
     for name in ctx.index_settings.keys():
         if ctx.is_system_index(name) or ctx.is_searchable_snapshot(name):
             continue
+        auto = ctx.index_setting(name, "index.auto_expand_replicas")
+        if auto and str(auto).lower() != "false":
+            continue        # the replica count follows auto_expand_replicas, so number_of_replicas cannot be lowered by hand
         try:
             rep = int(str(ctx.index_setting(name, "index.number_of_replicas")))
         except (TypeError, ValueError):
@@ -230,18 +233,27 @@ def r_tier_usage(ctx):
         refs=[D_TIERS, D_ILM_PHASES], source="nodes_stats.json")]
 
 
-def _drains(ctx, name):
-    """True when the index has an ILM policy with a phase after hot (moves to another tier or is deleted), or is managed by data stream
-    lifecycle with a retention (data is deleted) or a frozen_after (data moves). A failure store index reads the failure store lifecycle."""
+def _drain_after_ms(ctx, name):
+    """Time from creation after which the index's data leaves the landing tier (moved or deleted), or None if never.
+
+    ILM: rollover max_age (0 when the rollover has no age condition) plus the min_age of the first phase after hot (min_age counts
+    from the rollover). Data stream lifecycle: the shorter of the retention and frozen_after."""
     pol = ctx.index_setting(name, "index.lifecycle.name")
     if not pol:
         if ctx.dlm_managed(name):
             ds = ctx.stream_of(name) or {}
             lc = ((ds.get("failure_store") or {}).get("lifecycle") if name.startswith(".fs-") else ds.get("lifecycle")) or {}
-            return bool(lc.get("data_retention") or lc.get("effective_retention") or lc.get("frozen_after"))
-        return False
+            vals = [parse_time_ms(lc.get(k)) for k in ("data_retention", "effective_retention", "frozen_after")]
+            vals = [v for v in vals if v is not None and v >= 0]
+            return min(vals) if vals else None
+        return None
     ph = _phases(ctx, pol)
-    return any(isinstance(ph.get(p), dict) for p in LATER_PHASES)
+    ro = dig(ph, "hot", "actions", "rollover") or {}
+    base = parse_time_ms(ro.get("max_age")) or 0 if isinstance(ro, dict) else 0
+    for p in LATER_PHASES:
+        if isinstance(ph.get(p), dict):
+            return base + (parse_time_ms(ph[p].get("min_age") or "0ms") or 0)
+    return None
 
 
 def r_ingest_headroom(ctx):
@@ -251,15 +263,20 @@ def r_ingest_headroom(ctx):
     indices that falls in the window (size x window / age) and of older indices that rolled over inside the window (the share written
     between the window start and the rollover, ilm_explain lifecycle_date), divided by the window (shorter if the cluster is
     younger). System indices
-    and shrink or downsample copies (new creation date, old data) are left out. A searchable snapshot mount gets a new creation date
+    are left out. A searchable snapshot mount gets a new creation date
     when it is mounted, so it is placed by its data instead: written from the date in its backing index name until its rollover
     (ilm_explain lifecycle_date), with the size of the snapshot data (total_data_set_size) times (1 + the replicas of its data
     stream's write index); only the part of that span inside the window counts. Failure store indices count under their data stream. Landing tier = tiers holding shards of write targets (frozen excluded); when
     one of them is a hot tier, only the hot tiers count, because new data stream indices go to hot by default and a write target
     elsewhere is usually a small index whose policy moves it without rollover.
     Headroom = sum over those nodes of (bytes allowed at the high watermark - bytes used). Days = headroom / daily ingest.
-    This assumes nothing is moved or deleted. Days <= disk_projection_days_warn while more than half of the window's data has no ILM
-    phase after hot (no move, no delete) → Warning; otherwise Info. Comparison mode (DIF-008) measures real growth instead.
+    This assumes nothing is moved or deleted. Days <= disk_projection_days_warn while more than half of the window's data does not drain
+    yet → Warning; otherwise Info. Data drains when its ILM policy has a phase after hot (rollover max_age plus that phase's min_age) or
+    its data stream lifecycle has a retention or frozen_after, and that delay is not longer than the age of the oldest data in the
+    cluster (otherwise nothing has started to leave yet, as on a young cluster with a long retention). Shrink and downsample copies are placed by the
+    date in their backing index name, like mounts (a downsampled copy is smaller than what was ingested, so it is a lower bound).
+    Write targets are the explicit ones plus indices that took writes since their shards started. Comparison mode (DIF-008)
+    measures real growth instead.
     """
     now = _now_ms(ctx)
     if not now:
@@ -267,12 +284,16 @@ def r_ingest_headroom(ctx):
     import re
     import datetime as _dt
     win = ctx.t["ingest_window_days"] * DAY_MS
-    writes = set(i for i in ctx.write_targets() if i)
+    writes = set(i for i in ctx.explicit_write_targets() if i)
+    writes.update(i for i, st in ctx.indices_stats.items() if num(st, "primaries", "indexing", "index_total") > 0
+                  and not ctx.index_setting(i, "index.resize.source.name")
+                  and not ctx.index_setting(i, "index.downsample.source.name"))     # copies are written once, not ingest
     created, mounts = {}, []
     for name in ctx.index_settings.keys():
         if ctx.is_system_index(name):
             continue
-        if ctx.is_searchable_snapshot(name):
+        copy = ctx.index_setting(name, "index.resize.source.name") or ctx.index_setting(name, "index.downsample.source.name")
+        if ctx.is_searchable_snapshot(name) or copy:
             m = re.search(r"\.ds-(.+)-(\d{4})\.(\d{2})\.(\d{2})-\d{6}$", name)
             if m:
                 try:
@@ -282,9 +303,7 @@ def r_ingest_headroom(ctx):
                     continue
                 end = num((ctx.ilm_explain or {}).get(name) or {}, "lifecycle_date_millis", default=None)
                 mounts.append((name, start, end if end and end >= start else None))
-            continue
-        if ctx.index_setting(name, "index.resize.source.name") or ctx.index_setting(name, "index.downsample.source.name"):
-            continue        # shrink / downsample copies get a new creation date but hold old data, not new ingest
+            continue        # shrink / downsample copies get a new creation date but hold old data: placed by their name date
         try:
             created[name] = float(str(ctx.index_setting(name, "index.creation_date")))
         except (TypeError, ValueError):
@@ -294,18 +313,22 @@ def r_ingest_headroom(ctx):
     span = min(win, now - min(created.values()))
     if span < DAY_MS:
         return []
-    window_bytes, stays, contrib = 0.0, 0.0, collections.Counter()
+    window_bytes, contrib, parts = 0.0, collections.Counter(), []
     originals = set(created)
     for name, start, end in mounts:
         ds = ctx.data_stream_of(name)
         orig = re.sub(r"^(partial-)?(restored-)?", "", name)
-        if orig in originals or not isinstance(ds, dict):
+        src = ctx.index_setting(name, "index.resize.source.name") or ctx.index_setting(name, "index.downsample.source.name")
+        if orig in originals or (src and src in originals) or not isinstance(ds, dict):
             continue        # the original index is still there and already counted
         lo, hi = now - span, min(end or start, now)
         if hi < lo or start > now:
             continue        # outside the window (or dated after the collection)
-        data = num(ctx.indices_stats, name, "primaries", "store", "total_data_set_size_in_bytes") \
-            or num(ctx.indices_stats, name, "primaries", "store", "size_in_bytes")
+        if src and not ctx.is_searchable_snapshot(name):
+            data = num(ctx.indices_stats, name, "primaries", "store", "size_in_bytes")     # shrink / downsample copy
+        else:
+            data = num(ctx.indices_stats, name, "primaries", "store", "total_data_set_size_in_bytes") \
+                or num(ctx.indices_stats, name, "primaries", "store", "size_in_bytes")
         if not data:
             continue
         w = (dicts(ds.get("indices")) or [{}])[-1].get("index_name")
@@ -317,8 +340,7 @@ def r_ingest_headroom(ctx):
         part = size if hi - start <= 0 or start >= lo else size * (hi - lo) / float(hi - start)
         window_bytes += part
         contrib[str(ds.get("name"))] += part
-        if not _drains(ctx, name):
-            stays += part
+        parts.append((part, _drain_after_ms(ctx, name)))
     for name, c in created.items():
         size = num(ctx.indices_stats, name, "total", "store", "size_in_bytes")
         age = now - c
@@ -339,8 +361,7 @@ def r_ingest_headroom(ctx):
         ds = ctx.stream_of(name)
         key = str(ds.get("name") or name) if isinstance(ds, dict) else name
         contrib[key] += part
-        if not _drains(ctx, name):
-            stays += part
+        parts.append((part, _drain_after_ms(ctx, name)))
     if window_bytes <= 0:
         return []
     daily = window_bytes / (span / DAY_MS)
@@ -364,6 +385,11 @@ def r_ingest_headroom(ctx):
     if not nodes:
         return []
     days = head / daily if daily else None
+    # Data drains when its policy moves or deletes it and the cluster already holds data older than that delay: then data leaves
+    # about as fast as it arrives. A delay longer than the age of the oldest data (a young cluster with a long retention) has not
+    # started to drain anything yet.
+    oldest = now - min(list(created.values()) + [s for _n, s, _e in mounts])
+    stays = sum(p for p, d in parts if d is None or d > oldest)
     stay_share = stays / window_bytes
     warn = days is not None and days <= ctx.t["disk_projection_days_warn"] and stay_share > 0.5
     top = [[k, fmt_bytes(v / (span / DAY_MS)) + "/d"] for k, v in contrib.most_common(10)]
@@ -452,7 +478,7 @@ def r_storage_by_type(ctx):
                         T("rules.cost.r_storage_by_type.09")],
                        [[T("rules.cost.type." + typ), tier, a[0], fmt_num(a[1]), fmt_bytes(a[2]), fmt_bytes(a[3]),
                          "%.1f%%" % (a[3] * 100.0 / total)] for (typ, tier), a in rows]),
-        refs=[D_DS_NAMING, D_TIERS], source="indices_stats.json / data_stream.json / indices.json")]
+        refs=[D_DS_NAMING, D_TIERS], source="indices_stats.json / commercial/data_stream.json / indices.json")]
 
 
 def r_tier_sizing(ctx):
@@ -473,9 +499,9 @@ def r_tier_sizing(ctx):
         for n in nodes:
             for pool in ("write", "write_coordination", "search"):
                 rej += num(n.stats, "thread_pool", pool, "rejected")
-            ipr += sum(num(v) for k, v in items(dig(n.stats, "indexing_pressure", "memory", "total")) if k.endswith("rejections"))
-            if tier != "frozen" and n.fs_total and n.disk_used_pct is not None:
-                high = ctx.watermark_used_pct("high", n.fs_total) or 90.0
+            ipr += ip_rejections(n.stats)
+            if tier != "frozen" and n.disk_path_total and n.disk_used_pct is not None:
+                high = ctx.watermark_used_pct("high", n.disk_path_total) or 90.0
                 if n.disk_used_pct >= high:
                     hot_disk.append(n.name)
         cpu = [n.cpu_pct for n in nodes if n.cpu_pct is not None]

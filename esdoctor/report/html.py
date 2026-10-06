@@ -289,7 +289,14 @@ def render(result):
         o.append(T("report.html.render.32"))
         counts = [n.get("shard_count") or 0 for n in f["nodes"]]
         max_shards = max(counts or [1]) or 1
-        avg_shards = (sum(counts) / float(len(counts))) if counts else 1
+        # shard skew is coloured against the average of the node's own data tier; nodes without data are not coloured
+        tier_avg = {}
+        for n in f["nodes"]:
+            if n.get("tier"):
+                tier_avg.setdefault(n["tier"], []).append(n.get("shard_count") or 0)
+        tier_avg = dict((k, sum(v) / float(len(v))) for k, v in tier_avg.items())
+        th = result.ctx.t
+        never = float("inf")
         for n in f["nodes"]:
             roles = []
             if n.get("is_master"):
@@ -298,12 +305,14 @@ def render(result):
                 roles.append("data")
             o.append("<tr><td class='n'>%s</td><td>%s</td>"
                      % (e(n["name"]), e("/".join(roles) or "-")))
-            o.append(_bar(n.get("heap_pct_num"), 75, 85))
-            o.append(_bar(n.get("cpu_pct_num"), 70, 90))
-            o.append(_bar(n.get("load_per_cpu"), 1.0, 1.5, suffix="", scale=2.0))
-            o.append(_bar(n.get("disk_pct_num"), 75, 85))
-            # Shard count is colored by deviation from the average (all green when evenly distributed)
-            o.append(_bar(n.get("shard_count"), avg_shards * 1.3, avg_shards * 1.6,
+            o.append(_bar(n.get("mem_pressure_num"), th["heap_used_pct_warn"], th["heap_used_pct_crit"]))
+            o.append(_bar(n.get("cpu_pct_num"), th["tier_cpu_pct_warn"], never))
+            rated = n.get("load_rated")
+            o.append(_bar(n.get("load_per_cpu"), th["load_per_cpu_warn"] if rated else never,
+                          th["load_per_cpu_crit"] if rated else never, suffix="", scale=2.0))
+            o.append(_bar(n.get("disk_pct_num"), n.get("disk_low") or never, n.get("disk_flood") or never))
+            avg = tier_avg.get(n.get("tier")) or 0
+            o.append(_bar(n.get("shard_count"), avg * 1.3 if avg else never, avg * 1.6 if avg else never,
                           suffix="", scale=max_shards))
             o.append("<td>%s</td><td>%s</td><td>%s</td></tr>"
                      % (e(n["heap_max"]), e(n["ram"]), e(n["zone"])))

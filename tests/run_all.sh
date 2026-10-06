@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run every check in one go:  bash tests/run_all.sh healthy-bundle.zip
 # verify_logic and drive_branches assert against an ECH multi-node api bundle, so they can fail on other bundles.
-# test_local_mode.py, test_handoff.py, test_logsdb.py, test_write_path.py, test_bottleneck_cost.py, test_doc_audit.py, test_es95.py and test_audit_0143.py use synthetic data and must always pass without a bundle.
+# test_local_mode.py, test_handoff.py, test_logsdb.py, test_write_path.py, test_bottleneck_cost.py, test_doc_audit.py, test_es95.py, test_audit_0143.py and test_audit_final.py use synthetic data and must always pass without a bundle.
 # They run both languages internally, so they run once here.
 set -u
 B="${1:?Give the path to a diagnostics bundle}"
@@ -18,6 +18,7 @@ run "bottleneck summary and cost (no bundle)"    python3 tests/test_bottleneck_c
 run "official doc audit fixes (no bundle)"      python3 tests/test_doc_audit.py
 run "Elasticsearch 9.5 baseline (no bundle)"     python3 tests/test_es95.py
 run "zero-base logic audit (no bundle)"          python3 tests/test_audit_0143.py
+run "final review fixes (no bundle)"             python3 tests/test_audit_final.py
 run "calculation assertions"                     python3 tests/verify_logic.py "$B"
 run "finding branch driver"                      python3 tests/drive_branches.py "$B"
 run "input mutation fuzzing (realistic)"         python3 tests/fuzz_rules.py "$B" 45

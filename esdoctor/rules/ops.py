@@ -2,6 +2,7 @@
 """Operations and lifecycle rules (license, snapshots, ILM/SLM, ML, certificates)."""
 
 import datetime
+import re
 
 from ..i18n import T
 from ..context import _parse_iso
@@ -28,7 +29,7 @@ def _days_until(ctx, dt):
 
 
 def r_license(ctx):
-    """license.status != active → Critical. Time to expiry <= license_expiry_days_crit days → Critical, <= warn days → Warning, otherwise OK. The reference time is the bundle collection time."""
+    """license.status != active → Critical. A trial license (30 days at most) → Warning while it runs. Time to expiry <= license_expiry_days_crit days → Critical, <= warn days → Warning, otherwise OK. The reference time is the bundle collection time."""
     lic = ctx.license or {}
     if not lic:
         return []
@@ -46,6 +47,12 @@ def r_license(ctx):
                         observed="license status=%s (%s)" % (status, lic.get("type")),
                         impact=T("rules.ops.r_license.05"),
                         recommend=T("rules.ops.r_license.06"), evidence=ev, source="licenses.json")]
+    if days is not None and str(lic.get("type") or "").lower() == "trial":
+        # a trial always lasts 30 days at most; when it ends the cluster reverts to Basic
+        return [Finding("LIC-001", CAT, Severity.WARNING, T("rules.ops.r_license.17"),
+                        observed=T("rules.ops.r_license.08") % (days, lic.get("expiry_date")),
+                        impact=T("rules.ops.r_license.18"),
+                        recommend=T("rules.ops.r_license.19"), evidence=ev, source="licenses.json")]
     if days is not None:
         if days <= ctx.t["license_expiry_days_crit"]:
             return [Finding("LIC-001", CAT, Severity.CRITICAL, T("rules.ops.r_license.07"),
@@ -59,17 +66,18 @@ def r_license(ctx):
                             impact=T("rules.ops.r_license.12"),
                             recommend=T("rules.ops.r_license.13"), evidence=ev, source="licenses.json")]
     return [Finding("LIC-001", CAT, Severity.OK, T("rules.ops.r_license.14"),
-                    observed=T("rules.ops.r_license.15") % (lic.get("type"),
-                                                     "%.0f" % days if days else T("rules.ops.r_license.03")),
+                    observed=(T("rules.ops.r_license.15") % (lic.get("type"), "%.0f" % days)) if days is not None
+                    else (T("rules.ops.r_license.16") % lic.get("type")),
                     evidence=ev, source="licenses.json")]
 
 
 def r_snapshots(ctx):
-    """No repository and no snapshot → Critical (SNP-001). FAILED/PARTIAL snapshot present → Warning, and Critical if a later successful snapshot is known not to exist (SNP-002; snapshots listed without times stay Warning). Age of the last SUCCESS snapshot (the SLM policy's last_success time if snapshot.json has no time) >= snapshot_age_hours_crit → Critical, >= warn → Warning, otherwise OK (SNP-003; in-progress, failed and partial snapshots are excluded from the RPO calculation). Time data present but no successful snapshot → Critical. IN_PROGRESS present → Info (SNP-004). Cumulative SLM failures >= snapshot_failed_warn → Info (SNP-005, lifetime counter). SLM operation_mode != RUNNING → Warning (SNP-006). SLM policy whose last failure is more recent than its last success → Critical (SNP-007)."""
+    """No repository and no snapshot → Critical (SNP-001; skipped when repositories.json is missing or an error body). FAILED/PARTIAL snapshot present → Warning, and Critical if a later successful snapshot is known not to exist (SNP-002; snapshots listed without times stay Warning). Age of the last SUCCESS snapshot (the SLM policy's last_success time if snapshot.json has no time) >= snapshot_age_hours_crit → Critical, >= warn → Warning, otherwise OK (SNP-003; in-progress, failed and partial snapshots are excluded from the RPO calculation). No snapshot in SUCCESS state and no SLM success (snapshot states decide; a registered repository with no snapshot counts) → Critical; a SUCCESS snapshot listed without times gives no age. IN_PROGRESS present → Info (SNP-004). Cumulative SLM failures >= snapshot_failed_warn → Info (SNP-005, lifetime counter). SLM operation_mode != RUNNING while SLM policies exist → Warning (SNP-006). SLM policy whose last failure is more recent than its last success → Warning, Critical when it has failed 5 times in a row (invocations_since_last_success, the SLM health threshold) or its last success is older than snapshot_age_hours_crit (SNP-007)."""
     out = []
     snaps = (ctx.snapshots or {}).get("snapshots") or []
     repos = ctx.repositories or []
-    if not repos and not snaps:
+    repos_known = ctx.b.json("repositories.json") is not None    # missing or an error body (for example 403): cannot be checked
+    if repos_known and not repos and not snaps:
         return [Finding(
             "SNP-001", CAT, Severity.CRITICAL, T("rules.ops.r_snapshots.01"),
             observed=T("rules.ops.r_snapshots.02"),
@@ -86,7 +94,6 @@ def r_snapshots(ctx):
         t = num(s, "end_time_in_millis") or num(s, "start_time_in_millis")
         if t and (latest is None or t > latest[0]):
             latest = (t, s)
-    has_times = any(num(s, "end_time_in_millis") or num(s, "start_time_in_millis") for s in dicts(snaps))
     # If snapshot.json is a plain list (no timestamps), use the SLM policy last success time as the RPO basis
     rpo_source = "snapshot.json"
     if latest is None:
@@ -139,20 +146,29 @@ def r_snapshots(ctx):
         ts = num(ls, "time") if isinstance(ls, dict) else 0
         tf = num(lf, "time") if isinstance(lf, dict) else 0
         if tf and tf > ts:
+            inv = pol.get("invocations_since_last_success")
+            if inv is None:
+                inv = dig(pol, "stats", "invocations_since_last_success")
+            age_h = (_now(ctx).timestamp() * 1000 - ts) / 3600000.0 if ts else None
+            # ES's SLM health indicator turns yellow after slm.health.failed_snapshot_warn_threshold (5) failures in a row
+            bad = (inv is not None and num(inv) >= 5) or age_h is None or age_h >= ctx.t["snapshot_age_hours_crit"]
             failing.append([pname, (lf or {}).get("time_string") or tf, (ls or {}).get("time_string") or "-",
-                            str((lf or {}).get("details") or "")[:160]])
+                            "-" if inv is None else fmt_num(inv), str((lf or {}).get("details") or "")[:160], bad])
     if failing:
         out.append(Finding(
-            "SNP-007", CAT, Severity.CRITICAL, T("rules.ops.r_snapshots.16"),
+            "SNP-007", CAT, Severity.CRITICAL if any(r[5] for r in failing) else Severity.WARNING, T("rules.ops.r_snapshots.16"),
             observed=T("rules.ops.r_snapshots.17") % len(failing),
             impact=T("rules.ops.r_snapshots.18"),
             recommend=T("rules.ops.r_snapshots.19"),
-            evidence=table([T("rules.ops.r_snapshots.20"), T("rules.ops.r_snapshots.21"), T("rules.ops.r_snapshots.22"), T("rules.ops.r_snapshots.23")], failing),
-            source="slm_policies.json"))
-    if latest is None and has_times and snaps:
+            evidence=table([T("rules.ops.r_snapshots.20"), T("rules.ops.r_snapshots.21"), T("rules.ops.r_snapshots.22"),
+                            "invocations_since_last_success", T("rules.ops.r_snapshots.23")], [r[:5] for r in failing]),
+            source="commercial/slm_policies.json"))
+    any_success = any((s.get("state") or "").upper() == "SUCCESS" for s in dicts(snaps))
+    if latest is None and not any_success and (snaps or (repos and ctx.b.json("snapshot.json") is not None)):
+        # decided on the snapshot states (the diagnostics list snapshots with verbose=false, without times)
         out.append(Finding(
             "SNP-003", CAT, Severity.CRITICAL, T("rules.ops.r_snapshots.24"),
-            observed=T("rules.ops.r_snapshots.25") % len(snaps),
+            observed=(T("rules.ops.r_snapshots.25") % len(snaps)) if snaps else T("rules.ops.r_snapshots.39"),
             impact=T("rules.ops.r_snapshots.26"),
             recommend=T("rules.ops.r_snapshots.27"), source="snapshot.json"))
     if in_prog:
@@ -181,7 +197,7 @@ def r_snapshots(ctx):
                                 for p in dicts(st.get("policy_stats"))]),
                 source="commercial/slm_stats.json"))
     slm_mode = (ctx.slm_status or {}).get("operation_mode")
-    if slm_mode and slm_mode.upper() != "RUNNING":
+    if slm_mode and slm_mode.upper() != "RUNNING" and ctx.slm_policies:     # no policy: nothing is scheduled (ES reports green)
         out.append(Finding(
             "SNP-006", CAT, Severity.WARNING, T("rules.ops.r_snapshots.36"),
             observed="SLM operation_mode=%s" % slm_mode,
@@ -218,7 +234,7 @@ def r_ilm(ctx):
         # "rollover alias does not point to index": no writes reach the index through the alias, so it cannot keep growing
         stuck_rollover = [r for r in errors if str(r[3]) in rollover_steps and not ctx.rolled_over(r[0])
                           and "does not point to index" not in str(r[4])]
-        write_delete = [r for r in errors if "is the write index" in str(r[4])]
+        write_delete = [r for r in errors if re.search(r"is the( failure store)? write index", str(r[4]))]
         sev = Severity.CRITICAL if stuck_rollover else Severity.WARNING
         note = []
         if stuck_rollover:
@@ -263,7 +279,8 @@ def r_ml_transform(ctx):
     if bad_t:
         out.append(Finding(
             "ML-001", CAT, Severity.WARNING, T("rules.ops.r_ml_transform.01"),
-            observed=T("rules.ops.r_ml_transform.02") % len(bad_t),
+            observed=T("rules.ops.r_ml_transform.02") % len(bad_t)
+                     + ((T("rules.ops.r_ml_transform.09") % len(tstats)) if num(ctx.transform_stats, "count") > len(tstats) else ""),
             impact=T("rules.ops.r_ml_transform.03"),
             recommend=T("rules.ops.r_ml_transform.04"),
             evidence=table(["id", "state", "reason"],
@@ -287,7 +304,9 @@ def r_ml_transform(ctx):
 
 
 def r_certificates(ctx):
-    """Time to certificate expiry in ssl_certs.json <= cert_expiry_days_crit days → Critical, <= warn days → Warning, otherwise OK. The reference time is the bundle collection time."""
+    """Time to certificate expiry in ssl_certs.json <= cert_expiry_days_crit days (already expired included) → Critical, <= warn days → Warning, otherwise OK.
+    When every certificate in the Critical range is a CA in a trust store (has_private_key=false), it is Warning: it affects only the chains it signs.
+    On ECH/ECE/ECK the certificates are platform-managed and the advice says so. The reference time is the bundle collection time."""
     certs = ctx.ssl_certs or []
     if not certs:
         return []
@@ -297,28 +316,32 @@ def r_certificates(ctx):
         d = _days_until(ctx, exp)
         if d is None:
             continue
+        ca = str(c.get("has_private_key")).lower() == "false"      # a CA in a trust store, not the node's own certificate
         row = [c.get("path") or c.get("alias"), (c.get("subject_dn") or "")[:80],
-               c.get("expiry"), T("rules.ops.r_certificates.01") % d]
+               c.get("expiry"), T("rules.ops.r_certificates.01") % d + (T("rules.ops.r_certificates.12") if ca else ""), ca, d]
         rows.append(row)
         if d <= ctx.t["cert_expiry_days_crit"]:
             rows_crit.append(row)
         elif d <= ctx.t["cert_expiry_days_warn"]:
             rows_warn.append(row)
+    orch = (T("rules.ops.r_certificates.13") % ctx.deployment) if ctx.orchestrated else ""
     if rows_crit:
-        return [Finding("SEC-001", SEC, Severity.CRITICAL, T("rules.ops.r_certificates.02"),
-                        observed=T("rules.ops.r_certificates.03") % (ctx.t["cert_expiry_days_crit"],
-                                                        len(rows_crit)),
-                        impact=T("rules.ops.r_certificates.04"),
-                        recommend=T("rules.ops.r_certificates.05"),
-                        evidence=table(["path", "subject", "expiry", T("rules.ops.r_certificates.06")], rows_crit),
+        expired = len([r for r in rows_crit if r[5] < 0])
+        node_cert = any(not r[4] for r in rows_crit)
+        return [Finding("SEC-001", SEC, Severity.CRITICAL if node_cert else Severity.WARNING, T("rules.ops.r_certificates.02"),
+                        observed=T("rules.ops.r_certificates.03") % (ctx.t["cert_expiry_days_crit"], len(rows_crit))
+                                 + ((T("rules.ops.r_certificates.14") % expired) if expired else ""),
+                        impact=T("rules.ops.r_certificates.04") if node_cert else T("rules.ops.r_certificates.15"),
+                        recommend=T("rules.ops.r_certificates.05") + orch,
+                        evidence=table(["path", "subject", "expiry", T("rules.ops.r_certificates.06")], [r[:4] for r in rows_crit]),
                         source="ssl_certs.json")]
     if rows_warn:
         return [Finding("SEC-001", SEC, Severity.WARNING, T("rules.ops.r_certificates.07"),
                         observed=T("rules.ops.r_certificates.03") % (ctx.t["cert_expiry_days_warn"],
                                                         len(rows_warn)),
-                        impact=T("rules.ops.r_certificates.08"),
-                        recommend=T("rules.ops.r_certificates.09"),
-                        evidence=table(["path", "subject", "expiry", T("rules.ops.r_certificates.06")], rows_warn),
+                        impact=T("rules.ops.r_certificates.08") if any(not r[4] for r in rows_warn) else T("rules.ops.r_certificates.15"),
+                        recommend=T("rules.ops.r_certificates.09") + orch,
+                        evidence=table(["path", "subject", "expiry", T("rules.ops.r_certificates.06")], [r[:4] for r in rows_warn]),
                         source="ssl_certs.json")]
     return [Finding("SEC-001", SEC, Severity.OK, T("rules.ops.r_certificates.10"),
                     observed=T("rules.ops.r_certificates.11")
@@ -345,13 +368,18 @@ def _is_loopback(h):
 
 
 def r_security_enabled(ctx):
-    """xpack security.enabled=false → Critical, otherwise OK."""
+    """xpack security.enabled=false → Critical, or Warning when every node binds both HTTP and transport only to loopback (nodes info
+    required; without it the addresses are unknown and it stays Critical). Otherwise OK."""
     sec = dig(ctx.xpack, "security", default={}) or {}
     if not sec:
         return []
     if sec.get("enabled") is False:
         hosts = [_http_host(n) for n in ctx.nodes]
-        loopback = bool(hosts) and all(_is_loopback(h) for h in hosts)
+        # unknown when nodes info is missing; transport has no authentication either with security off, so it must be loopback too
+        known = bool(ctx.nodes) and all((n.info or {}).get("http") or (n.info or {}).get("settings") for n in ctx.nodes)
+        tports = [dig(n.info, "transport", "bound_address") or n.info.get("transport_address") for n in ctx.nodes]
+        tport_loop = all(t and _is_loopback(",".join(t) if isinstance(t, list) else t) for t in tports)
+        loopback = known and bool(hosts) and all(_is_loopback(h) for h in hosts) and tport_loop
         return [Finding("SEC-002", SEC, Severity.WARNING if loopback else Severity.CRITICAL,
                         T("rules.ops.r_security_enabled.01") + (T("rules.ops.r_security_enabled.02") if loopback else ""),
                         observed="xpack.security.enabled = false"

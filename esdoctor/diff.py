@@ -7,6 +7,7 @@ and disk and shard growth rates give an estimate of when capacity runs out.
 """
 
 import collections
+import re
 
 from .i18n import T
 from .model import Finding, Severity, table
@@ -64,10 +65,26 @@ def _restarted(b, n, hours=None):
 
 
 def _span_hours(b, n, hours):
-    """Hours the delta covers: the interval, or the uptime since the restart when the node restarted."""
+    """Hours the delta covers: the interval, or the uptime since the restart when the node restarted (or joined: b is None)."""
+    if b is None:
+        return (n.uptime_ms or 0) / 3600000.0 or hours
     if _restarted(b, n, hours):
         return n.uptime_ms / 3600000.0
     return hours
+
+
+def _joined_fresh(n, hours):
+    """A node missing from the earlier bundle counts from 0 only when it started inside the interval (its uptime is not longer
+    than the interval plus slack); a node that ran all along but was missing from the earlier stats has old history."""
+    if not n.uptime_ms or not hours:
+        return False
+    elapsed = hours * 3600000.0
+    return n.uptime_ms <= elapsed + max(600000.0, elapsed * 0.05)
+
+
+def _rate_label(v):
+    """One decimal below 10, so a few events over many hours do not read as 0."""
+    return ("%.1f" % v) if v < 10 else ("%.0f" % v)
 
 
 def _per_hour(delta, hours):
@@ -82,7 +99,13 @@ def summary(base, cur, hours):
         return dig(ctx.cluster_stats, "indices", "count") or len(ctx.indices_stats)
 
     def store(ctx):
-        return num(ctx.cluster_stats, "indices", "store", "size_in_bytes")
+        return dig(ctx.cluster_stats, "indices", "store", "size_in_bytes")
+
+    def docs(ctx):
+        return dig(ctx.cluster_stats, "indices", "docs", "count")
+
+    def delta(a, b, fmt):
+        return fmt(b - a) if (a is not None and b is not None) else "-"
 
     rows = [
         (T("diff.summary.01"), base.collection_time.isoformat() if base.collection_time else "-",
@@ -101,12 +124,9 @@ def summary(base, cur, hours):
          fmt_num(cur.health.get("unassigned_shards")),
          _sign((num(cur.health, "unassigned_shards"))
                - (num(base.health, "unassigned_shards")))),
-        (T("diff.summary.10"), fmt_bytes(store(base)), fmt_bytes(store(cur)),
-         _sign_bytes(store(cur) - store(base))),
-        (T("diff.summary.11"), fmt_num(dig(base.cluster_stats, "indices", "docs", "count")),
-         fmt_num(dig(cur.cluster_stats, "indices", "docs", "count")),
-         _sign((num(cur.cluster_stats, "indices", "docs", "count"))
-               - (num(base.cluster_stats, "indices", "docs", "count")))),
+        (T("diff.summary.10"), fmt_bytes(store(base)) if store(base) is not None else "-",
+         fmt_bytes(store(cur)) if store(cur) is not None else "-", delta(store(base), store(cur), _sign_bytes)),
+        (T("diff.summary.11"), fmt_num(docs(base)), fmt_num(docs(cur)), delta(docs(base), docs(cur), _sign)),
     ]
     return {"columns": [T("diff.summary.12"), T("diff.summary.13"), T("diff.summary.14"), T("diff.summary.15")],
             "rows": [[a, b, c, d] for a, b, c, d in rows],
@@ -228,24 +248,26 @@ def r_cluster_identity(base, cur, hours, t):
 
 
 def r_status_change(base, cur, hours, t):
-    """When the cluster status differs between the two bundles. Worse -> critical, better -> info."""
+    """When the cluster status differs between the two bundles (DIF-001). Worse -> the severity CLU-001 gives the current status
+    (red critical, yellow warning); better -> info, with a separate text when it is not green yet."""
     b, c = (base.health.get("status") or "").lower(), (cur.health.get("status") or "").lower()
     order = {"green": 0, "yellow": 1, "red": 2}
     if b == c or b not in order or c not in order:
         return []
     worse = order.get(c, 0) > order.get(b, 0)
+    sev = (Severity.CRITICAL if c == "red" else Severity.WARNING) if worse else Severity.INFO   # as CLU-001 rates the status
     return [Finding(
-        "DIF-001", CAT, Severity.CRITICAL if worse else Severity.INFO,
+        "DIF-001", CAT, sev,
         T("diff.r_status_change.01") % (T("diff.r_status_change.02") if worse else T("diff.r_status_change.03")),
         observed="%s → %s" % (b or "-", c or "-"),
         impact=T("diff.r_status_change.04") if worse
-               else T("diff.r_status_change.05"),
+               else (T("diff.r_status_change.05") if c == "green" else T("diff.r_status_change.08")),
         recommend=T("diff.r_status_change.06") if worse else "",
         source=T("diff.r_status_change.07"))]
 
 
 def r_node_restart(base, cur, hours, t):
-    """Node with the same name restarted: its uptime went down, or grew less than the interval -> critical (DIF-002, restart). Node left -> warning, only new -> info (DIF-003)."""
+    """Node with the same name restarted: its uptime went down, or grew less than the interval -> warning, info when the version changed (a rolling upgrade) (DIF-002, as OS-006 rates a recent restart). Node left -> warning, only new -> info (DIF-003)."""
     bm, cm = _node_map(base), _node_map(cur)
     restarted, left, joined = [], [], []
     for name, n in cm.items():
@@ -260,10 +282,11 @@ def r_node_restart(base, cur, hours, t):
             left.append(name)
     out = []
     if restarted:
+        upgraded = bool(base.version and cur.version and base.version != cur.version)
         out.append(Finding(
-            "DIF-002", CAT, Severity.CRITICAL, T("diff.r_node_restart.01"),
+            "DIF-002", CAT, Severity.INFO if upgraded else Severity.WARNING, T("diff.r_node_restart.01"),
             observed=T("diff.r_node_restart.02") % len(restarted),
-            impact=T("diff.r_node_restart.03"),
+            impact=T("diff.r_node_restart.03") + (T("diff.r_node_restart.17") if upgraded else ""),
             recommend=T("diff.r_node_restart.04"),
             evidence=table(["node", T("diff.r_node_restart.05"), T("diff.r_node_restart.06")], restarted),
             source=T("diff.r_node_restart.07")))
@@ -281,21 +304,23 @@ def r_node_restart(base, cur, hours, t):
 
 def r_rejections_delta(base, cur, hours, t):
     """Per node and pool increase in rejected. Total > 0 -> warning, >= rejected_crit -> critical (DIF-005). Cumulative value is not 0 but the increase is 0 -> info (DIF-004, past history).
-    A node that restarted in the interval (uptime went down) counts from 0: its whole current value is the increase, over its uptime."""
+    A node that restarted in the interval (uptime went down) or joined (started inside the interval) counts from 0: its whole current
+    value is the increase, over its uptime."""
     bm, cm = _node_map(base), _node_map(cur)
     rows, total = [], 0
     for name, n in cm.items():
-        if name not in bm:
+        bn = bm.get(name)       # a node that joined (started inside the interval) counts from 0, like a restarted one
+        if bn is None and not _joined_fresh(n, hours):
             continue
-        reset = _restarted(bm[name], n, hours)
-        b, c = (collections.Counter() if reset else _tp_rejected(bm[name])), _tp_rejected(n)
+        reset = bn is None or _restarted(bn, n, hours)
+        b, c = (collections.Counter() if reset else _tp_rejected(bn)), _tp_rejected(n)
         for pool in set(list(b.keys()) + list(c.keys())):
             d = c[pool] - b[pool]
             if d > 0:
                 total += d
-                rate = _per_hour(d, _span_hours(bm[name], n, hours))
+                rate = _per_hour(d, _span_hours(bn, n, hours))
                 rows.append([name, pool, fmt_num(b[pool]), fmt_num(c[pool]), fmt_num(d),
-                             ("%.0f/h" % rate) if rate else "-"])
+                             _rate_label(rate) + "/h" if rate else "-"])
     if not rows:
         if any(_tp_rejected(n) for n in cm.values()):
             return [Finding(
@@ -310,7 +335,7 @@ def r_rejections_delta(base, cur, hours, t):
         "DIF-005", CAT, Severity.CRITICAL if total >= t["rejected_crit"] else Severity.WARNING,
         T("diff.r_rejections_delta.06"),
         observed=T("diff.r_rejections_delta.07") % (
-            fmt_num(total), (T("diff.r_rejections_delta.08") % _per_hour(total, hours)) if hours else ""),
+            fmt_num(total), (T("diff.r_rejections_delta.08") % _rate_label(_per_hour(total, hours))) if hours else ""),
         impact=T("diff.r_rejections_delta.09"),
         recommend=T("diff.r_rejections_delta.10"),
         evidence=table(["node", "pool", T("diff.r_rejections_delta.11"), T("diff.r_rejections_delta.12"), T("diff.r_rejections_delta.13"), T("diff.r_rejections_delta.14")], rows[: t["top_n"]]),
@@ -323,17 +348,18 @@ def r_gc_delta(base, cur, hours, t):
     bm, cm = _node_map(base), _node_map(cur)
     rows, bad = [], False
     for name, n in cm.items():
-        if name not in bm:
+        bn = bm.get(name)
+        if bn is None and not _joined_fresh(n, hours):
             continue
-        reset = _restarted(bm[name], n, hours)
-        bc, bt = (0, 0) if reset else bm[name].gc("old")
+        reset = bn is None or _restarted(bn, n, hours)
+        bc, bt = (0, 0) if reset else bn.gc("old")
         cc, ct = n.gc("old")
         if cc < bc:          # counter went down without an uptime drop: no usable delta
             continue
         dc, dt = cc - bc, ct - bt
         if dc <= 0:
             continue
-        span = _span_hours(bm[name], n, hours)
+        span = _span_hours(bn, n, hours)
         rate = _per_hour(dc, span)
         ratio = (dt / (span * 3600000.0) * 100) if span else None
         rows.append([name, fmt_num(dc), fmt_ms(dt),
@@ -356,13 +382,15 @@ def r_gc_delta(base, cur, hours, t):
 
 
 def r_breaker_delta(base, cur, hours, t):
-    """Increase in breaker tripped > 0 -> critical. A node that restarted (uptime went down) counts from 0."""
+    """Increase in breaker tripped > 0 -> warning, >= breaker_delta_crit -> critical (DIF-007). A node that restarted (uptime went down)
+    or joined (started inside the interval) counts from 0."""
     bm, cm = _node_map(base), _node_map(cur)
     rows, total = [], 0
     for name, n in cm.items():
-        if name not in bm:
+        bn = bm.get(name)
+        if bn is None and not _joined_fresh(n, hours):
             continue
-        b = collections.Counter() if _restarted(bm[name], n, hours) else _breaker_tripped(bm[name])
+        b = collections.Counter() if (bn is None or _restarted(bn, n, hours)) else _breaker_tripped(bn)
         c = _breaker_tripped(n)
         for k in set(list(b.keys()) + list(c.keys())):
             d = c[k] - b[k]
@@ -372,7 +400,7 @@ def r_breaker_delta(base, cur, hours, t):
     if not rows:
         return []
     return [Finding(
-        "DIF-007", CAT, Severity.CRITICAL, T("diff.r_breaker_delta.01"),
+        "DIF-007", CAT, Severity.CRITICAL if total >= t["breaker_delta_crit"] else Severity.WARNING, T("diff.r_breaker_delta.01"),
         observed=T("diff.r_breaker_delta.02") % fmt_num(total),
         impact=T("diff.r_breaker_delta.03"),
         recommend=T("diff.r_breaker_delta.04"),
@@ -422,20 +450,21 @@ def r_disk_projection(base, cur, hours, t):
         rows.append([name, tier, "%.1f%%" % used_pct, fmt_bytes(rate) + "/h", _days_label(head, rate), "%.0f%%" % high])
     if not rows:
         return []
-    summary, soon = [], []
+    summary, soon, totals = [], [], []
     for tier, (head, rate) in tiers.items():
         if tier in changed:
             # nodes joined or left the tier: shards moved between nodes, so the growth is not ingest
             summary.append("%s %s" % (tier, T("diff.r_disk_projection.15")))
-            rows.append([T("diff.r_disk_projection.14") % tier, tier, "", "-", T("diff.r_disk_projection.15"), ""])
+            totals.append([T("diff.r_disk_projection.14") % tier, tier, "", "-", T("diff.r_disk_projection.15"), ""])
             continue
         label = _days_label(head, rate)
         summary.append("%s %s" % (tier, label))
-        rows.append([T("diff.r_disk_projection.14") % tier, tier, "", fmt_bytes(rate) + "/h", label, ""])
+        totals.append([T("diff.r_disk_projection.14") % tier, tier, "", fmt_bytes(rate) + "/h", label, ""])
         if head <= 0:
             soon.append(0.0)
         elif rate > 0 and head / rate / 24.0 <= t["disk_projection_days_warn"]:
             soon.append(head / rate / 24.0)
+    rows = totals + rows        # the tier totals carry the verdict, so they come first (tables can be cut)
     sev = Severity.CRITICAL if any(d <= 7 for d in soon) else (Severity.WARNING if soon else Severity.INFO)
     return [Finding(
         "DIF-008", CAT, sev, T("diff.r_disk_projection.04"),
@@ -510,16 +539,28 @@ def r_throughput(base, cur, hours, t):
 
 
 def r_index_growth(base, cur, hours, t):
-    """Increase in index primary store > index_growth_min_bytes -> info (DIF-010). User indices added or deleted -> info (DIF-011)."""
-    rows, new_idx, gone = [], [], []
+    """Increase in index primary store > index_growth_min_bytes -> info (DIF-010). User indices added or deleted -> info (DIF-011).
+    An index that reappears as restored-<name> or partial-<name> was mounted by ILM as a searchable snapshot: it is listed as moved,
+    not as one new and one deleted index."""
+    rows, new_idx, gone, moved = [], [], [], []
     bset = set(base.indices_stats.keys())
     cset = set(cur.indices_stats.keys())
-    for name in cset - bset:
-        if not cur.is_system_index(name):
+
+    def plain(n):
+        return re.sub(r"^(partial-)?(restored-)?", "", n)
+    gone_plain = collections.defaultdict(list)
+    for n in sorted(bset - cset):
+        if not base.is_system_index(n):
+            gone_plain[plain(n)].append(n)
+    for name in sorted(cset - bset):
+        if cur.is_system_index(name):
+            continue
+        srcs = gone_plain.get(plain(name))
+        if srcs and plain(name) != name:
+            moved.append([srcs.pop(), name])   # ILM mounted it as a searchable snapshot (restored-, partial-) and deleted the source
+        else:
             new_idx.append(name)
-    for name in bset - cset:
-        if not base.is_system_index(name):
-            gone.append(name)
+    gone = sorted(n for v in gone_plain.values() for n in v)
     for name in cset & bset:
         b = num(base.indices_stats, name, "primaries", "store", "size_in_bytes")
         c = num(cur.indices_stats, name, "primaries", "store", "size_in_bytes")
@@ -539,15 +580,17 @@ def r_index_growth(base, cur, hours, t):
             evidence=table(["index", T("diff.r_index_growth.05"), T("diff.r_index_growth.06"), T("diff.r_index_growth.07"), T("diff.r_index_growth.08")],
                            [r[:5] for r in rows[: t["top_n"]]]),
             source=T("diff.r_index_growth.09")))
-    if new_idx or gone:
+    if new_idx or gone or moved:
         out.append(Finding(
             "DIF-011", CAT, Severity.INFO, T("diff.r_index_growth.10"),
-            observed=T("diff.r_index_growth.11") % (len(new_idx), len(gone)),
+            observed=T("diff.r_index_growth.11") % (len(new_idx), len(gone))
+                     + (T("diff.r_index_growth.18") % len(moved) if moved else ""),
             impact=T("diff.r_index_growth.12"),
             recommend=T("diff.r_index_growth.13"),
             evidence=table([T("diff.r_index_growth.14"), T("diff.r_index_growth.15")],
                            [[T("diff.r_index_growth.16"), n] for n in new_idx[: t["top_n"]]]
-                           + [[T("diff.r_index_growth.17"), n] for n in gone[: t["top_n"]]]),
+                           + [[T("diff.r_index_growth.17"), n] for n in gone[: t["top_n"]]]
+                           + [[T("diff.r_index_growth.19"), "%s → %s" % (a, b)] for a, b in moved[: t["top_n"]]]),
             source=T("diff.r_index_growth.09")))
     return out
 
@@ -560,7 +603,8 @@ def r_interval_rates(series, t):
     went down in the interval restarted, so it is left out of that interval. An interval between two different clusters (the
     DIF-013 test), or where fewer than half of the later bundle's data nodes appear in the earlier one, is shown but not rated:
     its rate would not describe this cluster. The busiest interval by indexing rate is the peak,
-    the quietest the off-peak, and their ratio is shown. The per data node rate at the peak is what sizing needs.
+    the quietest the off-peak, and their ratio is shown. The per data node rate at the peak is what sizing needs; it divides by the
+    data nodes whose counter moved in that interval (for indexing usually the hot tier), not by every data node.
     Info only.
     """
     rows, rates, dropped = [], [], 0
@@ -577,7 +621,7 @@ def r_interval_rates(series, t):
                          T("diff.r_interval_rates.14")])
             continue
         di = dq = 0
-        nodes, skipped = 0, 0
+        nodes, skipped, inodes, qnodes = 0, 0, 0, 0
         for n in b.data_nodes:
             p = am.get(n.name)
             if p is None:
@@ -585,15 +629,19 @@ def r_interval_rates(series, t):
             if _restarted(p, n, hours):
                 skipped += 1
                 continue
-            di += max(0, num(n.stats, "indices", "indexing", "index_total") - num(p.stats, "indices", "indexing", "index_total"))
-            dq += max(0, num(n.stats, "indices", "search", "query_total") - num(p.stats, "indices", "search", "query_total"))
+            x = max(0, num(n.stats, "indices", "indexing", "index_total") - num(p.stats, "indices", "indexing", "index_total"))
+            y = max(0, num(n.stats, "indices", "search", "query_total") - num(p.stats, "indices", "search", "query_total"))
+            di += x
+            dq += y
+            inodes += 1 if x else 0     # per node rates use the nodes that did the work (the hot tier for indexing)
+            qnodes += 1 if y else 0
             nodes += 1
         if not nodes:
             continue
         sec = hours * 3600.0
         ir, qr = di / sec, dq / sec
-        rates.append((ir, qr, label, nodes))
-        rows.append([label, "%.1f" % hours, "%.0f" % ir, "%.0f" % (ir / nodes), "%.0f" % qr, "%.0f" % (qr / nodes),
+        rates.append((ir, qr, label, max(1, inodes), max(1, qnodes)))
+        rows.append([label, "%.1f" % hours, "%.0f" % ir, "%.0f" % (ir / max(1, inodes)), "%.0f" % qr, "%.0f" % (qr / max(1, qnodes)),
                      nodes, skipped])
     if len(rates) < 2:
         return []
@@ -603,7 +651,7 @@ def r_interval_rates(series, t):
     qpeak = max(rates, key=lambda r: r[1])
     obs = T("diff.r_interval_rates.02") % (
         len(rates), peak[2], peak[0], peak[0] / peak[3], low[2], low[0],
-        ("%.1f" % ratio) if ratio else "-", qpeak[2], qpeak[1], qpeak[1] / qpeak[3])
+        ("%.1f" % ratio) if ratio else "-", qpeak[2], qpeak[1], qpeak[1] / qpeak[4])
     if dropped:
         obs += T("diff.r_interval_rates.15") % dropped
     return [Finding(
@@ -623,7 +671,7 @@ DIFF_RULES = [r_cluster_identity, r_status_change, r_node_restart, r_rejections_
               r_breaker_delta, r_disk_projection, r_throughput, r_index_growth, r_interval_rates]
 
 
-def compare(base, cur, thresholds, base_findings=None, cur_findings=None, errors=None, skipped=None):
+def compare(base, cur, thresholds, base_findings=None, cur_findings=None, errors=None, skipped=None, base_skipped=None):
     """Returns (summary dict, [Finding]).
 
     When the two bundles come from different clusters (DIF-013), only that finding is returned: the deltas would not describe one
@@ -644,20 +692,22 @@ def compare(base, cur, thresholds, base_findings=None, cur_findings=None, errors
             if errors is not None:
                 errors.append({"rule": "diff." + fn.__name__, "error": traceback.format_exc(limit=3)})
     if base_findings is not None and cur_findings is not None:
-        findings.extend(_finding_delta(base_findings, cur_findings, skipped))
+        findings.extend(_finding_delta(base_findings, cur_findings, skipped, base_skipped))
     return summary_with_nodes(base, cur, hours, thresholds), findings
 
 
-def _finding_delta(base_findings, cur_findings, skipped=None):
-    """Findings that are new or resolved compared with the earlier bundle.
+def _finding_delta(base_findings, cur_findings, skipped=None, base_skipped=None):
+    """Critical and Warning findings that are new, worse or resolved compared with the earlier bundle (DIF-012, always Info).
 
-    A finding whose rule did not run on the current bundle (input file missing, listed in skipped) is not counted as resolved."""
+    A finding whose rule did not run on the current bundle (input file missing or the rule failed, listed in skipped) is not
+    counted as resolved, and one whose rule did not run on the earlier bundle (base_skipped) is not counted as new."""
     sev_rank = Severity.ORDER
     bmap = dict((f.id, f) for f in base_findings
                 if f.severity in (Severity.CRITICAL, Severity.WARNING))
     cmap = dict((f.id, f) for f in cur_findings
                 if f.severity in (Severity.CRITICAL, Severity.WARNING))
-    new = [cmap[k] for k in cmap if k not in bmap]
+    base_gone = set(base_skipped or ())
+    new = [cmap[k] for k in cmap if k not in bmap and getattr(cmap[k], "rule", None) not in base_gone]
     gone = set(skipped or ())
     fixed = [bmap[k] for k in bmap if k not in cmap and getattr(bmap[k], "rule", None) not in gone]
     worse = [cmap[k] for k in cmap

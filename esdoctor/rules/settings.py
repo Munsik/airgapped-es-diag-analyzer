@@ -11,7 +11,7 @@ import collections
 from ..i18n import T
 from ..model import Finding, Severity, table
 from ..util import items, num
-from ..settings_kb import DOCS, compare, default_for, effect_of, lookup, risk_of
+from ..settings_kb import DOCS, _norm, compare, default_for, effect_of, lookup, risk_of
 
 CAT = "settings"
 _SEV = {"WARNING": Severity.WARNING, "INFO": Severity.INFO, None: Severity.INFO}
@@ -151,7 +151,7 @@ def r_yml_shadowed(ctx):
     rows = []
     for n in ctx.nodes:
         for k, v in _node_settings(n).items():
-            if k in api and str(api[k][1]) != str(v):
+            if k in api and _norm(api[k][1]).lower() != _norm(v).lower():
                 rows.append([k, n.name, str(v), api[k][0], str(api[k][1])])
     if not rows:
         return []
@@ -169,7 +169,8 @@ def r_node_setting_changes(ctx):
 
     Node-specific settings (name, paths, network, security certificates, etc.) are excluded. Values are collected across nodes and reported per setting and value;
     severity is the highest risk among the change directions (Warning at most, settings with a dedicated rule excluded). node.processors, thread_pool.write.size and thread_pool.search.size
-    are not treated as changes when they equal the value derived from the allocated CPU count. If ECH/ECE/ECK is detected, the values are treated as platform-managed and reduced to Info.
+    are not treated as changes when they equal the value derived from the allocated CPU count. If ECH/ECE is detected, the values are treated as platform-managed and reduced to Info
+    (on ECK the user sets them in the Elasticsearch resource, so they are rated).
     A static setting needs a yml edit and a restart on every target node.
     """
     agg = collections.OrderedDict()
@@ -210,7 +211,7 @@ def r_node_setting_changes(ctx):
         docs.add(spec["doc"])
     sev = _worst(sevs) if sevs else Severity.INFO
     orch = ""
-    if ctx.orchestrated:
+    if ctx.platform_managed:       # on ECK the user writes the yml in the Elasticsearch resource, so the values are theirs
         sev = Severity.INFO
         orch = (T("rules.settings.r_node_setting_changes.03")
                 % ctx.deployment)
@@ -230,7 +231,8 @@ def r_node_setting_consistency(ctx):
 
     The scope is explicitly set keys under _CONSISTENCY_PREFIX, minus node-specific settings. Data nodes are compared only with
     nodes of the same data tier (all nodes if no data nodes are identified): tiers usually run on different hardware, so values
-    such as node.processors differ between tiers by design. A setting missing on some nodes counts as a difference. Any mismatch → Warning.
+    such as node.processors differ between tiers by design. A setting missing on some nodes counts as a difference. Any mismatch → Warning
+    (Info when ECH/ECE is detected, since the platform writes the yml).
     """
     dn = ctx.data_nodes or ctx.nodes
     if len(dn) < 2:
@@ -254,14 +256,26 @@ def r_node_setting_consistency(ctx):
                 rows.append([k, tier, ", ".join("%s=%s" % (nm, m.get(nm, missing)) for nm in names)[:300]])
     if not rows:
         return []
+    orch = (T("rules.settings.r_node_setting_changes.03") % ctx.deployment) if ctx.platform_managed else ""
     return [Finding(
-        "SET-005", CAT, Severity.WARNING, T("rules.settings.r_node_setting_consistency.02"),
-        observed=T("rules.settings.r_node_setting_consistency.03") % len(rows),
+        "SET-005", CAT, Severity.INFO if orch else Severity.WARNING, T("rules.settings.r_node_setting_consistency.02"),
+        observed=T("rules.settings.r_node_setting_consistency.03") % len(rows) + orch,
         impact=T("rules.settings.r_node_setting_consistency.04"),
         recommend=T("rules.settings.r_node_setting_consistency.05"),
         evidence=table([T("rules.settings.r_node_setting_consistency.06"), "tier", T("rules.settings.r_node_setting_consistency.07")],
                        rows[: ctx.t["top_n"] * 2]),
         refs=_refs(), source="nodes.json")]
+
+
+def _wide_auto_expand(v):
+    """True when an auto_expand_replicas range can add replicas beyond one as nodes join (max is all or above 1)."""
+    hi = str(v).split("-", 1)[-1].strip().lower()
+    if hi == "all":
+        return True
+    try:
+        return int(hi) > 1
+    except ValueError:
+        return True
 
 
 def r_index_setting_changes(ctx):
@@ -301,8 +315,11 @@ def r_index_setting_changes(ctx):
         spec = info["spec"]
         sample = ", ".join(info["idx"][:3]) + (T("rules.settings.r_index_setting_changes.01") % (len(info["idx"]) - 3) if len(info["idx"]) > 3 else "")
         ded = _dedicated_note(k)
+        eff = effect_of(spec, info["dir"])
+        if k == "index.auto_expand_replicas" and not _wide_auto_expand(v):
+            eff = T("rules.settings.r_index_setting_changes.15")
         rows.append([k, str(info["default"]), v, spec["kind"], T("rules.settings.r_index_setting_changes.02") % len(info["idx"]), sample,
-                     effect_of(spec, info["dir"]) + ((T("rules.settings.r_index_setting_changes.03") % ded) if ded else "")])
+                     eff + ((T("rules.settings.r_index_setting_changes.03") % ded) if ded else "")])
         if not ded:
             sevs.append(_SEV.get(risk_of(spec, info["dir"]), Severity.INFO))
         docs.add(spec["doc"])

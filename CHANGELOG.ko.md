@@ -56,7 +56,7 @@
 - SEC-002 는 HTTP bind 주소(`network.host` 보다 `http.host` 우선)를 읽음. OPS-002: 현재 read 오류나 fatal 오류만 주의
 - OPS-007: 레거시 수집 설정을 elasticsearch.yml 에서도 읽음. 7.16 부터 deprecated, 9.5 에서 10.0 제거 예고
 - HOT-003: 샤드 재배치 중이면 참고. HOT-004: `computation_active` 기준. HOT-005 와 COST-006 은 컨테이너 예외 적용. TPL-001 은 서로 다른 template 수. REC-001: 0 이하는 무제한
-- COST-004 는 shrink·downsample 사본 제외. data stream lifecycle 보존 기간도 빠지는 것으로 봄
+- COST-004 는 shrink·downsample 사본을 새 수집량으로 세지 않음(이름의 날짜로 배치, 최종 검토 참고). data stream lifecycle 보존 기간도 빠지는 것으로 봄
 - 로그: `[gc][old]` 와 GC overhead 패턴, low watermark 로그 → 주의, high·flood → 치명, master not discovered → 주의, hot threads 의 global ordinals 생성 분류와 search 스레드의 Lucene 프레임 건너뜀
 - SET-001/006: 단위 없는 0, -1 을 같은 종류로 비교, `default` 와 `default(LZ4)` 를 같게 봄, `node.processors` 는 available processors 와 비교
 
@@ -96,13 +96,30 @@
 - 실패한 추세 규칙을 버리지 않고 규칙 오류로 기록
 - DIF-014 는 모든 번들을 함께 시간순 정렬
 
+### 수정: 룰별 최종 검토
+
+모든 판정 ID 를 룰 하나씩 해당 버전의 Elasticsearch 소스, Lucene, support-diagnostics 구조, 공식 문서와 다시 대조했습니다. 이어서 별도 검토로 이번 변경 자체를 다시 확인했습니다.
+
+- 공통 파싱: 부모 map 안의 점 표기 키(`watermark.low` 옆의 `watermark.low.max_headroom`)를 찾지 못해 yml 의 max_headroom 을 무시하던 문제, 한 글자 단위(`500m`, `1g`)를 읽지 못하던 문제, 마지막 열에 공백이 있는 cat 표의 숫자가 둘로 갈리던 문제를 수정. data stream lifecycle 이 관리하는 인덱스(ILM explain `managed: false`)의 ILM 정책은 쓰지 않음
+- 설정 지식 베이스(설정 지식 베이스 100종): `thread_pool.search.queue_size` 가 늘 "변경"·주의였음 → 9.0 부터 search 스레드 수 × 1000, 이전은 1000. 비율로 쓴 워터마크(`0.85`)는 85% 와 같고, 백분율 기본값에 절대값을 쓴 워터마크는 방향 없음(참고). `auto_expand_replicas` 문구는 범위에 따라 다름. SET-003 은 목록과 쉼표 문자열을 같게 비교. `logger.level` 은 static 노드 설정, `use_real_memory` 는 8.1 부터 dynamic, incoming·outgoing 복구 기본값은 `node_concurrent_recoveries` 를 따름, 7.17 의 `destructive_requires_name`·`transport.compress` 기본값, ML·http.max_content_length·write pool·synthetic source fallback 문구 수정. SET-004/005 는 ECH·ECE 에서만 참고로 낮춤(ECK 는 사용자가 yml 을 씀)
+- time-based merge 정책: 8.11 이 아니라 8.8 부터, 9.1·9.2 는 doc values 필요. IDX-004 는 Lucene LogMergePolicy 단계 폭(floor_segment 위 0.75, 아래 1.5)을 써서 20GB 샤드가 설계상 약 150개 세그먼트를 가지며, 인덱스별 기준을 표시
+- CLU: CLU-001 은 green 인 지표만 정상으로 세고 생성 중인 primary 를 따로 표시, CLU-006 은 노드 정보 필요, 전용 frozen 데이터 노드만 있으면 CLU-015 생략, persistent task 판별은 action 만 봄
+- 노드: JVM-003 은 master 전용 노드에 60% 허용(ES 자동 산정), JVM-005 는 uptime 1시간 미만 노드를 판정하지 않음, DISK-002(high watermark) 치명 → 주의(health API 의 yellow 와 같음), frozen flood stage 는 health 지표가 red 라 치명, 디스크는 ES 처럼 경로별(flood·high 는 가용 최소 경로, low 는 최대 경로), `threshold_enabled: false` 면 적용되는 것이 없다고 표시, OS-003 은 수집 시점 CPU 가 바쁠 때만 치명, OS-006 은 노드 표시, IP-001 은 coordinating·primary·replica 거부만 셈(COST-006·병목 요약도 같음)
+- syscalls·로그: dmesg 를 읽지 못했는데 SYS-004 가 정상이던 것 → 참고. Elasticsearch 와 연결되지 않은 java 종료는 주의. vm.max_map_count 권고 시점은 8.16. LOG-001 은 indexing pressure, native thread OOM, 긴 young GC, DocumentParsingException 을 따로 보고, 로그의 breaker trip 은 주의, docker 컨테이너 로그도 읽음. LOG-000 은 실제로 맞은 문구와 remote 모드 안내를 보여 줌. RT-001 은 stored fields 압축을 구분
+- 샤드: SHD-004 근거는 작은 primary 를 데이터 스트림별로 묶고 마운트 수를 표시하며 미할당 primary 는 셈하지 않음. 노드 정보가 없으면 IDX-002 를 판정하지 않음. IDX-001 은 `0-0` 을 replica 없음으로 봄. PERF-003 은 request cache 조회 10000건 이상에서만 판정하고 LRU eviction 으로 설명(`now` 를 쓰는 요청은 원래 캐시되지 않음). PERF-001 은 샤드당 query 단계 시간. IDX-006 은 8.18 이전에 버전 충돌을 구분할 수 없어 index_failed 만으로 판정하지 않음. IDX-015 는 디스크 1% 상한(8.8+)과 할당된 복사본만 반영. MAP-001/004 는 logsdb 의 `ignore_dynamic_beyond_limit` 기본값을 적용하고 통합 패키지 한도는 제품 설정으로 봄. IDX-008 치명은 명시적 write 대상만, 표시 없는 단일 멤버 alias 는 IDX-011. OVS-002 는 문서 수 롤오버 조건과 data stream lifecycle 을 반영하고 알 수 없음·롤오버 없음은 참고. OVS-003 은 fully mounted 인덱스 포함
+- 가이드: CFG-008 은 JDK 8 `-Xloggc` 인정, CFG-004 는 설정이 없는 노드를 건너뛰고 `discovery.zen.hosts_provider` 를 읽음, CFG-006 은 bound address 와 `es.enforce.bootstrap.checks` 를 보고 single-node 안내를 따로 둠, CFG-002 는 Windows 경로와 기본 `path.data` 를 읽음, CFG-001 은 대소문자 구분, 8.8 이전 SHD-008 은 맞는 롤오버 안내, SHD-011 은 마운트 제외·버전별 문구, PERF-004 는 실제 쓰기 부하가 있는 샤드만 셈, VEC-001 은 DiskBBQ 와 벡터 샤드가 있는 노드만 반영, VEC-004 는 실효 max_merged_segment 사용, 클러스터 설정이 없으면 PERF-006 생략, PERF-009 와 FRZ-002 는 같은 네트워크 파일시스템 목록 사용
+- 핫스팟·비용: HOT-001 은 heap% 가 아니라 JVM 메모리 압력으로 비교, HOT-002 는 최소 처리량 필요, HOT-005 는 CPU 없는 load(흔히 디스크 대기)를 표시, CLU-021 은 모든 0 시간 값을 읽음, TPL-001 은 실제 패턴 교집합으로 판단, COST-002 는 auto expand 인덱스 제외, COST-004 는 shrink·downsample 사본을 이름의 날짜로 배치하고, 이동·삭제 지연보다 오래된 데이터가 이미 있을 때만 빠지는 데이터로 보며(보존 기간이 긴 젊은 클러스터는 계속 커짐), 명시적 write 대상을 씀
+- 운영: repositories.json 이 오류 응답이면 SNP-001 생략, 한 번도 성공한 스냅샷이 없으면 상태 기준으로 SNP-003 치명, SNP-007 은 연속 5회 실패나 오래된 마지막 성공 전까지 주의, SNP-006 은 SLM 정책이 있을 때만, LIC-001 은 trial 주의·만료 영향 문구 정정·basic 문구 정리, SEC-001 은 trust store 의 CA 를 주의로 보고 플랫폼 관리 인증서를 안내, SEC-002 는 HTTP 와 transport 가 모두 loopback 일 때만 주의, ILM-002 는 failure store write index 도 인식, ML-001 은 transform 100개만 수집된 경우 표시, OPS-007 은 전용 모니터링 클러스터에도 맞는 문구
+- 심층 점검: MAP-006 은 설정된 비율 표시, ILM-004 는 delete 가 데이터 스트림 전체를 지우는 경우를 설명하고 data stream lifecycle 관리 스트림은 제외, ILM-008 은 그 정책을 실제로 실행하는 인덱스만 사용, DISK-008 은 49.7일 이후의 애매한 값을 판정하지 않음, PERF-011 은 runtime_mappings 만으로 주의를 내지 않음, 손상 징후가 없는 IDX-012 는 제목이 다름, OPS-003 은 skip_unavailable 표시, ING-002 는 8.0 의 조건부 processor 유형을 읽고 비동기 processor 를 설명, OPS-004 는 노드가 아직 없는 tier 포함, CLU-023 은 플러그인 정보가 없는 노드 제외, OPS-005 는 .watches 인덱스를 읽음, OPS-006 은 버전별 문구
+- 비교와 리포트: DIF-011 은 searchable snapshot 마운트를 이동으로 표시, DIF-004/005/006/007 은 구간 안에 시작한 새 노드를 0 부터 셈, DIF-001 은 현재 상태에 CLU-001 등급을 쓰고 yellow 를 "해소" 로 부르지 않음, DIF-002 재시작은 주의(버전이 바뀌면 참고), DIF-007 은 `breaker_delta_crit` 부터 치명, DIF-012 는 어느 번들에서든 실행되지 않았거나 실패한 룰을 제외, DIF-014 는 실제 작업한 노드 수로 나눔, 요약은 없는 값을 "-" 로 표시, 시간당 속도는 소수 한 자리 유지. 병목 요약: 증가하지 않은 누적 거부는 이력으로 보고, breaker trip 이력은 메모리 압력으로 보지 않으며, 큐는 풀 이름을 표시. HTML 노드 색은 규칙 기준. DIF-008 은 tier 합계를 먼저 표시, markdown 은 잘린 행을 알림, 근거 파일 경로에 `commercial/` 포함
+
 ### 변경
 
 - 병목 요약: coordinating 전용 노드에 증상이 있으면 모든 data 노드로 범위를 넓힘
-- 결정 수치가 도구 기준인 항목의 근거를 도구 판단으로 변경: HOT-001, CLU-015, SHD-010, SHD-012, SHD-015, PERF-004, PERF-008, VEC-004, OS-004. JVM-001 은 공식 기준으로
-- 새 임계값: `breaker_used_pct_warn` 70, `shard_balance_min_diff` 10, `frozen_cache_turnover_per_day` 1.0, `workload_skew_min_per_sec` 10, `query_failure_pct_warn` 1(총 146개). `load_host_cpu_pct_max` 20 → 50
+- 결정 수치가 도구 기준인 항목의 근거를 도구 판단으로 변경: HOT-001, CLU-015, SHD-010, SHD-012, SHD-015, PERF-004, PERF-008, VEC-004, OS-004, 최종 검토에서 SEC-001, SHD-007, SHD-011, DISK-006. JVM-001 은 공식 기준으로
+- 새 임계값: `breaker_used_pct_warn` 70, `shard_balance_min_diff` 10, `frozen_cache_turnover_per_day` 1.0, `workload_skew_min_per_sec` 10, `query_failure_pct_warn` 1, `breaker_delta_crit` 10(총 147개). `load_host_cpu_pct_max` 20 → 50
 - COVERAGE 에서 `ml_stats.json` 을 미사용에서 사용으로 이동
-- `tests/test_audit_0143.py`
+- `tests/test_audit_0143.py`, `tests/test_audit_final.py`
 
 ## [0.14.2] - 2026-10-03
 

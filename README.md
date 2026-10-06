@@ -44,7 +44,7 @@ It makes no network calls and uses only the Python standard library.
 - **Storage cost**: rolled-over data kept on hot, replicas nobody searches, uneven disk use across tiers, and how many days of ingest the landing tier can still hold
 - **Action priority by root cause**: findings that come from the same cause (for example yellow status, unassigned shards, allocation explain and replicas above the node count) are grouped under one representative finding, and the rest are shown as related findings
 - **Evidence basis on every finding**: Official / Reported fact / Tool threshold / Computed
-- **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 99 settings)
+- **Settings change analysis**: cluster, node and index settings that differ from the default are reported with the original default, dynamic or static, what the setting does, and the impact of raising or lowering it (knowledge base of 100 settings)
 - **Oversharding analysis**: shards that can be removed per index, excess data stream rollovers, and shard size distribution
 - **Tier awareness**: hot/warm/cold/frozen are separated, and only nodes with the same role are compared
 - **Comparison mode**: compares against an earlier bundle to decide whether a cumulative counter is still increasing, with a before/now table per node. With three or more bundles it also reports throughput per interval (peak and off-peak) for sizing
@@ -219,9 +219,9 @@ If the analyzed version is newer than the baseline, `VER-001` (Info) is shown.
 
 | Basis | Meaning | Number of finding IDs |
 | --- | --- | --- |
-| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 60 |
-| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 57 |
-| Tool threshold | No official number exists, so the tool sets the threshold (for example load15 per CPU 1.0, average search latency 200ms) | 67 |
+| Official | The threshold is stated in the official Elastic docs (for example heap ≤ 50% of RAM, shard size 10-50GB and 200 million documents, watermarks, setting defaults) | 57 |
+| Reported fact | State, error or setting reported by Elasticsearch, passed on as is, no threshold (for example red status, ILM error) | 56 |
+| Tool threshold | No official number exists, so the tool sets the threshold (for example load15 per CPU 1.0, average search latency 200ms) | 71 |
 | Computed | Increase, growth rate or linear extrapolation between two bundles | DIF-001 to DIF-013 |
 
 When you pass results to the customer, present "Official" and "Reported fact" as evidence and "Tool threshold" as a recommendation.
@@ -414,7 +414,7 @@ python3 analyze.py --print-thresholds > my.json   # extract the defaults
 python3 analyze.py bundle.zip --thresholds my.json
 ```
 
-The source of each of the 146 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdoctor/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
+The source of each of the 147 thresholds (`[Official]` / `[Tool]`) is in the comments of `esdoctor/thresholds.py` and in the appendix of RULES.md. Do not change `[Official]` values.
 
 ---
 
@@ -457,7 +457,7 @@ bash tests/run_all.sh diagnostic.zip
 
 | Check | Content | Current result |
 | --- | --- | --- |
-| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 1010 strings, 0 problems |
+| `tests/lint_format.py` | Static check of `%` format strings, including format errors in branches that never run | 1040 strings, 0 problems |
 | `tests/verify_logic.py` | Assertions on calculation logic: watermarks, GC logs, cross-check against the settings knowledge base, multi-tier, mounted indices and write block cases. Runs in Korean and English | 110 passed |
 | `tests/drive_branches.py` | Forces every finding branch to run with 63 scenarios and checks the severity too | 63 passed, 0 finding branches not run |
 | `tests/fuzz_rules.py` | Mutations: missing fields, null, numbers as strings (`--harsh` uses arbitrary types) | 0 failures |

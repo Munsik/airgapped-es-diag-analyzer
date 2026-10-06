@@ -54,7 +54,9 @@ def _classify(stack, tname):
         if any(sig in frame for frame in stack):
             return tr(label), tr(hint)
     search_thread = any(p in tname for p in ("[search]", "[search_worker]", "[search_throttled]"))
-    for frame in stack:
+    for i, frame in enumerate(stack):
+        if "java.util.zip" in frame and any("org.apache.lucene.codecs" in f for f in stack[i + 1:]):
+            return tr(N_("rules.runtime._.67")), tr(N_("rules.runtime._.68"))    # best_compression stored fields (Deflate)
         for sig, label, hint in _SIGNATURES:
             if search_thread and sig == "org.apache.lucene.index":
                 continue            # index readers (TermsEnum, doc values) on a search thread are search work, not indexing
@@ -160,23 +162,32 @@ def r_hot_threads(ctx):
 
 
 _LOG_PATTERNS = [
-    (r"OutOfMemoryError", Severity.CRITICAL, "OutOfMemoryError",
+    (r"OutOfMemoryError: unable to create (?:new )?native thread", Severity.CRITICAL, "OutOfMemoryError (native thread)",
+     N_("rules.runtime._.62")),
+    (r"^(?!.*unable to create (?:new )?native thread).*OutOfMemoryError", Severity.CRITICAL, "OutOfMemoryError",
      N_("rules.runtime._.36")),
     (r"failed to obtain node lock", Severity.CRITICAL, N_("rules.runtime._.37"),
      N_("rules.runtime._.38")),
     (r"master not discovered|no known master node|master_not_discovered",
      Severity.WARNING, N_("rules.runtime._.39"),
      N_("rules.runtime._.40")),
-    (r"failed to execute bulk item|MapperParsingException|mapper_parsing_exception",
+    (r"failed to execute bulk item|MapperParsingException|mapper_parsing_exception|DocumentParsingException|document_parsing_exception",
      Severity.WARNING, N_("rules.runtime._.41"),
      N_("rules.runtime._.42")),
-    (r"CircuitBreakingException", Severity.CRITICAL, N_("rules.runtime._.43"),
+    # a logged trip is the same evidence as a tripped counter: Warning, as in BRK-001
+    (r"CircuitBreakingException", Severity.WARNING, N_("rules.runtime._.43"),
      N_("rules.runtime._.44")),
-    (r"EsRejectedExecutionException|rejected execution", Severity.WARNING, N_("rules.runtime._.45"),
-     N_("rules.runtime._.46")),
+    (r"rejected execution of (?:coordinating|primary|replica) operation", Severity.WARNING, N_("rules.runtime._.63"),
+     N_("rules.runtime._.64")),
+    (r"^(?!.*rejected execution of (?:coordinating|primary|replica) operation).*(?:EsRejectedExecutionException|rejected execution)",
+     Severity.WARNING, N_("rules.runtime._.45"), N_("rules.runtime._.46")),
     (r"\[gc\]\[old\]|\[gc\]\[\d+\] overhead, spent",
      Severity.WARNING, N_("rules.runtime._.47"),
      N_("rules.runtime._.48")),
+    # JvmGcMonitorService logs a young collection at WARN once it exceeds monitor.jvm.gc.collector.young.warn (1s); with G1 most
+    # long stop-the-world pauses are young collections
+    (r"WARN.*\[gc\]\[young\]\[\d+\]\[\d+\] duration", Severity.WARNING, N_("rules.runtime._.65"),
+     N_("rules.runtime._.66")),
     (r"failed to flush", Severity.INFO, N_("rules.runtime._.49"), ""),
     (r"high disk watermark \[[^\]]*\] exceeded|flood stage disk watermark \[[^\]]*\] exceeded on .*marked read-only",
      Severity.CRITICAL, N_("rules.runtime._.50"),
@@ -226,14 +237,15 @@ def r_logs(ctx):
     files = ctx.b.log_files()
     if not files:
         dlog = ctx.b.text("diagnostics.log") or ""
-        failed = ("Could not find the target node" in dlog or "Bypassing system calls" in dlog
-                  or "Could not match node publish address" in dlog)
-        if failed and (ctx.diag_type or "") in ("local", "remote"):
+        marker = next((m for m in ("Could not find the target node", "Could not match node publish address",
+                                   "Error occurred checking the network hosts information", "Bypassing system calls")
+                       if m in dlog), None)
+        if marker and (ctx.diag_type or "") in ("local", "remote"):
             return [Finding(
                 "LOG-000", CAT, Severity.INFO, T("rules.runtime.r_logs.01") % ctx.diag_type,
-                observed=T("rules.runtime.r_logs.02"),
+                observed=T("rules.runtime.r_logs.02") % marker,
                 impact=T("rules.runtime.r_logs.03"),
-                recommend=T("rules.runtime.r_logs.04"),
+                recommend=T("rules.runtime.r_logs.04") if ctx.diag_type == "local" else T("rules.runtime.r_logs.19"),
                 source="diagnostics.log")]
         return [Finding(
             "LOG-000", CAT, Severity.INFO, T("rules.runtime.r_logs.05"),

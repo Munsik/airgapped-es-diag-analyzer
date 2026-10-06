@@ -176,8 +176,14 @@ def test_kb_against_bundle(path):
     for k, spec in KB.items():
         if spec["scope"] == "index" or k not in d or k in yml or k in AUTO_DEFAULT:
             continue
-        # Defaults that depend on the version, the node or the index are compared with the value for this cluster
-        ch, _dir, _spec, used, _src = compare(k, d[k], default=default_for(k, ctx))
+        # Defaults that depend on the version, the node or the index are compared with the value for this cluster. A node-dependent
+        # default is reported by the node that served the request, so any node's value is accepted.
+        per_node = [default_for(k, ctx, node=n) for n in ctx.nodes]
+        if any(v is not None for v in per_node):
+            ch = all(compare(k, d[k], default=v)[0] for v in per_node if v is not None)
+            used = "/".join(sorted(set(v for v in per_node if v is not None)))
+        else:
+            ch, _dir, _spec, used, _src = compare(k, d[k], default=default_for(k, ctx))
         if ch:
             bad.append("%s: KB=%s ES=%s" % (k, used, d[k]))
     check("knowledge base defaults = ES reported defaults (yml and auto-computed keys excluded)", not bad, "; ".join(bad))
