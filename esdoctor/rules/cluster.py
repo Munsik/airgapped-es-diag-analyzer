@@ -127,7 +127,7 @@ def r_unassigned_reason(ctx):
 
 
 def r_internal_health(ctx):
-    """Passes through the Health API (_health_report) indicators. Any indicator red → Critical, yellow → Warning, all green → OK. unknown is not rated."""
+    """Passes through the Health API (_health_report) indicators. Any indicator red → Critical, yellow → Warning, all green → OK. unknown is not rated. A non-green disk indicator is Info when the only cause is a dedicated frozen node over flood_stage.frozen (cache only)."""
     inds = (ctx.internal_health or {}).get("indicators") or {}
     if not inds:
         return []
@@ -150,6 +150,8 @@ def r_internal_health(ctx):
     for name, ind in bad:
         status = (ind.get("status") or "").lower()
         sev = Severity.CRITICAL if status == "red" else Severity.WARNING
+        if name == "disk" and ctx.frozen_disk_only_alarm():
+            sev = Severity.INFO       # only frozen cache nodes are over their flood stage: no block, data is in the repository
         actions = []
         for d in dicts(ind.get("diagnosis")):
             actions.append((d.get("cause") or "") + " → " + (d.get("action") or ""))

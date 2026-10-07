@@ -369,7 +369,7 @@ def r_write_latency(ctx):
 
 
 def r_disk(ctx):
-    """Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001; on dedicated frozen nodes flood_stage.frozen blocks nothing but the health API disk indicator turns red, so those are a separate Critical), at or above high → Warning (DISK-002, the health API reports yellow once no shards can move away), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK. With several data paths, as ES does, flood and high use the path with the least available space and low uses the path with the most. With disk.threshold_enabled=false the impact says no watermark is enforced."""
+    """Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001; dedicated frozen nodes are cache only, so above flood_stage.frozen they get a separate Info and nothing else), at or above high → Critical (DISK-002, shards are forced off the node and indexing stops once none can move away), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK. With several data paths, as ES does, flood and high use the path with the least available space and low uses the path with the most. With disk.threshold_enabled=false the impact says no watermark is enforced."""
     rows, over_low, over_high, over_flood, warn, frozen_flood = [], [], [], [], [], []
     by_tier = {}
     for n in ctx.data_nodes or ctx.nodes:
@@ -387,7 +387,7 @@ def r_disk(ctx):
             rows.append([n.name, tier, "%.1f%%" % up, fmt_bytes(total), fmt_bytes(avail),
                          T("rules.nodes.r_disk.01"), T("rules.nodes.r_disk.01"), ("%.2f%% (frozen)" % fflood) if fflood else "-"])
             if fflood and up >= fflood:
-                frozen_flood.append(n.name)     # ES only logs a warning here: no index block on dedicated frozen nodes
+                frozen_flood.append(n.name)     # Info only: the shared cache fills the disk on purpose and no index block is set
             continue
         by_tier.setdefault(tier, []).append(up)
         low = ctx.watermark_used_pct("low", mt or total)
@@ -418,14 +418,14 @@ def r_disk(ctx):
             evidence=ev, affected=over_flood, refs=[DOC_DISK], source="nodes_stats.json"))
     if frozen_flood:
         out.append(Finding(
-            "DISK-001", CAT, Severity.CRITICAL, T("rules.nodes.r_disk.30"),
+            "DISK-001", CAT, Severity.INFO, T("rules.nodes.r_disk.30"),
             observed=T("rules.nodes.r_disk.31") % ", ".join(frozen_flood),
             impact=T("rules.nodes.r_disk.32"),
             recommend=T("rules.nodes.r_disk.33"),
             evidence=ev, affected=frozen_flood, refs=[DOC_DISK], source="nodes_stats.json"))
     if over_high:
         out.append(Finding(
-            "DISK-002", CAT, Severity.WARNING, T("rules.nodes.r_disk.12"),
+            "DISK-002", CAT, Severity.CRITICAL, T("rules.nodes.r_disk.12"),
             observed=T("rules.nodes.r_disk.09") % ", ".join(over_high),
             impact=T("rules.nodes.r_disk.34") if off else T("rules.nodes.r_disk.13"),
             recommend=T("rules.nodes.r_disk.14"),

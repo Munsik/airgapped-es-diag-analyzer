@@ -105,13 +105,13 @@ cluster_health.status 를 그대로 판정. red → 치명, yellow → 주의, g
 | 함수 | `cluster.r_internal_health` |
 | 판정 항목 | CLU-004 Health API 지표 전체 green / CLU-004. Health API 지표 이상: %s (%s) |
 | 근거 구분 | 사실 보고 |
-| 가능 심각도 | 치명, 주의, 정상 |
+| 가능 심각도 | 치명, 주의, 참고, 정상 |
 | 필요 입력 | (internal_health.json) |
 | 근거 파일 | internal_health.json |
 
 **판정 로직**
 
-Health API(_health_report) 지표를 그대로 전달. 지표별 red → 치명, yellow → 주의, 전 지표 green → 정상. unknown 은 판정하지 않는다.
+Health API(_health_report) 지표를 그대로 전달한다. red 가 하나라도 있으면 치명, yellow 면 주의, 모두 green 이면 정상. unknown 은 평가하지 않는다. disk 지표가 green 이 아니어도 원인이 전용 frozen 노드의 flood_stage.frozen 초과뿐이면 참고(cache 전용).
 
 ### CLU-005 — 마스터 pending task 적체
 
@@ -451,7 +451,7 @@ load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주�
 | 함수 | `nodes.r_disk` |
 | 판정 항목 | DISK-001 디스크 flood stage 초과 / DISK-002 디스크 high watermark 초과 / DISK-003 디스크 low watermark 초과 / DISK-004 디스크 사용률이 low 워터마크에 근접 / DISK-005 같은 tier 노드 간 디스크 사용률 편차 |
 | 근거 구분 | 공식 기준 / 도구 판단 |
-| 가능 심각도 | 치명, 주의, 정상 |
+| 가능 심각도 | 치명, 주의, 참고, 정상 |
 | 임계값 | `disk_imbalance_pct_warn` = 15 — [도구] 노드 간 디스크 사용률 편차(%p)<br>`disk_low_margin_pct` = 10 — [도구] 실효 low 워터마크까지 남은 %p |
 | 필요 입력 | (nodes_stats.json) |
 | 근거 파일 | nodes_stats.json |
@@ -459,7 +459,7 @@ load15 / available_processors >= load_per_cpu_crit → 치명, >= warn → 주�
 
 **판정 로직**
 
-데이터 노드 사용률 = 1 − available / total. 실효 워터마크(max_headroom 반영, context.watermark_used_pct) 대비 flood 이상 → 치명(DISK-001. 전용 frozen 노드는 flood_stage.frozen 에서 아무것도 막지 않지만 health API 의 disk 지표가 red 가 되므로 별도 치명), high 이상 → 주의(DISK-002, 옮길 샤드가 없으면 health API 는 yellow), low 이상 → 주의(DISK-003), low − disk_low_margin_pct 이상 → 주의(DISK-004, 앞 세 항목이 없을 때만). 노드 간 사용률 최대−최소 >= disk_imbalance_pct_warn → 주의(DISK-005). 해당 없음 → 정상. 데이터 경로가 여럿이면 ES 처럼 flood·high 는 가용 공간이 가장 적은 경로, low 는 가장 많은 경로를 쓴다. disk.threshold_enabled=false 면 영향 문구에 워터마크가 적용되지 않는다고 적는다.
+데이터 노드 사용률 = 1 − available / total. 실효 워터마크(max_headroom 반영, context.watermark_used_pct) 대비 flood 이상 → 치명(DISK-001. 전용 frozen 노드는 cache 전용이라 flood_stage.frozen 을 넘어도 별도 참고만 남기고 다른 조치는 없다), high 이상 → 치명(DISK-002, 샤드가 강제로 밀려나고 옮길 곳이 없으면 색인이 멈춘다), low 이상 → 주의(DISK-003), low − disk_low_margin_pct 이상 → 주의(DISK-004, 앞 세 항목이 없을 때만). 노드 간 사용률 최대−최소 >= disk_imbalance_pct_warn → 주의(DISK-005). 해당 없음 → 정상. 데이터 경로가 여럿이면 ES 처럼 flood·high 는 가용 공간이 가장 적은 경로, low 는 가장 많은 경로를 쓴다. disk.threshold_enabled=false 면 영향 문구에 워터마크가 적용되지 않는다고 적는다.
 
 ### TP-001, TP-002 — 스레드풀 rejection 발생
 
@@ -2712,7 +2712,7 @@ SET-001~006 이 사용하는 설정별 공식 기본값·종류·의미·변경 
 | `indices.breaker.fielddata.limit` | 40% | dynamic | cluster | fielddata 적재 한도(heap 대비). | ↑ text 필드 집계 등으로 heap 이 잠식되어 GC 압박이 커집니다.<br>↓ 집계가 더 일찍 거부됩니다. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.breaker.request.limit` | 60% | dynamic | cluster | 요청 단위 메모리(집계 등) 한도. | ↑ 대형 집계가 heap 을 과점할 수 있습니다.<br>↓ 집계가 더 일찍 거부됩니다. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.breaker.total.limit` | 95%(indices.breaker.total.use_real_memory 가 false 면 70%) | dynamic | cluster | parent breaker 한도(use_real_memory=true 기준 95%, false 면 70%). | ↑ OOM 직전까지 요청을 받아들여 노드가 OutOfMemoryError 로 종료될 위험이 커집니다.<br>↓ 정상 요청도 CircuitBreakingException 으로 거부됩니다. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
-| `indices.breaker.total.use_real_memory` | true | dynamic (8.1 이전 static) | node | parent breaker 가 실제 heap 사용량을 기준으로 판단. | false 면 추정치 기준(한도 기본 70%)으로 동작해 실제 heap 과 괴리가 생길 수 있습니다. | WARNING | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
+| `indices.breaker.total.use_real_memory` | true | dynamic | node | parent breaker 가 실제 heap 사용량을 기준으로 판단(8.1 부터 dynamic, 이전은 static). | false 면 추정치 기준(한도 기본 70%)으로 동작해 실제 heap 과 괴리가 생길 수 있습니다. | WARNING | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.fielddata.cache.size` | unbounded | static | node | fielddata 캐시 상한(기본 무제한, 실제 상한은 fielddata breaker). | 상한을 두면 eviction 이 발생해 해당 집계가 매번 fielddata 를 다시 적재합니다. | INFO | [Field data cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/field-data-cache-settings) |
 | `indices.lifecycle.poll_interval` | 10m | dynamic | cluster | ILM 조건 확인 주기. | ↑ 롤오버·삭제가 늦게 수행되어 샤드 크기·디스크가 계획보다 커집니다.<br>↓ 마스터 부하가 늘어납니다. 테스트 목적 외에는 줄이지 않습니다. | INFO / WARNING | [Index lifecycle management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-lifecycle-management-settings) |
 | `indices.memory.index_buffer_size` | 10% | static | node | 색인 버퍼(heap 대비). 쓰기 중인 샤드가 공유. | ↑ 대량 색인 효율은 좋아지지만 검색·집계에 쓸 heap 이 줄어듭니다.<br>↓ flush 가 잦아지고 작은 세그먼트가 늘어납니다. | INFO / INFO | [Indexing buffer settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/indexing-buffer-settings) |

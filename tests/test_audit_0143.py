@@ -452,7 +452,7 @@ def review(tmp, lang):
     sev = lambda t: [str(p[1]) for p in _LOG_PATTERNS if re.search(p[0], t)]
     check("flood stage with read-only block is Critical",
           sev("flood stage disk watermark [95%] exceeded on [n], all indices on this node will be marked read-only") == ["CRITICAL"])
-    check("frozen flood stage is Warning", sev("flood stage disk watermark [95%] exceeded on [n]") == ["WARNING"])
+    check("frozen flood stage log line is Info (cache only)", sev("flood stage disk watermark [95%] exceeded on [n]") == ["INFO"])
     # CLU-001 without shard data
     class _H(object):
         health = {"status": "red"}

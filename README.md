@@ -250,7 +250,7 @@ If one rule fails, the other findings and the report are still produced.
 
 Data nodes are grouped into tiers (hot / content / warm / cold / frozen) by their role combination. **Specs, shard counts, resource usage and workload are compared only within the same tier.** Differences between tiers are intended design and are not reported as findings. NODE-003 holds only a per-tier spec table.
 If every node in a tier is near its CPU limit, the cause is lack of capacity, not skew, and HOT-005 reports it.
-Dedicated frozen nodes have most of their disk taken up in advance by the shared cache, so the low and high watermarks are not applied. Only `flood_stage.frozen` (95%, max_headroom 20GB) is checked.
+Dedicated frozen nodes have most of their disk taken up in advance by the shared cache, so the low and high watermarks are not applied. Only `flood_stage.frozen` (95%, max_headroom 20GB) is checked, and crossing it is reported as Info only, because a frozen node just caches data that lives in the snapshot repository. The high watermark on hot, warm and cold nodes stays Critical.
 
 ### Index classification
 

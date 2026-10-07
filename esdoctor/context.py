@@ -723,6 +723,25 @@ class Context(object):
     def is_frozen_only(self, node):
         return self.tier_of(node) == "frozen"
 
+    def frozen_disk_only_alarm(self):
+        """True when a dedicated frozen node is over flood_stage.frozen and no other data node is at or above its high watermark.
+        Frozen nodes only cache data that lives in the snapshot repository, so a full disk there is expected."""
+        frozen_over, other_over = False, False
+        for n in self.data_nodes or self.nodes:
+            total, _avail = n._least_path()
+            up = n.disk_used_pct
+            if up is None or not total:
+                continue
+            if self.tier_of(n) == "frozen":
+                fl = self.watermark_used_pct("flood_stage.frozen", total)
+                if fl and up >= fl:
+                    frozen_over = True
+            else:
+                hi = self.watermark_used_pct("high", total)
+                if hi and up >= hi:
+                    other_over = True
+        return frozen_over and not other_over
+
     def dev_mode(self, node):
         """True when the node runs in development mode: its transport publish address and every bound address are loopback,
         or discovery.type is single-node (BootstrapChecks.enforceLimits). -Des.enforce.bootstrap.checks=true forces production

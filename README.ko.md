@@ -250,7 +250,7 @@ bash tools/build_binary.sh     # dist/esdoctor (PyInstaller, 빌드 전용 가�
 
 데이터 노드는 역할 조합으로 tier(hot / content / warm / cold / frozen)를 나눕니다. **스펙·샤드 수·자원 사용률·작업량은 같은 tier 끼리만 비교합니다.** tier 간 차이는 정상 설계라 판정하지 않고 NODE-003 에 tier 별 스펙 표만 둡니다.
 다만 tier 의 모든 노드가 CPU 한계 근처라면 편중이 아니라 용량 부족이므로 HOT-005 로 판정합니다.
-frozen 전용 노드는 shared cache 가 디스크 대부분을 미리 점유하므로 low/high 워터마크를 적용하지 않고 `flood_stage.frozen`(95%, max_headroom 20GB)만 봅니다.
+frozen 전용 노드는 shared cache 가 디스크 대부분을 미리 점유하므로 low/high 워터마크를 적용하지 않고 `flood_stage.frozen`(95%, max_headroom 20GB)만 보며, 넘어도 참고로만 알립니다. frozen 노드는 snapshot repository 의 데이터를 cache 로만 두기 때문입니다. hot·warm·cold 노드의 high watermark 초과는 치명을 유지합니다.
 
 ### 인덱스 분류
 

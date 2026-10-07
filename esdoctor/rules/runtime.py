@@ -194,7 +194,7 @@ _LOG_PATTERNS = [
      N_("rules.runtime._.51")),
     # a dedicated frozen node only logs the flood stage and blocks nothing (DiskThresholdMonitor)
     (r"flood stage disk watermark \[[^\]]*\] exceeded on (?!.*marked read-only)",
-     Severity.WARNING, N_("rules.runtime._.58"),
+     Severity.INFO, N_("rules.runtime._.58"),
      N_("rules.runtime._.59")),
     (r"low disk watermark \[[^\]]*\] exceeded",
      Severity.WARNING, N_("rules.runtime._.56"),

@@ -289,6 +289,36 @@ def node_rules(tmp):
     check("IDX-002 not rated without node information", r_replica_unassignable(c) == [])
 
 
+def disk_tiers(tmp):
+    """Frozen nodes are cache only: over flood_stage.frozen is Info. hot/warm/cold over the high watermark is Critical."""
+    set_lang("en")
+    for case, avail, want in (("frozen full", {"frozen-1": 10}, ("INFO", None)),
+                              ("warm over high", {"warm-1": 80}, (None, "CRITICAL"))):
+        b = Bundle(version="9.5.3")
+        b.index("app-1", GB, M, pri=1)
+        root = os.path.join(tmp, "disk_" + case.replace(" ", "_"))
+        b.write(root)
+        st = json.load(open(os.path.join(root, "nodes_stats.json")))
+        for n in st["nodes"].values():
+            n["fs"]["total"]["available_in_bytes"] = n["fs"]["total"]["free_in_bytes"] = 900 * GB
+            if n["name"] in avail:
+                n["fs"]["total"]["available_in_bytes"] = n["fs"]["total"]["free_in_bytes"] = avail[n["name"]] * GB
+        w(root, "nodes_stats.json", st)
+        fs = analyze(root).findings
+        d1 = [f for f in fs if f.id == "DISK-001" and f.severity != Severity.OK]
+        d2 = [f for f in fs if f.id == "DISK-002"]
+        if want[0]:
+            check(case + ": DISK-001 is Info", [f.severity for f in d1] == [Severity.INFO], [f.severity for f in d1])
+            check(case + ": no Critical or Warning disk finding",
+                  not [f for f in fs if f.id in ("DISK-002", "DISK-003") and f.severity in (Severity.CRITICAL, Severity.WARNING)])
+        else:
+            check(case + ": DISK-002 is Critical", [f.severity for f in d2] == [Severity.CRITICAL], [f.severity for f in d2])
+    c = Context(Loader(os.path.join(tmp, "disk_frozen_full")), merge({}))
+    check("health disk indicator caused only by a frozen cache node", c.frozen_disk_only_alarm())
+    c = Context(Loader(os.path.join(tmp, "disk_warm_over_high")), merge({}))
+    check("not frozen-only when a warm node is over high", not c.frozen_disk_only_alarm())
+
+
 def main():
     tmp = tempfile.mkdtemp()
     try:
@@ -298,6 +328,7 @@ def main():
         for lang in ("ko", "en"):
             rules_synthetic(tmp, lang)
         node_rules(tmp)
+        disk_tiers(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         set_lang("ko")

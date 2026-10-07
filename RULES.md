@@ -105,13 +105,13 @@ Counts shards with state=UNASSIGNED in the shard list, grouped by unassigned.rea
 | Function | `cluster.r_internal_health` |
 | Findings | CLU-004 All Health API indicators are green / CLU-004. Health API indicator problem: %s (%s) |
 | Evidence basis | Reported fact |
-| Possible severities | Critical, Warning, OK |
+| Possible severities | Critical, Warning, Info, OK |
 | Required input | (internal_health.json) |
 | Source files | internal_health.json |
 
 **Decision logic**
 
-Passes through the Health API (_health_report) indicators. Any indicator red → Critical, yellow → Warning, all green → OK. unknown is not rated.
+Passes through the Health API (_health_report) indicators. Any indicator red → Critical, yellow → Warning, all green → OK. unknown is not rated. A non-green disk indicator is Info when the only cause is a dedicated frozen node over flood_stage.frozen (cache only).
 
 ### CLU-005: Master pending task backlog
 
@@ -451,7 +451,7 @@ load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → War
 | Function | `nodes.r_disk` |
 | Findings | DISK-001 Disk flood stage exceeded / DISK-002 Disk high watermark exceeded / DISK-003 Disk low watermark exceeded / DISK-004 Disk usage approaching the low watermark / DISK-005 Disk usage spread across nodes in the same tier |
 | Evidence basis | Official / Tool threshold |
-| Possible severities | Critical, Warning, OK |
+| Possible severities | Critical, Warning, Info, OK |
 | Thresholds | `disk_imbalance_pct_warn` = 15 ([Tool] Disk usage spread between nodes (percentage points))<br>`disk_low_margin_pct` = 10 ([Tool] Percentage points left before the effective low watermark) |
 | Required input | (nodes_stats.json) |
 | Source files | nodes_stats.json |
@@ -459,7 +459,7 @@ load15 / available_processors >= load_per_cpu_crit → Critical, >= warn → War
 
 **Decision logic**
 
-Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001; on dedicated frozen nodes flood_stage.frozen blocks nothing but the health API disk indicator turns red, so those are a separate Critical), at or above high → Warning (DISK-002, the health API reports yellow once no shards can move away), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK. With several data paths, as ES does, flood and high use the path with the least available space and low uses the path with the most. With disk.threshold_enabled=false the impact says no watermark is enforced.
+Data node usage = 1 - available / total. Against the effective watermarks (max_headroom applied, context.watermark_used_pct): at or above flood → Critical (DISK-001; dedicated frozen nodes are cache only, so above flood_stage.frozen they get a separate Info and nothing else), at or above high → Critical (DISK-002, shards are forced off the node and indexing stops once none can move away), at or above low → Warning (DISK-003), at or above low - disk_low_margin_pct → Warning (DISK-004, only when none of the first three apply). Usage spread between nodes (max - min) >= disk_imbalance_pct_warn → Warning (DISK-005). Nothing applies → OK. With several data paths, as ES does, flood and high use the path with the least available space and low uses the path with the most. With disk.threshold_enabled=false the impact says no watermark is enforced.
 
 ### TP-001, TP-002: Thread pool rejections occurred
 
@@ -2712,7 +2712,7 @@ Official default, kind, meaning and effect of change for each setting used by SE
 | `indices.breaker.fielddata.limit` | 40% | dynamic | cluster | Limit for loading fielddata (relative to heap). | ↑ Aggregations on text fields and similar operations eat into heap and increase GC pressure.<br>↓ Aggregations are rejected sooner. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.breaker.request.limit` | 60% | dynamic | cluster | Memory limit per request (for aggregations and so on). | ↑ A large aggregation can take most of the heap.<br>↓ Aggregations are rejected sooner. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.breaker.total.limit` | 95% (70% when indices.breaker.total.use_real_memory is false) | dynamic | cluster | Parent breaker limit (95% when use_real_memory=true, 70% when false). | ↑ Requests are accepted until just before OOM, which raises the risk that the node dies with OutOfMemoryError.<br>↓ Even normal requests are rejected with CircuitBreakingException. | WARNING / INFO | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
-| `indices.breaker.total.use_real_memory` | true | dynamic (static before 8.1) | node | The parent breaker decides based on actual heap usage. | With false, it uses estimates (default limit 70%), which can diverge from actual heap usage. | WARNING | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
+| `indices.breaker.total.use_real_memory` | true | dynamic | node | The parent breaker decides based on actual heap usage (dynamic from 8.1, static before). | With false, it uses estimates (default limit 70%), which can diverge from actual heap usage. | WARNING | [Circuit breaker settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/circuit-breaker-settings) |
 | `indices.fielddata.cache.size` | unbounded | static | node | Upper limit of the fielddata cache (unlimited by default; the effective limit is the fielddata breaker). | With a limit, evictions occur and those aggregations reload fielddata every time. | INFO | [Field data cache settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/field-data-cache-settings) |
 | `indices.lifecycle.poll_interval` | 10m | dynamic | cluster | How often ILM conditions are checked. | ↑ Rollover and deletion run late, so shard sizes and disk usage grow beyond plan.<br>↓ Master load increases. Do not lower it except for testing. | INFO / WARNING | [Index lifecycle management settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/index-lifecycle-management-settings) |
 | `indices.memory.index_buffer_size` | 10% | static | node | Indexing buffer (relative to heap), shared by the shards that are being written to. | ↑ Bulk indexing is more efficient, but less heap is left for search and aggregations.<br>↓ Flushes become more frequent and small segments increase. | INFO / INFO | [Indexing buffer settings](https://www.elastic.co/docs/reference/elasticsearch/configuration-reference/indexing-buffer-settings) |
